@@ -7,7 +7,8 @@
  *   GET /proxy-recent                         → JSON ring buffer of recent requests
  *   GET /proxy-latest-png[?crop=N]            → raw PNG of the latest rendered image
  *
- * Ported from legacy/python/proxy.py — same metric formulas, same HTML shell.
+ * Metric formulas and HTML shell originally ported from the Python reference
+ * implementation (deleted after live cache-rate validation hit 98.7% by tokens).
  *
  * Node-only by design (uses node:fs for startup replay + node:zlib for the
  * preview crop). The Worker host doesn't expose a dashboard; use Workers Logs.

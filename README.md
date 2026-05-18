@@ -175,13 +175,6 @@ npm run build                 # build dist/node.js
 npm run deploy:worker         # wrangler deploy
 ```
 
-## Legacy
-
-The original Python proxy (the reference implementation we ported from)
-lives in [`legacy/python/`](./legacy/python/). It's kept around as a
-parity oracle and will be deleted once TS reaches end-to-end byte-output
-parity.
-
 ## License
 
 MIT.

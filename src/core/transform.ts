@@ -5,8 +5,9 @@
  * those images instead — saving 65-73% input tokens on Opus 4.7 while
  * preserving 100% reasoning quality.
  *
- * Matches the public-surface behavior of legacy/python/proxy.py at a
- * minimum. Stricter byte-for-byte parity is verified in tests.
+ * Originally ported from a Python reference implementation; the Python
+ * has since been removed (live cache-rate validation passed at 98.7% by
+ * tokens). Byte-output determinism is now verified by tests alone.
  */
 
 import type {
