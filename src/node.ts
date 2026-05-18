@@ -21,7 +21,9 @@ interface CliOpts {
   compress: boolean;
   compressTools: boolean;
   compressSchemas: boolean;
+  compressReminders: boolean;
   minCompressChars: number;
+  minReminderChars: number;
   placement: 'system' | 'user';
   cols: number;
   /** When true, append per-request events to eventsFile. Default-on. */
@@ -43,7 +45,9 @@ function parseCli(argv: string[]): CliOpts {
     compress: envFlag('COMPRESS', true),
     compressTools: envFlag('COMPRESS_TOOLS', true),
     compressSchemas: envFlag('COMPRESS_SCHEMAS', true),
+    compressReminders: envFlag('COMPRESS_REMINDERS', true),
     minCompressChars: Number(process.env.MIN_COMPRESS_CHARS ?? 2000),
+    minReminderChars: Number(process.env.MIN_REMINDER_CHARS ?? 1000),
     placement: (process.env.PLACEMENT as 'system' | 'user') ?? 'user',
     cols: Number(process.env.COLS ?? 100),
     track: envFlag('PIXELPIPE_TRACK', true),
@@ -61,7 +65,9 @@ function parseCli(argv: string[]): CliOpts {
       case '--no-compress':    o.compress = false; break;
       case '--no-tools':       o.compressTools = false; break;
       case '--no-schemas':     o.compressSchemas = false; break;
+      case '--no-reminders':   o.compressReminders = false; break;
       case '--min-chars':      o.minCompressChars = Number(eat()); break;
+      case '--min-reminder-chars': o.minReminderChars = Number(eat()); break;
       case '--placement':      o.placement = eat() as 'system' | 'user'; break;
       case '--cols':           o.cols = Number(eat()); break;
       case '--no-track':       o.track = false; break;
@@ -92,7 +98,9 @@ Options:
       --no-compress       disable all compression (pure passthrough)
       --no-tools          don't fold tool docs into the image
       --no-schemas        don't include input_schema JSON in the image
-      --min-chars <N>     skip compression below this many chars (default 2000)
+      --no-reminders      don't image-compress <system-reminder> blocks
+      --min-chars <N>     skip system compression below this many chars (default 2000)
+      --min-reminder-chars <N>  per-block threshold for --no-reminders (default 1000)
       --placement <where> 'system' or 'user' (default user; 'system' is
                           rejected by the API for image blocks)
       --cols <N>          soft-wrap column count (default 100)
@@ -103,8 +111,8 @@ Options:
 
 Environment:
   Same as flags via PORT, ANTHROPIC_UPSTREAM, COMPRESS, COMPRESS_TOOLS,
-  COMPRESS_SCHEMAS, MIN_COMPRESS_CHARS, PLACEMENT, COLS, PIXELPIPE_TRACK,
-  PIXELPIPE_LOG.
+  COMPRESS_SCHEMAS, COMPRESS_REMINDERS, MIN_COMPRESS_CHARS,
+  MIN_REMINDER_CHARS, PLACEMENT, COLS, PIXELPIPE_TRACK, PIXELPIPE_LOG.
 
 Use with Claude Code:
   ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude
@@ -305,7 +313,9 @@ async function main(): Promise<void> {
     compress: opts.compress,
     compressTools: opts.compressTools,
     compressSchemas: opts.compressSchemas,
+    compressReminders: opts.compressReminders,
     minCompressChars: opts.minCompressChars,
+    minReminderChars: opts.minReminderChars,
     placement: opts.placement,
     cols: opts.cols,
   };
@@ -326,8 +336,11 @@ async function main(): Promise<void> {
       // info.firstImagePng, so capturing has to happen on the raw event.
       dashboard.update(e);
       // Terse human-readable console line.
+      const extra: string[] = [];
+      if (e.info?.reminderImgs) extra.push(`rem+${e.info.reminderImgs}`);
+      const extraTag = extra.length > 0 ? ` (${extra.join(' ')})` : '';
       const tag = e.info?.compressed
-        ? `compressed ${e.info.origChars}ch → ${e.info.imageCount}img/${e.info.imageBytes}B`
+        ? `compressed ${e.info.origChars}ch → ${e.info.imageCount}img/${e.info.imageBytes}B${extraTag}`
         : (e.info?.reason ?? '');
       const cacheRead = e.usage?.cache_read_input_tokens ?? 0;
       const inputTokens = e.usage?.input_tokens ?? 0;
@@ -389,7 +402,7 @@ async function main(): Promise<void> {
   server.listen(opts.port, () => {
     console.log(`[pixelpipe] listening on http://127.0.0.1:${opts.port} → ${opts.upstream}`);
     console.log(
-      `[pixelpipe] config: compress=${opts.compress} tools=${opts.compressTools} schemas=${opts.compressSchemas} min=${opts.minCompressChars} placement=${opts.placement} cols=${opts.cols}`,
+      `[pixelpipe] config: compress=${opts.compress} tools=${opts.compressTools} schemas=${opts.compressSchemas} reminders=${opts.compressReminders} min=${opts.minCompressChars} placement=${opts.placement} cols=${opts.cols}`,
     );
     if (opts.track) console.log(`[pixelpipe] tracking events → ${opts.eventsFile}`);
     else console.log('[pixelpipe] tracking disabled (--no-track or PIXELPIPE_TRACK=0)');

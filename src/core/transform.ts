@@ -9,7 +9,14 @@
  * minimum. Stricter byte-for-byte parity is verified in tests.
  */
 
-import type { ImageBlock, MessagesRequest, SystemField, TextBlock, ToolDef } from './types.js';
+import type {
+  ContentBlock,
+  ImageBlock,
+  MessagesRequest,
+  SystemField,
+  TextBlock,
+  ToolDef,
+} from './types.js';
 import { renderTextToPngs } from './render.js';
 import { bytesToBase64 } from './png.js';
 
@@ -22,8 +29,14 @@ export interface TransformOptions {
   compressTools?: boolean;
   /** Include full input_schema JSON for each tool. Adds tokens but maximizes parity. */
   compressSchemas?: boolean;
+  /** Compress large `<system-reminder>` text blocks in the first user message.
+   *  Claude Code re-injects these every turn; rendering them to images shares
+   *  the cache anchor with the system+tools render. */
+  compressReminders?: boolean;
   /** Don't compress if total compressible chars below this. */
   minCompressChars?: number;
+  /** Per-block threshold for compressReminders (chars). */
+  minReminderChars?: number;
   /** Where to attach the image block — system field, or first user message. */
   placement?: 'system' | 'user';
   /** Soft-wrap column count. */
@@ -35,7 +48,10 @@ const DEFAULTS: Required<TransformOptions> = {
   compressSystem: true,
   compressTools: true,
   compressSchemas: true,
+  compressReminders: true,
   minCompressChars: 2000,
+  // Matches Python defaults: 1000 chars for <system-reminder>.
+  minReminderChars: 1000,
   // Anthropic's `system` field accepts text blocks only — image blocks there
   // come back as `400 system.N.type: Input should be 'text'`. Images must go
   // into a user message instead.
@@ -91,6 +107,9 @@ export interface TransformInfo {
   /** Pixel dimensions of the first image. */
   firstImageWidth?: number;
   firstImageHeight?: number;
+  /** Number of images we added by compressing `<system-reminder>` blocks in
+   *  the first user message. */
+  reminderImgs?: number;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -314,6 +333,25 @@ function makeImageBlock(pngB64: string, ephemeral = false): ImageBlock {
   return blk;
 }
 
+/** Render a long text blob to one or more PNG image blocks. Helper for the
+ *  per-message compressions (reminders, tool_results) — no cache_control on
+ *  these (Anthropic caps at 4 breakpoints; the system+tools image already
+ *  anchors the cacheable prefix). */
+async function textToImageBlocks(text: string, cols: number): Promise<ImageBlock[]> {
+  const imgs = await renderTextToPngs(text, cols);
+  return imgs.map((img) => makeImageBlock(bytesToBase64(img.png), false));
+}
+
+/** Best-effort byte-count of an image block's PNG payload (decoded from b64).
+ *  Used only for the imageBytes telemetry; an exact value isn't worth a
+ *  second base64 round-trip. */
+function approxBlockBytes(blk: ImageBlock): number {
+  const b64 = blk.source.data;
+  // base64 → bytes: every 4 chars decode to 3 bytes, minus padding.
+  const pad = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+  return Math.floor((b64.length * 3) / 4) - pad;
+}
+
 // --- main transform --------------------------------------------------------
 
 /**
@@ -472,10 +510,49 @@ export async function transformRequest(
       const existing = Array.isArray(m.content)
         ? m.content
         : [{ type: 'text' as const, text: m.content }];
-      // Only the intro + images belong in a user message — the end marker
-      // and dynamic blocks live in the system field above.
-      const userPrefix: TextBlock[] = [{ type: 'text', text: introText }];
-      m.content = [...userPrefix, ...imageBlocks, ...existing];
+
+      // 5a. <system-reminder> compression — long reminder blocks in the first
+      // user message get re-injected every turn; rendering them to images
+      // shares the cache anchor (the system+tools image carries the only
+      // cache_control). No cache_control on these images.
+      const processedExisting: ContentBlock[] = [];
+      if (o.compressReminders) {
+        for (const blk of existing) {
+          if (
+            blk &&
+            (blk as TextBlock).type === 'text' &&
+            typeof (blk as TextBlock).text === 'string' &&
+            (blk as TextBlock).text.trimStart().startsWith('<system-reminder>') &&
+            (blk as TextBlock).text.length >= o.minReminderChars
+          ) {
+            const imgs = await textToImageBlocks((blk as TextBlock).text, o.cols);
+            for (const img of imgs) {
+              processedExisting.push(img);
+              info.imageBytes += approxBlockBytes(img);
+            }
+            info.reminderImgs = (info.reminderImgs ?? 0) + imgs.length;
+            info.imageCount += imgs.length;
+          } else {
+            processedExisting.push(blk);
+          }
+        }
+      } else {
+        processedExisting.push(...existing);
+      }
+
+      // Cache-friendly layout:
+      //   [intro text]                       ← static (helps OCR framing)
+      //   [image block(s)]                   ← static; LAST has cache_control
+      //                                          ↑ cache breakpoint
+      //   [End of rendered context.]         ← static text closer for the image
+      //   [processed existing content]       ← per-turn (incl. reminder images,
+      //                                          which have NO cache_control)
+      m.content = [
+        { type: 'text' as const, text: introText },
+        ...imageBlocks,
+        { type: 'text' as const, text: '[End of rendered context.]' },
+        ...processedExisting,
+      ];
     }
   }
 

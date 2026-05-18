@@ -33,6 +33,9 @@ export interface TrackEvent {
   static_chars?: number;
   dynamic_chars?: number;
   dynamic_block_count?: number;
+  /** Image count attributable to compressing `<system-reminder>` blocks in
+   *  the first user message. */
+  reminder_imgs?: number;
   /** Tag names found in the static slab we don't recognize. Canary for
    *  Claude Code releases that add new dynamic tags. */
   unknown_static_tags?: string[];
@@ -92,6 +95,7 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
     if (info.staticChars !== undefined) out.static_chars = info.staticChars;
     if (info.dynamicChars !== undefined) out.dynamic_chars = info.dynamicChars;
     if (info.dynamicBlockCount !== undefined) out.dynamic_block_count = info.dynamicBlockCount;
+    if (info.reminderImgs !== undefined) out.reminder_imgs = info.reminderImgs;
     if (info.unknownStaticTags && info.unknownStaticTags.length > 0)
       out.unknown_static_tags = info.unknownStaticTags;
     if (info.systemSha8) out.system_sha8 = info.systemSha8;

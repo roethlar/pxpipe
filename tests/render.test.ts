@@ -373,4 +373,66 @@ describe('transform', () => {
     expect(cached.length).toBe(1);
     expect(cached[0].cache_control.ttl).toBe('1h');
   });
+
+  it('compresses long <system-reminder> blocks in the first user message', async () => {
+    const reminder = '<system-reminder>\n' + 'a long policy note. '.repeat(200) + '\n</system-reminder>';
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        model: 'claude',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'real user prompt' },
+              { type: 'text', text: reminder },
+            ],
+          },
+        ],
+        system: 'claude.md\n'.repeat(500),
+      }),
+    );
+    const { body: outBytes, info } = await transformRequest(body);
+    expect(info.reminderImgs).toBeGreaterThanOrEqual(1);
+
+    const out = JSON.parse(new TextDecoder().decode(outBytes));
+    const content = out.messages[0].content as any[];
+    // Reminder text must NOT appear as a text block anymore.
+    for (const b of content) {
+      if (b.type === 'text') expect(b.text).not.toContain('<system-reminder>');
+    }
+    // But the user's actual prompt must still be there.
+    const userTexts = content.filter((b: any) => b.type === 'text').map((b: any) => b.text);
+    expect(userTexts.some((t: string) => t.includes('real user prompt'))).toBe(true);
+
+    // Reminder images carry NO cache_control (only the system+tools image
+    // does — Anthropic caps at 4 breakpoints).
+    const reminderImageBlocks = content.filter(
+      (b: any) => b.type === 'image' && !b.cache_control,
+    );
+    expect(reminderImageBlocks.length).toBeGreaterThanOrEqual(info.reminderImgs ?? 0);
+  });
+
+  it('leaves short <system-reminder> blocks alone (below minReminderChars)', async () => {
+    const shortReminder = '<system-reminder>\nshort note\n</system-reminder>';
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        model: 'claude',
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: shortReminder }],
+          },
+        ],
+        system: 'claude.md\n'.repeat(500),
+      }),
+    );
+    const { body: outBytes, info } = await transformRequest(body);
+    expect(info.reminderImgs ?? 0).toBe(0);
+    const out = JSON.parse(new TextDecoder().decode(outBytes));
+    const allText = (out.messages[0].content as any[])
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join('\n');
+    expect(allText).toContain('<system-reminder>');
+  });
 });
