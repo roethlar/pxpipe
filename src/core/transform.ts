@@ -18,6 +18,7 @@ import type {
   TextBlock,
   ToolDef,
   ToolResultBlock,
+  ToolUseBlock,
 } from './types.js';
 import {
   renderTextToPngs,
@@ -1220,6 +1221,9 @@ export async function transformRequest(
 
   if (combined.length < o.minCompressChars) {
     info.reason = `below_min_chars (${combined.length} < ${o.minCompressChars})`;
+    // Even on no-compress exits we want the regression denominator —
+    // otherwise α gets biased toward "requests big enough to compress".
+    info.outgoingTextChars = countOutgoingTextChars(req);
     return { body, info };
   }
 
@@ -1240,6 +1244,7 @@ export async function transformRequest(
   if (!isCompressionProfitable(combined, o.cols, undefined, numCols)) {
     info.reason = `not_profitable (slab=${combined.length} chars)`;
     bumpPassthrough(info, 'not_profitable');
+    info.outgoingTextChars = countOutgoingTextChars(req);
     return { body, info };
   }
 
@@ -1555,11 +1560,26 @@ export async function transformRequest(
 }
 
 /** Walk the outgoing transformed request body and sum the length of every
- *  `text` field in the system field and across all message content blocks.
- *  Excludes image base64, tool inputs/outputs structure, etc. — counting
- *  only the chars that the upstream tokenizer will actually see as text. */
+ *  char the upstream tokenizer will see as text. Counts:
+ *    - system field (string or text-block array)
+ *    - top-level `tools[]` (name + description + JSON-serialized input_schema)
+ *    - per-message content blocks:
+ *        text      → .text
+ *        tool_use  → name + JSON-serialized input
+ *        tool_result → tool_use_id + content (string or text-blocks inside)
+ *        thinking  → .thinking  (extended-thinking blocks, Opus/Sonnet 4.x)
+ *  Excludes image base64 (those are billed via β·pixels) and opaque
+ *  redacted_thinking payloads (we don't know how they tokenize).
+ *
+ *  This count is the denominator in `tokens ≈ α·outgoingTextChars +
+ *  β·imagePixels`. Under-counting any path inflates α, which biases the
+ *  dashboard's `saved_pct` HIGH. The blocks added beyond plain `text` —
+ *  especially `tools[]` and `tool_use.input` — carry a large fraction of
+ *  the chars in a real Claude Code request. */
 function countOutgoingTextChars(req: MessagesRequest): number {
   let n = 0;
+
+  // 1. system field
   const sys = req.system;
   if (typeof sys === 'string') {
     n += sys.length;
@@ -1570,6 +1590,23 @@ function countOutgoingTextChars(req: MessagesRequest): number {
       }
     }
   }
+
+  // 2. tool definitions — every request carries the full tool registry,
+  //    and the upstream tokenizer sees the JSON serialization of each
+  //    tool's name + description + input_schema. This is a large
+  //    constant-ish chunk in Claude Code traffic (~15-20 tools).
+  if (Array.isArray(req.tools)) {
+    for (const tool of req.tools) {
+      if (!tool || typeof tool !== 'object') continue;
+      if (typeof tool.name === 'string') n += tool.name.length;
+      if (typeof tool.description === 'string') n += tool.description.length;
+      if (tool.input_schema !== undefined) {
+        n += safeStringifyLen(tool.input_schema);
+      }
+    }
+  }
+
+  // 3. per-message content
   for (const msg of req.messages ?? []) {
     const c = msg.content;
     if (typeof c === 'string') {
@@ -1578,13 +1615,27 @@ function countOutgoingTextChars(req: MessagesRequest): number {
     }
     if (!Array.isArray(c)) continue;
     for (const b of c) {
-      if (b && (b as TextBlock).type === 'text' && typeof (b as TextBlock).text === 'string') {
-        n += (b as TextBlock).text.length;
+      if (!b || typeof b !== 'object') continue;
+      const type = (b as { type?: string }).type;
+
+      if (type === 'text') {
+        const tb = b as TextBlock;
+        if (typeof tb.text === 'string') n += tb.text.length;
         continue;
       }
-      // tool_result blocks can hold text inside `.content` as string-or-array.
-      if (b && (b as ToolResultBlock).type === 'tool_result') {
+
+      // Assistant turns issuing a tool call: name + serialized input.
+      // `input` is arbitrary JSON; tokenizer sees its serialization.
+      if (type === 'tool_use') {
+        const tu = b as ToolUseBlock;
+        if (typeof tu.name === 'string') n += tu.name.length;
+        if (tu.input !== undefined) n += safeStringifyLen(tu.input);
+        continue;
+      }
+
+      if (type === 'tool_result') {
         const tr = b as ToolResultBlock;
+        if (typeof tr.tool_use_id === 'string') n += tr.tool_use_id.length;
         const inner = tr.content;
         if (typeof inner === 'string') {
           n += inner.length;
@@ -1595,8 +1646,33 @@ function countOutgoingTextChars(req: MessagesRequest): number {
             }
           }
         }
+        continue;
       }
+
+      // Extended-thinking blocks: { type: 'thinking', thinking: string, ... }
+      // Not in our local types yet (we don't rewrite them), but they carry
+      // real characters that the upstream tokenizer sees.
+      if (type === 'thinking') {
+        const th = b as unknown as { thinking?: unknown };
+        if (typeof th.thinking === 'string') n += (th.thinking as string).length;
+        continue;
+      }
+
+      // image, redacted_thinking, server_tool_use, etc. — skip. Either
+      // billed via pixels (image) or opaque to us (redacted_thinking).
     }
   }
+
   return n;
+}
+
+/** JSON.stringify, but tolerant of cycles / non-serializable values.
+ *  We only care about the LENGTH; if it blows up we just return 0 rather
+ *  than crash the whole transform. */
+function safeStringifyLen(v: unknown): number {
+  try {
+    return JSON.stringify(v)?.length ?? 0;
+  } catch {
+    return 0;
+  }
 }

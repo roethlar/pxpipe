@@ -1895,4 +1895,205 @@ describe('transform', () => {
     expect(info.compressed).toBe(true);
     expect(info.passthroughReasons).toBeUndefined();
   });
+
+  describe('outgoingTextChars walker (denominator honesty)', () => {
+    // These tests pin the walker to what the upstream tokenizer actually
+    // sees. Under-counting any path inflates α in `tokens ≈ α·textChars
+    // + β·pixels`, which biases the dashboard `saved_pct` HIGH. All four
+    // sub-tests use `minCompressChars: 10_000_000` to disable image
+    // compression so we measure the raw walker, not post-compression text.
+    const noCompress = { minCompressChars: 10_000_000 };
+
+    async function countFor(req: object): Promise<number> {
+      const { info } = await transformRequest(
+        new TextEncoder().encode(JSON.stringify(req)),
+        noCompress,
+      );
+      // Sanity: no compression happened — we want pre-image numbers.
+      expect(info.compressed).toBe(false);
+      return info.outgoingTextChars ?? 0;
+    }
+
+    it('baseline: system string + plain text user message', async () => {
+      const n = await countFor({
+        model: 'claude-3-5-sonnet',
+        system: 'You are helpful.', // 16 chars
+        messages: [{ role: 'user', content: 'hello' }], // 5 chars
+      });
+      expect(n).toBe(16 + 5);
+    });
+
+    it('counts tools[] (name + description + JSON-serialized input_schema)', async () => {
+      const schema = { type: 'object', properties: { path: { type: 'string' } } };
+      const schemaLen = JSON.stringify(schema).length;
+      const base = await countFor({
+        model: 'claude-3-5-sonnet',
+        messages: [{ role: 'user', content: 'hi' }], // 2
+      });
+      const withTools = await countFor({
+        model: 'claude-3-5-sonnet',
+        messages: [{ role: 'user', content: 'hi' }], // 2
+        tools: [
+          {
+            name: 'Read', // 4
+            description: 'Read a file from disk.', // 22
+            input_schema: schema, // schemaLen
+          },
+        ],
+      });
+      expect(base).toBe(2);
+      expect(withTools - base).toBe(4 + 22 + schemaLen);
+    });
+
+    it('counts tool_use blocks (name + serialized input)', async () => {
+      const input = { command: 'ls -la', cwd: '/tmp' };
+      const inputLen = JSON.stringify(input).length;
+      const n = await countFor({
+        model: 'claude-3-5-sonnet',
+        system: 'sys', // 3
+        messages: [
+          { role: 'user', content: 'run it' }, // 6
+          {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'sure' }, // 4
+              { type: 'tool_use', id: 'toolu_01', name: 'Bash', input }, // 4 + inputLen
+            ],
+          },
+        ],
+      });
+      expect(n).toBe(3 + 6 + 4 + 4 + inputLen);
+    });
+
+    it('counts tool_result inner text + tool_use_id (string and array forms)', async () => {
+      // String form.
+      const a = await countFor({
+        model: 'claude-3-5-sonnet',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_AB', // 8
+                content: 'exit 0', // 6
+              },
+            ],
+          },
+        ],
+      });
+      expect(a).toBe(8 + 6);
+
+      // Array form: text block (counted) + image block (not counted).
+      const b = await countFor({
+        model: 'claude-3-5-sonnet',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_CD', // 8
+                content: [
+                  { type: 'text', text: 'stdout' }, // 6
+                  {
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/png', data: 'AAAA' }, // not counted
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+      expect(b).toBe(8 + 6);
+    });
+
+    it('counts thinking blocks (extended thinking, Opus/Sonnet 4.x)', async () => {
+      const n = await countFor({
+        model: 'claude-3-5-sonnet',
+        messages: [
+          { role: 'user', content: 'hi' }, // 2
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'considering options' }, // 19
+              { type: 'text', text: 'ok' }, // 2
+            ],
+          },
+        ],
+      });
+      expect(n).toBe(2 + 19 + 2);
+    });
+
+    it('skips image blocks and unknown block types (β·pixels handles those)', async () => {
+      const n = await countFor({
+        model: 'claude-3-5-sonnet',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'caption' }, // 7
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+              },
+              { type: 'redacted_thinking', data: 'opaque-blob' } as unknown as never,
+            ],
+          },
+        ],
+      });
+      expect(n).toBe(7);
+    });
+
+    it('upper bound: walker count never exceeds JSON.stringify(req).length', async () => {
+      // Synthetic request that mixes every block kind. The walker is
+      // counting only chars the upstream tokenizer sees, so it must stay
+      // strictly below the total JSON envelope length (which includes
+      // structural keys/braces/quotes).
+      const reqObj = {
+        model: 'claude-3-5-sonnet',
+        system: [{ type: 'text', text: 'A'.repeat(200) }],
+        tools: [
+          {
+            name: 'Edit',
+            description: 'B'.repeat(150),
+            input_schema: {
+              type: 'object',
+              properties: {
+                old: { type: 'string' },
+                new: { type: 'string' },
+              },
+              required: ['old', 'new'],
+            },
+          },
+        ],
+        messages: [
+          { role: 'user', content: 'C'.repeat(50) },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'D'.repeat(60) },
+              { type: 'text', text: 'E'.repeat(30) },
+              { type: 'tool_use', id: 'toolu_xx', name: 'Edit', input: { old: 'a', new: 'b' } },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_xx', content: 'F'.repeat(40) },
+            ],
+          },
+        ],
+      };
+      const upperBound = JSON.stringify(reqObj).length;
+      const walker = await countFor(reqObj);
+      expect(walker).toBeGreaterThan(0);
+      expect(walker).toBeLessThan(upperBound);
+      // And it must be a meaningful fraction — if the walker is missing
+      // big paths it'll fall to a tiny ratio. We want >= 50% of the JSON
+      // envelope on a request this dense in content vs. structure.
+      expect(walker / upperBound).toBeGreaterThan(0.5);
+    });
+  });
 });
