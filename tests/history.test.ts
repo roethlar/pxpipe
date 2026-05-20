@@ -448,6 +448,47 @@ describe('transformRequest history compression (always-on)', () => {
     expect(info.historyReason).toBe('no_closed_prefix');
   });
 
+  it('borderline fixture: collapses with built-in HISTORY_CHARS_PER_TOKEN=2.5 where cpt=4 would reject', async () => {
+    // Empirical 2026-05-20: N=10 production "history rejected as
+    // not_profitable" events have body cpt 1.08-1.10. The gate using
+    // cpt=4 was estimating text as 3.7× cheaper than reality and
+    // rejecting compressions that real billing would have approved.
+    //
+    // This fixture pins the wiring of HISTORY_CHARS_PER_TOKEN=2.5 into the
+    // transformRequest → collapseHistory gate. It sits in the band where
+    // image cost (5000 tok ≈ 2 images) is:
+    //   • > text-tokens at cpt=4   → REJECT under stale default
+    //   • < text-tokens at cpt=2.5 → ACCEPT under the empirical fix
+    //
+    // 10 collapsed turns × 1500 chars/turn ≈ 15-17k chars after framing.
+    // Single-col packs ≈ 14k chars/image → 2 images. At cpt=4: text=4k tok
+    // vs image=5k tok → reject. At cpt=2.5: text=6.4k tok > image=5k tok
+    // → accept with ≈1.4k tok headroom.
+    const msgs: Message[] = [];
+    for (let i = 0; i < 14; i++) {
+      const body = `turn ${i}: ` + bigPlain(1500);
+      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
+    }
+    const { info } = await transformRequest(mkBody(msgs, bigPlain(80_000)));
+    // Under HISTORY_CHARS_PER_TOKEN=2.5 this fixture collapses cleanly.
+    expect(info.historyReason).toBe('collapsed');
+    expect(info.collapsedTurns).toBe(10);
+
+    // Counterfactual: a host override slightly above 4 (= "English-prose
+    // worse than the static default") forces the gate back into rejection
+    // territory. We use 4.5 rather than 4 because passing exactly the
+    // DEFAULTS value (4) collides with the `!== CHARS_PER_TOKEN` branch
+    // and gets re-rewritten to HISTORY_CHARS_PER_TOKEN — by design, so
+    // unspecified-host requests still get the empirical cpt. 4.5 bypasses
+    // that override gate and confirms the fix actually flows through the
+    // cpt argument, not some other side-effect.
+    const stale = await transformRequest(mkBody(msgs, bigPlain(80_000)), {
+      charsPerToken: 4.5,
+    });
+    expect(stale.info.historyReason).toBe('not_profitable');
+    expect(stale.info.collapsedTurns).toBeUndefined();
+  });
+
   it('history-image blocks carry NO cache_control (conservative first-cut)', async () => {
     const msgs: Message[] = [];
     for (let i = 0; i < 14; i++) {

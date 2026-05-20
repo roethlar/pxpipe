@@ -177,6 +177,35 @@ const CHARS_PER_TOKEN = 4;
  *  conservative bias where shape isn't known a priori. */
 const SLAB_CHARS_PER_TOKEN = 2.5;
 
+/** Empirical chars-per-token for the *history compression* path.
+ *
+ *  Source: same N=354 production telemetry as SLAB_CHARS_PER_TOKEN, plus
+ *  a tighter sub-sample of N=10 events where the history collapse was
+ *  rejected as `not_profitable` (history_reason="not_profitable" in
+ *  events.jsonl, 2026-05-18 → 2026-05-20):
+ *    body cpt on rejected history events — min 1.08, median 1.09, MAX 1.10.
+ *
+ *  History content shape: collapsed-prefix turns from the conversation =
+ *  past tool_use args (JSON, very dense), tool_result blocks (variable),
+ *  assistant/user text (prose, less dense). In tool-heavy Claude Code
+ *  sessions the JSON dominates and the observed body-cpt sits at ~1.09 —
+ *  even denser than the slab path's 1.17 median.
+ *
+ *  Why 2.5 (not lower despite tighter empirical data): a chat-heavy
+ *  session with predominantly user/assistant prose could push history
+ *  content closer to the English-prose cpt~4 range. We have no telemetry
+ *  for those sessions yet (chat-only Claude Code is rare). 2.5 = slab's
+ *  empirically-justified upper bound, applied here to keep both call
+ *  sites symmetric and to absorb chat-shape uncertainty. If a real
+ *  chat-only session ever drives observed cpt above 2.5 we'll see it
+ *  in the dashboard before any net-loss compression lands.
+ *
+ *  Safety: at cpt=2.5 the gate's text-token estimate (textLen / 2.5) is
+ *  a LOWER bound on real text cost whenever real cpt ≤ 2.5 (= every
+ *  history sample we've ever observed). Image-cost-vs-estimated-text
+ *  passing therefore implies image-cost-vs-real-text passing. */
+const HISTORY_CHARS_PER_TOKEN = 2.5;
+
 /** Empirical per-image cost at numCols=1. Source: dashboard.ts measurement
  *  trace. Kept here as a constant rather than imported from dashboard.ts
  *  to keep `src/core/` free of dashboard imports — that's a one-way edge. */
@@ -1670,8 +1699,15 @@ export async function transformRequest(
     // the renderer will use. History is single-col; pinning numCols=1
     // here makes the gate decision identical to the renderer's image
     // count after wrapping.
+    // History cpt is empirically ~1.09 (N=10 rejected-events sample) — JSON-
+    // dense like the slab, so use the same conservative upper-bound cpt
+    // baked into HISTORY_CHARS_PER_TOKEN=2.5. Host override (o.charsPerToken)
+    // wins if the dashboard ever feeds back a live empirical fit.
+    const historyCpt = o.charsPerToken !== undefined && o.charsPerToken !== CHARS_PER_TOKEN
+      ? o.charsPerToken
+      : HISTORY_CHARS_PER_TOKEN;
     const historyProfitable = (text: string, cols: number): boolean =>
-      isCompressionProfitable(text, cols, undefined, 1, o.charsPerToken);
+      isCompressionProfitable(text, cols, undefined, 1, historyCpt);
     const { messages: newMessages, info: histInfo } = await collapseHistory(
       req.messages,
       historyProfitable,
