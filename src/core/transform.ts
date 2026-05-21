@@ -368,6 +368,49 @@ function bumpPassthrough(
   info.passthroughReasons[reason] = (info.passthroughReasons[reason] ?? 0) + 1;
 }
 
+/** Logical bucket that a char-attribution event lands in. One bucket per
+ *  gate-call neighborhood in `transformRequest`:
+ *    - `static_slab`        — the combined CLAUDE.md + tool docs slab
+ *    - `reminder`           — `<system-reminder>` blocks in the first user message
+ *    - `tool_result_json`   — tool_result content classified `structured`
+ *    - `tool_result_log`    — tool_result content classified `log`
+ *    - `tool_result_prose`  — tool_result content classified `other` (prose)
+ *    - `history`            — text folded into the Variant C history image
+ *  Used by the rolling-cpt regression (Task #18) to derive a per-bucket
+ *  marginal cpt so the gate can stop using one global text-cpt for content
+ *  with very different real cpts (JSON-dense tool_results vs prose). */
+export type BucketName =
+  | 'static_slab'
+  | 'reminder'
+  | 'tool_result_json'
+  | 'tool_result_log'
+  | 'tool_result_prose'
+  | 'history';
+
+/** Per-bucket sum of TEXT chars that flowed through each gate-call site this
+ *  request. Pre-compaction lengths — values stay comparable to `origChars`
+ *  and the chars that would have been billed if compression were off, and
+ *  give the regression a clean denominator. Absent when no bucket fired. */
+export type BucketChars = Partial<Record<BucketName, number>>;
+
+/** Attribute `chars` of TEXT to a logical compression bucket. Lazily allocates
+ *  `info.bucketChars` so happy-path events stay lean. Called at every gate
+ *  call site regardless of whether the gate accepted or rejected — we want
+ *  the denominator to reflect everything the gate saw, not just the wins. */
+function bumpBucket(info: TransformInfo, bucket: BucketName, chars: number): void {
+  if (chars <= 0) return;
+  if (!info.bucketChars) info.bucketChars = {};
+  info.bucketChars[bucket] = (info.bucketChars[bucket] ?? 0) + chars;
+}
+
+/** Map a `classifyContent` shape to a tool_result bucket name. Keeps the
+ *  per-call-site code free of repeated string checks. */
+function toolResultBucket(shape: 'structured' | 'log' | 'other'): BucketName {
+  if (shape === 'structured') return 'tool_result_json';
+  if (shape === 'log') return 'tool_result_log';
+  return 'tool_result_prose';
+}
+
 /** Parsed contents of Claude Code's <env> + git status blocks. All optional —
  *  fields are only populated if the corresponding line is present. */
 export interface EnvFields {
@@ -465,6 +508,21 @@ export interface TransformInfo {
    *      returned false (image cost ≥ text cost at current cell config)
    *  Only emitted when at least one counter is > 0. */
   passthroughReasons?: { below_threshold?: number; not_profitable?: number };
+  /** Per-bucket sum of TEXT chars that flowed through each gate-call site
+   *  (static slab, reminder, tool_result by classifyContent shape, history).
+   *  Pre-compaction lengths — stays comparable to `origChars` and to what
+   *  Anthropic would have billed if compression were off. Used by the
+   *  rolling-cpt regression (Task #18) to learn per-bucket marginal cpts
+   *  from production telemetry instead of relying on one global constant.
+   *  Absent when no bucket fired this request. */
+  bucketChars?: BucketChars;
+  /** Variant C history bucket: chars of TEXT that fed into the history-image
+   *  renderer (post-`messagesToHistoryText`, pre-`renderTextToPngs`). Folded
+   *  into `bucketChars.history` too — surfaced separately so the regression
+   *  can credit history-image cost even on no-collapse paths (where the
+   *  collapsed-prefix gate ran but landed on `not_profitable` / `render_empty`
+   *  and we still want to record that the bucket saw text). */
+  historyTextChars?: number;
   /** Number of tool_result blocks where the source text exceeded the
    *  per-tool_result image budget and was truncated before rendering. */
   truncatedToolResults?: number;
@@ -1438,6 +1496,11 @@ export async function transformRequest(
   // the RAW (pre-compaction) length — that's what Anthropic would have
   // billed; the compactor's whitespace strip is part of our savings.
   info.compressedChars += combinedRaw.length;
+  // Phase 1 (Task #18): per-bucket char attribution. Credit the same RAW
+  // length to the `static_slab` bucket so the rolling cpt regression can
+  // bucket-fit chars/token by call site instead of relying on one global
+  // constant. Mirrors the `compressedChars` accounting exactly.
+  bumpBucket(info, 'static_slab', combinedRaw.length);
   // Stash the first image's raw bytes + dimensions for the dashboard preview.
   // Stripped before persisting to JSONL by toTrackEvent. Memory cost is bounded
   // (we only ever keep ONE — the latest — via the dashboard's replace-on-update).
@@ -1536,6 +1599,10 @@ export async function transformRequest(
           info.reminderImgs = (info.reminderImgs ?? 0) + imgs.length;
           // Credit raw length — billed equivalent if compression were off.
           info.compressedChars += reminderRaw.length;
+          // Phase 1 (Task #18): reminders are a distinct content shape from
+          // the static slab (per-turn re-injected, JSON-light, prose-heavy);
+          // attribute them to their own bucket so cpt can drift independently.
+          bumpBucket(info, 'reminder', reminderRaw.length);
           info.imageCount += imgs.length;
           info.droppedChars = (info.droppedChars ?? 0) + droppedChars;
           for (const [cp, n] of dcp) {
@@ -1613,6 +1680,11 @@ export async function transformRequest(
                 }
                 rewritten.push({ ...tr, content: imgs });
                 changed = true;
+                // Phase 1 (Task #18): bucket tool_result text by content shape
+                // so structured (JSON/YAML/diff), log, and prose can each track
+                // their own marginal cpt. Use the post-compaction text since
+                // that matches what the gate evaluated and what got imaged.
+                bumpBucket(info, toolResultBucket(classifyContent(inner)), innerRaw.length);
               }
             } else if (Array.isArray(innerRaw)) {
               const newInner: Array<TextBlock | ImageBlock> = [];
@@ -1659,6 +1731,10 @@ export async function transformRequest(
                 for (const [cp, n] of dcp) {
                   droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
                 }
+                // Phase 1 (Task #18): per-block bucket attribution — same as
+                // the string tool_result path. Each text block inside a
+                // multi-block tool_result classifies on its own content.
+                bumpBucket(info, toolResultBucket(classifyContent(innerText)), innerTextRaw.length);
                 innerChanged = true;
               }
               if (innerChanged) {
@@ -1731,6 +1807,12 @@ export async function transformRequest(
         droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
       }
       info.historyReason = 'collapsed';
+      // Phase 1 (Task #18): per-bucket char attribution. History gets its
+      // own bucket because it runs on JSON-dense prose at a different cpt
+      // from system slabs and tool_results. The chars that fed the history
+      // renderer are exactly what `collapsedChars` already tracks.
+      info.historyTextChars = histInfo.collapsedChars;
+      bumpBucket(info, 'history', histInfo.collapsedChars);
     } else if (histInfo.reason) {
       info.historyReason = histInfo.reason;
     }

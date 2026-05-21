@@ -121,6 +121,66 @@ describe('toTrackEvent', () => {
     expect(out.web_search_requests).toBeUndefined();
   });
 
+  it('surfaces bucket_chars and history_text_chars when present', () => {
+    // Phase 1 of Task #18: per-block char attribution by content shape.
+    // The rolling cpt regression in tests/proxy-usage.test.ts and the
+    // dashboard read this back, so getting the snake_case names + nested
+    // shape right matters. Absent buckets must be omitted entirely so the
+    // happy-path events stay lean.
+    const out = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 50,
+      info: {
+        compressed: true,
+        origChars: 30000,
+        bucketChars: {
+          static_slab: 27000,
+          reminder: 1500,
+          tool_result_log: 800,
+          tool_result_prose: 400,
+          history: 300,
+        },
+        historyTextChars: 300,
+      },
+    });
+    expect(out.bucket_chars).toEqual({
+      static_slab: 27000,
+      reminder: 1500,
+      tool_result_log: 800,
+      tool_result_prose: 400,
+      history: 300,
+    });
+    expect(out.history_text_chars).toBe(300);
+  });
+
+  it('omits bucket_chars when no gates fired and the bucket map is empty', () => {
+    // Pass-through requests (compress=false, parse errors) never call
+    // bumpBucket. `info.bucketChars` either stays undefined or — if
+    // something allocated the sub-object without writing — should still
+    // not show up in the persisted event. Otherwise consumers can't tell
+    // "we measured zero buckets" from "we never ran the gate".
+    const noBuckets = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 10,
+      info: { compressed: false, reason: 'compress=false', origChars: 0 },
+    });
+    expect(noBuckets.bucket_chars).toBeUndefined();
+    expect(noBuckets.history_text_chars).toBeUndefined();
+
+    const emptyBucketMap = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 10,
+      info: { compressed: true, origChars: 100, bucketChars: {} },
+    });
+    expect(emptyBucketMap.bucket_chars).toBeUndefined();
+  });
+
   it('handles a minimal ProxyEvent (no info, no usage) without throwing', () => {
     const out = toTrackEvent({
       method: 'GET',

@@ -86,6 +86,24 @@ export interface TrackEvent {
   /** Tag names found in the static slab we don't recognize. Canary for
    *  Claude Code releases that add new dynamic tags. */
   unknown_static_tags?: string[];
+  /** Per-bucket sum of TEXT chars that flowed through each gate call site,
+   *  bucketed by content shape so a marginal cpt can be learned per bucket.
+   *  Buckets are `static_slab`, `reminder`, `tool_result_{structured,log,prose}`,
+   *  and `history`. Only present when at least one bucket fired (in particular,
+   *  this is `undefined` on uncompressed requests). Used by the rolling-cpt
+   *  task (#18) to refine the marginal cpt per bucket instead of relying on a
+   *  single global constant. */
+  bucket_chars?: Partial<Record<
+    'static_slab' | 'reminder' |
+    'tool_result_structured' | 'tool_result_log' | 'tool_result_prose' |
+    'history',
+    number
+  >>;
+  /** Variant C history bucket: chars of TEXT that fed the history-image's
+   *  renderer. Surfaced separately so the regression can credit history-image
+   *  text growth even on no-collapse turns (when this is 0). Pairs with the
+   *  history-bucket entry in `bucket_chars`. */
+  history_text_chars?: number;
 
   // From TransformInfo.env:
   cwd?: string;
@@ -256,6 +274,16 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
       if ((pr.below_threshold ?? 0) > 0 || (pr.not_profitable ?? 0) > 0) {
         out.passthrough_reasons = pr;
       }
+    }
+    if (info.bucketChars && Object.keys(info.bucketChars).length > 0) {
+      // Phase 1 (Task #18): per-bucket char attribution. Empty object is omitted
+      // so noop-pass requests stay lean; presence means at least one gate fired.
+      out.bucket_chars = info.bucketChars;
+    }
+    if (info.historyTextChars !== undefined && info.historyTextChars > 0) {
+      // Variant C history-image text length, surfaced separately from the
+      // bucket map because history credits a synthetic prepended user message.
+      out.history_text_chars = info.historyTextChars;
     }
     if (info.unknownStaticTags && info.unknownStaticTags.length > 0)
       out.unknown_static_tags = info.unknownStaticTags;
