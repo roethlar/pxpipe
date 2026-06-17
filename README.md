@@ -33,7 +33,9 @@ eval (see benchmarks).*
 
 ## Demo
 
-▶ **[Watch the side-by-side demo](https://drive.google.com/file/d/1yZYEjr9765aswomG8mopmp3GlRdSLWM1/view?usp=sharing)** — plain Claude (left) vs pxpipe (right), both on **Opus 4.8** (opt-in; pxpipe is tuned for Fable, currently offline).
+[![pxpipe vs plain Claude — side-by-side A/B on Opus 4.8](https://raw.githubusercontent.com/teamchong/pxpipe/main/docs/assets/pxpipe-ab-test-thumb.jpg)](https://drive.google.com/file/d/1yZYEjr9765aswomG8mopmp3GlRdSLWM1/view?usp=sharing)
+
+*Side-by-side — plain Claude (left) vs pxpipe (right), both on **Opus 4.8** (opt-in; pxpipe is tuned for Fable, currently offline). Click the image to watch (Google Drive).*
 
 - **Demo 1 — fix a failing test suite:** both pass; the dashboard shows pxpipe cut the request to a fraction of the tokens (real, server-measured **context/token reduction**).
 - **Demo 2 — a big file-context (40 files, ~382k tokens) plus a math question and a "count this phrase" task:** the math answer (a small **text** needle) reads on both. The phrase-count needs reading the **imaged** filler — so pxpipe-on-Opus can't read it and **honestly surfaces that it won't fabricate a number** (the documented lossy limit: exact values stay text). Plain, meanwhile, bogs down counting file-by-file.

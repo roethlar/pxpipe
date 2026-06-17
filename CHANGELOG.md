@@ -4,6 +4,13 @@ All notable changes to pxpipe are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor = features /
 behavioral changes, patch = fixes).
 
+## 0.3.1 — 2026-06-17
+
+### Changed
+- **Demo:** the side-by-side A/B clip moved to Google Drive (the committed copy
+  was too low-res to read). The README keeps the preview thumbnail and links out
+  to the video; the 8.9 MB video binary is no longer in the package/repo tree.
+
 ## 0.3.0 — 2026-06-17
 
 Render-sizing overhaul, dashboard transparency, honest savings accounting, and a
