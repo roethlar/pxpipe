@@ -229,12 +229,6 @@ function contentText(content: OpenAIChatMessage['content']): string {
     .join('\n\n');
 }
 
-function contentParts(content: OpenAIChatMessage['content']): OpenAIContentPart[] {
-  if (typeof content === 'string') return [{ type: 'text', text: content }];
-  if (Array.isArray(content)) return content.slice();
-  return [];
-}
-
 function setTextContent(msg: OpenAIChatMessage, text: string): void {
   if (Array.isArray(msg.content)) {
     const kept = msg.content.filter((p) => !isTextPart(p));
@@ -647,11 +641,17 @@ export async function transformOpenAIChatCompletions(
   info.imagePngs = images.map((img) => img.png);
   info.imageDims = images.map((img) => ({ width: img.width, height: img.height }));
 
-  const firstUserMsg = req.messages[firstUserIdx]!;
-  firstUserMsg.content = [
-    ...imageParts,
-    { type: 'text', text: '[End of rendered GPT system/tool context.]' },
-    ...contentParts(firstUserMsg.content),
+  const slabUserMsg: OpenAIChatMessage = {
+    role: 'user',
+    content: [
+      ...imageParts,
+      { type: 'text', text: '[End of rendered GPT system/tool context.]' },
+    ],
+  };
+  req.messages = [
+    ...req.messages.slice(0, firstUserIdx),
+    slabUserMsg,
+    ...req.messages.slice(firstUserIdx),
   ];
 
   for (const msg of req.messages) {
@@ -660,9 +660,9 @@ export async function transformOpenAIChatCompletions(
     setTextContent(msg, CHAT_POINTER);
   }
 
-  // Collapse the OLD conversation prefix into history image(s). The first user
-  // message (firstUserIdx) carries the static slab and is protected; the bulk is
-  // the transcript OpenCode resends every turn.
+  // Collapse the OLD conversation prefix into history image(s). The inserted slab
+  // item carries static images and is protected; the original opening user prompt
+  // remains collapsible history instead of looking like the live request.
   if (o.collapseHistory) {
     const turns = chatMessagesToTurns(req.messages);
     const profitable = (text: string, cols: number) =>
@@ -842,12 +842,18 @@ export async function transformOpenAIResponses(
       ],
     }];
   } else {
-    // Prepend images to the first user item's content.
-    const firstUserItem = inputItems[firstUserIdx] as ResponsesInputItem;
-    const originalContent = typeof firstUserItem.content === 'string'
-      ? [{ type: 'input_text', text: firstUserItem.content } as ResponsesInputTextPart]
-      : (firstUserItem.content as ResponsesContentPart[]).slice();
-    firstUserItem.content = [...imagePartsResp, endMarker, ...originalContent];
+    // Insert a dedicated static-slab item. Do not attach it to the opening real
+    // user prompt: that prompt is old history on long stateless Responses calls,
+    // and protecting it made stale first-turn requests look live.
+    const slabUserItem: ResponsesInputItem = {
+      role: 'user',
+      content: [...imagePartsResp, endMarker],
+    };
+    inputItems = [
+      ...inputItems.slice(0, firstUserIdx),
+      slabUserItem,
+      ...inputItems.slice(firstUserIdx),
+    ];
     req.input = inputItems;
   }
 
@@ -868,9 +874,9 @@ export async function transformOpenAIResponses(
     }
   }
 
-  // Collapse the OLD conversation prefix into history image(s). The static slab
-  // is small; the transcript OpenCode resends every turn is the real cost. Skip
-  // for bare-string input (single message, nothing to collapse).
+  // Collapse the OLD conversation prefix into history image(s). The inserted slab
+  // item is protected; the transcript OpenCode resends every turn is the real cost.
+  // Skip for bare-string input (single message, nothing to collapse).
   if (o.collapseHistory && !inputWasString) {
     const turns = responsesItemsToTurns(inputItems);
     const profitable = (text: string, cols: number) =>

@@ -333,20 +333,27 @@ describe('transformOpenAIResponses (gpt-5.6)', () => {
 // -- Task 4: GPT history-image collapse (the growing transcript) ---------------
 
 const BIG_SLAB = 'You are a coding agent with detailed instructions. '.repeat(80); // ~4k chars
+const OPENING_PROMPT_MARKER = 'OPENING_PROMPT_SHOULD_BE_HISTORY';
+const LIVE_PROMPT_MARKER = 'LIVE_CURRENT_PROMPT_SHOULD_STAY_TEXT';
 
 /** A long Responses `input`: first user, then many closed tool-call turns + a
  *  recent tail. Each turn is ~600 chars so the collapsed prefix clears the 8000
  *  minCollapseChars floor. */
 function buildResponsesInput(turns: number): Array<Record<string, unknown>> {
   const items: Array<Record<string, unknown>> = [
-    { role: 'user', content: 'Start the task. '.repeat(40) },
+    { role: 'user', content: `${OPENING_PROMPT_MARKER} `.repeat(40) },
   ];
   for (let i = 0; i < turns; i++) {
     const id = `call_${i}`;
     items.push({ role: 'assistant', content: `Working on step ${i}. `.repeat(30) });
     items.push({ type: 'function_call', call_id: id, name: 'read', arguments: `{"path":"f${i}"}` });
     items.push({ type: 'function_call_output', call_id: id, output: `result ${i} `.repeat(50) });
-    items.push({ role: 'user', content: `Continue with ${i}. `.repeat(20) });
+    items.push({
+      role: 'user',
+      content: i === turns - 1
+        ? `${LIVE_PROMPT_MARKER} `.repeat(20)
+        : `Continue with ${i}. `.repeat(20),
+    });
   }
   return items;
 }
@@ -354,7 +361,7 @@ function buildResponsesInput(turns: number): Array<Record<string, unknown>> {
 function buildChatMessages(turns: number): Array<Record<string, unknown>> {
   const msgs: Array<Record<string, unknown>> = [
     { role: 'system', content: BIG_SLAB },
-    { role: 'user', content: 'Start the task. '.repeat(40) },
+    { role: 'user', content: `${OPENING_PROMPT_MARKER} `.repeat(40) },
   ];
   for (let i = 0; i < turns; i++) {
     const id = `call_${i}`;
@@ -364,7 +371,12 @@ function buildChatMessages(turns: number): Array<Record<string, unknown>> {
       tool_calls: [{ id, type: 'function', function: { name: 'read', arguments: `{"path":"f${i}"}` } }],
     });
     msgs.push({ role: 'tool', tool_call_id: id, content: `result ${i} `.repeat(50) });
-    msgs.push({ role: 'user', content: `Continue with ${i}. `.repeat(20) });
+    msgs.push({
+      role: 'user',
+      content: i === turns - 1
+        ? `${LIVE_PROMPT_MARKER} `.repeat(20)
+        : `Continue with ${i}. `.repeat(20),
+    });
   }
   return msgs;
 }
@@ -397,11 +409,14 @@ describe('transformOpenAIResponses — history collapse', () => {
       );
     });
     expect(historyItems).toHaveLength(1);
+    const serialized = JSON.stringify(out.input);
+    expect(serialized).not.toContain(OPENING_PROMPT_MARKER);
+    expect(serialized).toContain(LIVE_PROMPT_MARKER);
     // The recent tail is still raw text items (function_call / user), not collapsed.
     const lastUser = [...out.input].reverse().find(
       (item) => (item as { role?: string }).role === 'user',
     ) as { content?: string };
-    expect(typeof lastUser.content === 'string' && lastUser.content.includes('Continue with 19')).toBe(true);
+    expect(typeof lastUser.content === 'string' && lastUser.content.includes(LIVE_PROMPT_MARKER)).toBe(true);
   });
 
   it('produces a byte-stable history image sha across identical requests', async () => {
@@ -454,6 +469,9 @@ describe('transformOpenAIChatCompletions — history collapse', () => {
       );
     });
     expect(historyMsgs).toHaveLength(1);
+    const serialized = JSON.stringify(out.messages);
+    expect(serialized).not.toContain(OPENING_PROMPT_MARKER);
+    expect(serialized).toContain(LIVE_PROMPT_MARKER);
   });
 });
 
