@@ -285,6 +285,30 @@ describe('GPT savings split', () => {
     expect(row.session_saved_so_far_delta).toBe(4200); // "Saved"
   });
 
+  it('prices a GPT cold turn (cached_tokens=0) at the FULL text delta, not the 0.1× warm rate', async () => {
+    // Parity with the Anthropic cold-miss test: when OpenAI reports no cached
+    // tokens, the text counterfactual was cold too, so the whole text↔image
+    // delta is credited at 1.0× (not 0.1×). Under-pricing it here would HIDE a
+    // real win; over-pricing it on a warm turn would FABRICATE one — both wrong.
+    //   actual   = 10000 (no cache discount)
+    //   baseline = 10000 + (50000 - 8000)×1.0 = 52000
+    //   saved    = 42000
+    dash.update({
+      ...structuredClone(gptUpdate),
+      usage: { input_tokens: 10000, output_tokens: 200, cached_tokens: 0 },
+      info: { ...structuredClone(gptUpdate.info), firstUserSha8: 'gptcold' },
+    } as never);
+    const stats = (await dash.serveStats().json()) as StatsPayload;
+    expect(stats.actual_input_weighted).toBe(10000);
+    expect(stats.baseline_input_weighted).toBe(52000);
+    expect(stats.saved_input_tokens).toBe(42000);
+    const recent = (await dash.serveRecent().json()) as RecentPayload;
+    const row = recent.recent.at(-1)!;
+    expect(row.cache_read).toBe(0);
+    expect(row.baseline_input).toBe(52000);
+    expect(row.actual_input).toBe(10000);
+  });
+
   it('does not credit savings on an uncompressed GPT passthrough row', async () => {
     dash.update({
       ...structuredClone(gptUpdate),
