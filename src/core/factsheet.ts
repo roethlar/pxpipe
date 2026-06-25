@@ -31,14 +31,47 @@ const PATTERNS: readonly RegExp[] = [
 
 const MIN_LEN = 3;
 const MAX_LEN = 120;
-const MAX_TOKENS = 64; // budget cap per block — longest/most-specific kept first
+const MAX_TOKENS = 64; // budget cap per block — highest-priority tokens kept first
+// At most this many URL exemplars: URLs are long, structured, low OCR-risk, and usually
+// reconstructable, so they must never crowd out short zero-redundancy tokens.
+const MAX_URLS = 8;
+const MAX_SEEN = 2048; // defensive bound on distinct tokens entering substring-collapse
 const MAX_SCAN = 262_144; // defensive input bound; tool_results are already paged
 const MAX_CHUNK = 512; // whitespace-free chunks longer than this are blobs (base64, minified) — skip
 
+/** Budget priority by token SHAPE, not length — length is anti-correlated with
+ *  OCR-risk×consequence: a 70-char URL is structured and reconstructable, while a 7-char
+ *  hex SHA or a port has zero redundancy and fails silently when misread. So short opaque
+ *  identifiers outrank long URLs when the budget is tight. Pure + total → deterministic →
+ *  cache-stable. Tiers: 0 = protect always, 1 = paths/versions/misc, 2 = URLs (cap + last). */
+const SHAPE_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const SHAPE_HEX = /^(?=[0-9a-f]*\d)[0-9a-f]{7,40}$/; // git sha / opaque hex
+const SHAPE_CONST = /^[A-Z][A-Z0-9]{2,}(?:_[A-Z0-9]+)+$/; // CONST_IDS / env vars
+const SHAPE_FLAG = /^--?[A-Za-z][\w-]+$/; // CLI flag
+const SHAPE_NUM = /^\d[\d,_]*$|^\d+\.\d+$/; // port / large or separated number / decimal
+const SHAPE_URL = /^https?:\/\//;
+
+/** Lower tier = higher keep-priority. Pure function of the token → deterministic. */
+function priorityTier(tok: string): 0 | 1 | 2 {
+  if (
+    SHAPE_HEX.test(tok) ||
+    SHAPE_UUID.test(tok) ||
+    SHAPE_CONST.test(tok) ||
+    SHAPE_FLAG.test(tok) ||
+    SHAPE_NUM.test(tok)
+  ) {
+    return 0;
+  }
+  if (SHAPE_URL.test(tok)) return 2;
+  return 1;
+}
+
 /**
- * Extract deduped, precision-critical tokens from `text`, longest-first, with any token
- * that is a substring of a longer kept token dropped (so `/github.com` inside the full
- * URL, `lib/x.ts` inside `src/lib/x.ts`, etc. collapse to the most specific form).
+ * Extract deduped, precision-critical tokens from `text`. Substrings of a longer kept
+ * token are dropped (so `/github.com` inside the full URL, `lib/x.ts` inside
+ * `src/lib/x.ts`, etc. collapse to the most specific form); the 64-token budget is then
+ * filled by priority tier (see `priorityTier`) so short, high-consequence tokens are never
+ * evicted by long low-risk URLs.
  *
  * Every token class is whitespace-free, so we split on whitespace first and skip
  * blob-length chunks. That bounds each regex to a short chunk and keeps extraction
@@ -58,13 +91,28 @@ export function extractFactSheetTokens(text: string): string[] {
         if (tok.length >= MIN_LEN && tok.length <= MAX_LEN) seen.add(tok);
       }
     }
+    if (seen.size >= MAX_SEEN) break;
   }
-  // Total order: length desc, then lexical — independent of Set iteration / sort stability.
+  // Phase 1 — substring collapse (length-desc): keep the most-specific form, folding e.g.
+  // a URL's path-portion into the full URL. Cross-tier on purpose. Total order (length,
+  // then lexical) so the result is independent of Set iteration order.
   const ordered = [...seen].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
-  const kept: string[] = [];
+  const specific: string[] = [];
   for (const t of ordered) {
+    if (!specific.some((k) => k.includes(t))) specific.push(t);
+  }
+  // Phase 2 — allocate the budget by priority tier (shape, not length) so short,
+  // zero-redundancy tokens (SHAs, ports, flags) can never be evicted by long low-risk URLs.
+  // URLs are kept only as a few exemplars. Comparator is total → byte-stable output.
+  const ranked = specific
+    .map((t) => ({ t, tier: priorityTier(t) }))
+    .sort((a, b) => a.tier - b.tier || b.t.length - a.t.length || (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
+  const kept: string[] = [];
+  let urls = 0;
+  for (const { t, tier } of ranked) {
     if (kept.length >= MAX_TOKENS) break;
-    if (!kept.some((k) => k.includes(t))) kept.push(t);
+    if (tier === 2 && urls++ >= MAX_URLS) continue;
+    kept.push(t);
   }
   return kept;
 }

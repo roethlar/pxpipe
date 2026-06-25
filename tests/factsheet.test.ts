@@ -43,4 +43,17 @@ describe('factsheet extraction', () => {
     const many = Array.from({ length: 200 }, (_, i) => `/dir${i}/file${i}.ts`).join(' ');
     expect(extractFactSheetTokens(many).length).toBeLessThanOrEqual(64);
   });
+
+  it('protects short high-consequence tokens from eviction by long URLs', () => {
+    // 80 long doc-URLs (well over the 64-token budget) plus a short commit SHA and a port —
+    // the exact shape that silently dropped the SHA a coding agent needed off the image.
+    const urls = Array.from({ length: 80 }, (_, i) =>
+      `https://platform.claude.com/docs/en/build-with-claude/page-${String(i).padStart(2, '0')}-guide.md`);
+    const text = [...urls.slice(0, 40), 'fix in commit 9d121ac on port 47821', ...urls.slice(40)].join('\n');
+    const toks = extractFactSheetTokens(text);
+    expect(toks).toContain('9d121ac');
+    expect(toks).toContain('47821');
+    expect(toks.length).toBeLessThanOrEqual(64);
+    expect(toks.filter((t) => t.startsWith('http')).length).toBeLessThanOrEqual(8);
+  });
 });
