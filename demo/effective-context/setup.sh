@@ -24,6 +24,10 @@ case "${1:-fable}" in
   *)      MODEL="$1" ;;
 esac
 # Compress scope = Fable (production default) + the chosen model (Fable-only by default).
+# Entries are model BASES: the proxy strips [variant] tags (e.g. [1m]) before matching
+# (see src/core/applicability.ts), so base "claude-fable-5" already covers the
+# claude-fable-5[1m] that a.sh/b.sh now request. Do NOT add [1m] here — the stripped
+# incoming base would no longer equal this entry and pxpipe would quietly stop compressing.
 MODELS="claude-fable-5"; [ "$MODEL" = "claude-fable-5" ] || MODELS="claude-fable-5,$MODEL"
 EC="demo/effective-context"
 

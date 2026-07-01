@@ -45,7 +45,6 @@ def run_one(inst, arm):
     env = dict(os.environ,
                ANTHROPIC_BASE_URL=ARMS[arm],
                CLAUDE_CONFIG_DIR=os.path.expanduser("~/.claude"),
-               CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="1",
                CCI_TIMEOUT=str(TIMEOUT - 30), CCI_QUIET_S="6")
     t0 = time.time()
     try:

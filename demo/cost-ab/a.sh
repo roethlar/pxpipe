@@ -18,10 +18,10 @@ fi
 PROMPT='This project has a failing test suite. Read SPEC.md and the source, then fix src/pricing.js so it follows SPEC.md exactly and the test suite (node --test) passes. Run the tests to confirm.'
 
 # Model: defaults to Fable 5; override with the first arg (friendly name or full id):
-#   ./a.sh        → claude-fable-5         ./a.sh opus → claude-opus-4-8[1m]
+#   ./a.sh        → claude-fable-5[1m]     ./a.sh opus → claude-opus-4-8[1m]
 #   ./a.sh sonnet → claude-sonnet-5[1m]    ./a.sh claude-... → used verbatim
 case "${1:-fable}" in
-  fable)  MODEL=claude-fable-5 ;;
+  fable)  MODEL=claude-fable-5[1m] ;;
   opus)   MODEL=claude-opus-4-8[1m] ;;
   sonnet) MODEL=claude-sonnet-5[1m] ;;
   haiku)  MODEL=claude-haiku-4-5 ;;
