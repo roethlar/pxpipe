@@ -25,3 +25,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | slice-3 | `2334b98` | Vouched runtime metadata tail (userEmail/currentDate)   | `[x]` accepted r3; fixes `ee992d3`, `c3e8744` |
 | slice-4 | `525cb5b` | Independent tool bucket, telemetry, host wiring         | `[x]` accepted r1, zero comments |
 | slice-5 | `162a00f` | Docs, migration note, eval harness                       | `[x]` accepted r3 at `fd548c8`; Claude guard confirmed |
+| local-package | `eab46e6` | Loopback-only macOS package and installer             | `[~]` pending Claude review |
