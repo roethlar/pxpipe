@@ -208,6 +208,39 @@ describe('provenance A/B collector evidence', () => {
     expect(() => collectRun(dir)).toThrow(/does not match metadata.requested_model/);
   });
 
+  it('does not collapse distinct dated model requests in event evidence', () => {
+    const dir = makeRun(completeAssessment);
+    const metadataPath = path.join(dir, 'metadata.json');
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    metadata.requested_model = 'claude-fable-5-20260701';
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), drainedJsonl([{
+      path: '/v1/messages',
+      model: 'claude-fable-5-20260708',
+    }]));
+
+    expect(() => collectRun(dir)).toThrow(/does not match metadata.requested_model/);
+  });
+
+  it('records a different served date as a fallback from an exact request', () => {
+    const dir = makeRun(completeAssessment);
+    const metadataPath = path.join(dir, 'metadata.json');
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    metadata.requested_model = 'claude-fable-5-20260701';
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), drainedJsonl([{
+      path: '/v1/messages',
+      model: 'claude-fable-5-20260701',
+    }]));
+    fs.writeFileSync(path.join(dir, 'turns', 'turn-1.json'), JSON.stringify({
+      modelUsage: { 'claude-fable-5-20260708': {} },
+    }));
+
+    const row = collectRun(dir);
+    expect(row.fallback_occurred).toBe(true);
+    expect(row.unexpected_model_switch).toBe(true);
+  });
+
   it('preserves a hyphenated workspace label from run metadata', () => {
     const original = makeRun(completeAssessment);
     const dir = path.join(

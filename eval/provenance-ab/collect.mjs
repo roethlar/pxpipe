@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { splitCompletedEvents } from './run-evidence.mjs';
+import { requestedModelMatches, splitCompletedEvents } from './run-evidence.mjs';
 
 const loadJsonl = (file) =>
   fs.existsSync(file)
@@ -95,19 +95,17 @@ export function collectRun(dir) {
   const requestedModels = uniq('model');
   const stopReasons = uniq('stop_reason');
   const safetyFlagged = events.some((row) => row.safety_flagged === true);
-  const modelBase = (model) => String(model).replace(/-\d{8}$/, '');
-  const requestedBase = modelBase(metadata.requested_model);
   if (events.length === 0 || requestedModels.length === 0) {
     throw new Error(`${dir}: at least one message event with a requested model is required`);
   }
-  if (requestedModels.some((model) => modelBase(model) !== requestedBase)) {
+  if (requestedModels.some((model) => !requestedModelMatches(metadata.requested_model, model))) {
     throw new Error(`${dir}: event requested model does not match metadata.requested_model`);
   }
   if (servedModels.size === 0) {
     throw new Error(`${dir}: a served model is required for complete run evidence`);
   }
   const fallbackOccurred = [...servedModels].some(
-    (model) => modelBase(model) !== requestedBase,
+    (model) => !requestedModelMatches(metadata.requested_model, model),
   );
 
   return {

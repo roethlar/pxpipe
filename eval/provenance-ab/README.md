@@ -44,6 +44,8 @@ the `claude -p` JSON `modelUsage`); `stop_reason`s and `safety_flagged`;
 unexpected served-model switch; task outcome; `context_mode`, project/tool/
 runtime dispositions, refs, and image counts; `cache_prefix_sha8` /
 `cache_boundary_kind`; input / cache-create / cache-read / output token sums.
+An undated requested alias may resolve to a dated instance of the same model;
+an explicitly dated request must be served by that exact dated identifier.
 
 **Never committed:** raw prompts, transcripts, rendered PNGs, or repository
 text. `runs/` is gitignored; only `matrix.jsonl` and a `SUMMARY.md` belong in

@@ -392,4 +392,14 @@ be written first.
 Guard proof bypassed the wait for completed events: both the state-level and
 host-level delayed-refusal tests failed, then passed after restoration.
 
-Findings 8–9 remain pending individual adjudication against the reviewed head.
+### Finding 8 — adopted and fixed
+
+The early-stop check and collector now share one asymmetric model matcher. An
+undated alias may resolve to a dated instance of the same model, but an
+explicitly dated request requires a byte-exact served and event model. Focused
+tests cover matching aliases, matching snapshots, different served dates, and
+different event dates.
+Guard proof restored symmetric date stripping: all three dated-model tests
+failed, then passed after the asymmetric matcher was restored.
+
+Finding 9 remains pending individual adjudication against the reviewed head.

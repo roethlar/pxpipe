@@ -3,9 +3,7 @@
 
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { splitCompletedEvents } from './run-evidence.mjs';
-
-const modelBase = (model) => String(model ?? '').replace(/-\d{8}$/, '');
+import { requestedModelMatches, splitCompletedEvents } from './run-evidence.mjs';
 
 const accusationPatterns = [
   /\bprompt[- ]injection\b/gi,
@@ -32,8 +30,7 @@ export function evaluateStop({ requestedModel, turn, events }) {
   if (servedModels.length === 0) {
     return { stop: true, code: 4, reason: 'served_model_missing' };
   }
-  const requestedBase = modelBase(requestedModel);
-  if (servedModels.some((model) => modelBase(model) !== requestedBase)) {
+  if (servedModels.some((model) => !requestedModelMatches(requestedModel, model))) {
     return { stop: true, code: 4, reason: 'unexpected_model_switch' };
   }
 

@@ -2,6 +2,13 @@
 
 export const DRAIN_RECORD_KIND = 'pxpipe_eval_drain_v1';
 
+export function requestedModelMatches(requestedModel, observedModel) {
+  const requested = String(requestedModel ?? '');
+  const observed = String(observedModel ?? '');
+  if (/-\d{8}$/.test(requested)) return observed === requested;
+  return observed.replace(/-\d{8}$/, '') === requested;
+}
+
 export function createDrainTracker({ writeRecord, timeoutMs = 60_000 }) {
   let acceptedRequests = 0;
   let completedEvents = 0;

@@ -10,6 +10,11 @@ export interface DrainTracker {
   drain(): Promise<DrainRecord>;
 }
 
+export function requestedModelMatches(
+  requestedModel: unknown,
+  observedModel: unknown,
+): boolean;
+
 export function createDrainTracker(options: {
   writeRecord: (record: unknown) => void;
   timeoutMs?: number;

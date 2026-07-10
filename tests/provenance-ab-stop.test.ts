@@ -24,6 +24,24 @@ describe('provenance A/B early-stop check', () => {
       .toEqual({ stop: false, code: 0, reason: 'clear' });
   });
 
+  it('requires an exact served model when the request pins a dated version', () => {
+    expect(evaluateStop({
+      requestedModel: 'claude-fable-5-20260701',
+      turn: cleanTurn,
+      events: cleanEvents,
+    }).reason).toBe('clear');
+
+    const switched = {
+      ...cleanTurn,
+      modelUsage: { 'claude-fable-5-20260708': {} },
+    };
+    expect(evaluateStop({
+      requestedModel: 'claude-fable-5-20260701',
+      turn: switched,
+      events: cleanEvents,
+    }).reason).toBe('unexpected_model_switch');
+  });
+
   it('stops on a safety event before another replicate', () => {
     expect(evaluateStop({
       requestedModel: 'claude-fable-5',
