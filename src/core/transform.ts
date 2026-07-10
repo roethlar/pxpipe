@@ -78,15 +78,17 @@ export interface TransformOptions {
   compress?: boolean;
   /** Compress recognized Claude Code project guidance in its captured user-context role. */
   compressProjectGuidance?: boolean;
-  /** Move tool descriptions into the same image (and stub the originals). */
+  /** Compress tool descriptions. Anthropic uses a separately vouched reference
+   *  plus digest-bound stubs; provider defaults differ. */
   compressTools?: boolean;
-  /** Compress large `<system-reminder>` text blocks in the first user message. */
+  /** Legacy compatibility option; current Anthropic orchestration does not
+   *  image generic reminders. */
   compressReminders?: boolean;
   /** Compress large tool_result text content across all user messages. */
   compressToolResults?: boolean;
   /** Don't compress if total compressible chars below this. */
   minCompressChars?: number;
-  /** Per-block threshold for compressReminders (chars). */
+  /** Legacy compatibility threshold; unused by current Anthropic orchestration. */
   minReminderChars?: number;
   /** Per-block threshold for compressToolResults (chars). */
   minToolResultChars?: number;

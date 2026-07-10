@@ -363,4 +363,11 @@ that the exactly recognized `userEmail` / `currentDate` suffix leaves the
 opening reminder for the final runtime block. Only the remaining siblings are
 described as byte-exact.
 
-Findings 5–9 remain pending individual adjudication against the reviewed head.
+### Finding 5 — adopted and fixed
+
+The public option comments now describe Anthropic tool descriptions as a
+separate vouched reference with digest-bound stubs. They also label generic
+reminder compression and its threshold as retained compatibility settings with
+no active Anthropic imaging pass.
+
+Findings 6–9 remain pending individual adjudication against the reviewed head.
