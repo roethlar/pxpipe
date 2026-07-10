@@ -42,10 +42,15 @@ fork using existing subscription logins and no API keys.
 
 - **ADOPTED** — the ambient-key risk is observable and the proposed correction
   is smaller and safer than relying on the current shell environment.
-- Open question 1: pending a local-only capture that records path/header
-  presence but no values and never forwards to a model.
+- Open question 1: resolved. A local-only Claude 2.1.206 subscription capture
+  recorded HEAD `/` followed only by bearer-authenticated POST
+  `/v1/messages?beta=true` attempts, with no `x-api-key` and no
+  `/v1/models` request. The fake server returned 401 and never forwarded a
+  request to a model.
 - Open question 2: resolved yes; the owner was told in the immediately
   preceding response that one diagnostic Codex prompt bypassed pxpipe through
   the normal subscription and that route was stopped.
 
+The accepted should-fix is implemented in the plan by requiring a constructed
+allowlisted environment for every child process; fresh r2 review is pending.
 No source code or live smoke call has been authorized.

@@ -82,10 +82,14 @@ Expected routing:
 
 Authorization and `ChatGPT-Account-ID` remain ordinary forwarded headers.
 pxpipe must not inspect, persist, replace, or print subscription tokens.
-`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, and
-`GROK_CODE_XAI_API_KEY` are absent from the relevant smoke child processes so
-the harnesses retain subscription authentication and pxpipe cannot override an
-incoming bearer.
+Spawn every proxy and harness child from an explicit allowlisted environment,
+never inherited `process.env` or the ambient shell. Retain only the minimum
+runtime fields (`HOME`, `PATH`, user/locale fields, and a smoke-local
+`TMPDIR`), then add the exact routing variables for that child. Set
+`PXPIPE_CONFIG=/dev/null` on proxy children and set `PXPIPE_MODELS` explicitly.
+Do not copy `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, or
+`GROK_CODE_XAI_API_KEY` into any child. This prevents an unrelated ambient key
+from replacing the subscription bearer that the harness forwards.
 
 ## Separate provider processes
 
@@ -224,4 +228,13 @@ authorize code, live calls, installation, or push.
 
 ### Review log
 
-- Pending.
+- r1 (2026-07-10, Claude Code 2.1.206 / Sonnet 5, reviewed
+  `e8be447b3aefe2da565847131d58b2b58f6b4b11`): **accepted**, zero blocking
+  findings, one should-fix finding, and two open questions. The finding was
+  adopted: every smoke child now receives a constructed allowlisted
+  environment rather than inheriting ambient API-key variables. A local-only
+  Claude subscription probe resolved the first question: it sent only HEAD `/`
+  and bearer-authenticated POST `/v1/messages?beta=true`, never `/v1/models`;
+  nothing was forwarded to a model. The owner had already been told about the
+  earlier out-of-band Codex diagnostic, resolving the second question. Fresh r2
+  review is pending.
