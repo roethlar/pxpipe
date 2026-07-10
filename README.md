@@ -67,6 +67,34 @@ Recent turns stay text; recognized project guidance, bulky tool results, and
 older history are imaged. The base system prompt and tool definitions stay
 native.
 
+### Install this fork locally on macOS
+
+The public `npx pxpipe-proxy` command installs the published release, not this
+fork. Build a private, loopback-only macOS service bundle instead:
+
+```bash
+git clone --branch fix/provenance-safe-compression --single-branch https://github.com/roethlar/pxpipe.git
+cd pxpipe
+npx -y pnpm@10.21.0 install --frozen-lockfile
+npx -y pnpm@10.21.0 run package:macos-local
+./build/macos-local/install.sh
+```
+
+The installer verifies the adjacent package and checksum, installs under the
+current user, and starts pxpipe at login on `127.0.0.1:47821`. It does not use
+Cloudflare, sudo, or the public package registry. Start Claude Code with:
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude
+```
+
+Rebuild the bundle and rerun its installer to update. Remove the service and
+installed program (while preserving logs and events) with:
+
+```bash
+./build/macos-local/install.sh --uninstall
+```
+
 ## The honest part
 
 - **It is lossy.** Exact 12-char hex strings in dense imaged content:

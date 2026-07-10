@@ -1,6 +1,6 @@
 {
   "name": "pxpipe-proxy",
-  "version": "0.8.0",
+  "version": "0.8.0-provenance-safe.1",
   "description": "Token-saving proxy for Claude Code: renders bulky context (system prompt, tool docs, old history) as dense PNGs to cut input tokens. Runs on Node and Cloudflare Workers.",
   "type": "module",
   "bin": {
@@ -50,6 +50,7 @@
     "dev:node": "tsx watch src/node.ts",
     "dev:worker": "wrangler dev",
     "deploy:worker": "wrangler deploy",
+    "package:macos-local": "node scripts/package-macos-local.mjs",
     "restart": "bash scripts/restart.sh",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
