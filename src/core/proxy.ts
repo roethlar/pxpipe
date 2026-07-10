@@ -513,18 +513,24 @@ function isOpenAIChatPath(pathname: string): boolean {
 }
 
 function isOpenAIResponsesPath(pathname: string): boolean {
-  return pathname === '/v1/responses'
+  return pathname === '/responses'
+    || pathname === '/v1/responses'
     || pathname === '/openai/v1/responses'
     || pathname === '/openai/responses';
 }
 
 function isCanonicalOpenAIPath(pathname: string, headers: Headers, hasOpenAIKey: boolean): boolean {
-  const isModelsPath = pathname === '/v1/models' || pathname.startsWith('/v1/models/');
+  const isModelsPath = pathname === '/models'
+    || pathname.startsWith('/models/')
+    || pathname === '/v1/models'
+    || pathname.startsWith('/v1/models/');
+  const isSettingsPath = pathname === '/v1/settings';
   const looksOpenAIAuth = hasOpenAIKey || (headers.has('authorization') && !headers.has('x-api-key'));
-  return pathname === '/v1/chat/completions'
+  return pathname === '/responses'
+    || pathname === '/v1/chat/completions'
     || pathname === '/v1/responses'
     || pathname.startsWith('/v1/responses/')
-    || (isModelsPath && looksOpenAIAuth);
+    || ((isModelsPath || isSettingsPath) && looksOpenAIAuth);
 }
 
 /** POST /v1/messages/count_tokens with the given body. Returns the upstream's

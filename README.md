@@ -95,6 +95,92 @@ installed program (while preserving logs and events) with:
 "$HOME/Dev/pxpipe-deploy/install.sh" --uninstall
 ```
 
+### Use Codex or Grok subscriptions locally
+
+No API key is required: both CLIs can forward their existing browser login.
+Sol and Grok remain opt-in, so `PXPIPE_MODELS` must be set on the **proxy**
+process. Codex and Grok need separate proxy processes because their identical
+request paths go to different subscription services. Leave the installed
+login service on `47821` alone.
+
+For a bounded run, start each child from a clean environment so an unrelated
+exported key cannot replace the subscription login. This helper passes only
+the reviewed non-secret fields; define it in each terminal:
+
+```bash
+PXPIPE_SMOKE_ROOT="$HOME/Library/Caches/pxpipe-subscription-smoke"
+PXPIPE_INSTALLED_CLI="$HOME/Library/Application Support/pxpipe/current/bin/cli.js"
+PXPIPE_TEST_MODELS="claude-fable-5,gpt-5.6-sol,grok-4.5"
+mkdir -p "$PXPIPE_SMOKE_ROOT/tmp"
+test ! -e "$PXPIPE_SMOKE_ROOT/no-config.json"
+
+pxpipe_clean_env() {
+  /usr/bin/env -i \
+    HOME="$HOME" PATH="$PATH" USER="${USER-}" LOGNAME="${LOGNAME-}" \
+    SHELL="${SHELL-}" LANG="${LANG-}" LC_ALL="${LC_ALL-}" TERM="${TERM-}" \
+    TMPDIR="$PXPIPE_SMOKE_ROOT/tmp" "$@"
+}
+```
+
+For Codex/Sol, run this proxy in one terminal:
+
+```bash
+pxpipe_clean_env \
+  HOST=127.0.0.1 PORT=47832 \
+  PXPIPE_CONFIG="$PXPIPE_SMOKE_ROOT/no-config.json" \
+  PXPIPE_MODELS="$PXPIPE_TEST_MODELS" \
+  PXPIPE_LOG="$PXPIPE_SMOKE_ROOT/codex-events.jsonl" \
+  ANTHROPIC_UPSTREAM=http://127.0.0.1:9 \
+  OPENAI_UPSTREAM=https://chatgpt.com/backend-api/codex \
+  node "$PXPIPE_INSTALLED_CLI"
+```
+
+Then, after defining the same helper in a second terminal, use Codex's stored
+ChatGPT login over HTTP (the local proxy does not accept Codex WebSockets):
+
+```bash
+pxpipe_clean_env codex -a never -m gpt-5.6-sol \
+  -c 'model_provider="pxpipe_local"' \
+  -c 'model_providers.pxpipe_local.name="pxpipe local"' \
+  -c 'model_providers.pxpipe_local.base_url="http://127.0.0.1:47832"' \
+  -c 'model_providers.pxpipe_local.wire_api="responses"' \
+  -c 'model_providers.pxpipe_local.requires_openai_auth=true' \
+  -c 'model_providers.pxpipe_local.supports_websockets=false' \
+  -c 'model_providers.pxpipe_local.request_max_retries=0' \
+  -c 'model_providers.pxpipe_local.stream_max_retries=0' \
+  exec --ignore-user-config --ephemeral --sandbox read-only \
+  'Reply exactly PXPIPE_SMOKE_OK; do not use tools.'
+```
+
+For Grok 4.5, run this proxy instead:
+
+```bash
+pxpipe_clean_env \
+  HOST=127.0.0.1 PORT=47833 \
+  PXPIPE_CONFIG="$PXPIPE_SMOKE_ROOT/no-config.json" \
+  PXPIPE_MODELS="$PXPIPE_TEST_MODELS" \
+  PXPIPE_LOG="$PXPIPE_SMOKE_ROOT/grok-events.jsonl" \
+  ANTHROPIC_UPSTREAM=http://127.0.0.1:9 \
+  OPENAI_UPSTREAM=https://cli-chat-proxy.grok.com \
+  node "$PXPIPE_INSTALLED_CLI"
+```
+
+Then point Grok's existing subscription session at it:
+
+```bash
+pxpipe_clean_env \
+  GROK_CLI_CHAT_PROXY_BASE_URL=http://127.0.0.1:47833/v1 \
+  grok -p 'Reply exactly PXPIPE_SMOKE_OK; do not use tools.' \
+  -m grok-4.5 --verbatim --output-format json --permission-mode plan \
+  --max-turns 1 --no-subagents --disable-web-search --no-memory
+```
+
+Stop the temporary proxy with Ctrl-C and remove
+`~/Library/Caches/pxpipe-subscription-smoke` when finished. These commands do
+not persist model opt-ins or modify either harness's login/configuration. The
+Grok JSON includes a `sessionId`; remove that bounded smoke session with
+`grok sessions delete <sessionId>`.
+
 ## The honest part
 
 - **It is lossy.** Exact 12-char hex strings in dense imaged content:

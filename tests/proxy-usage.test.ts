@@ -318,6 +318,66 @@ describe('proxy usage extraction', () => {
     expect(captured?.info?.firstUserSha8).toMatch(/^[0-9a-f]{8}$/);
   });
 
+  it('transforms plain /responses for subscription-authenticated Sol and routes it to OpenAI', async () => {
+    const upstreamRequests: Request[] = [];
+    const restore = mockUpstream(async (req) => {
+      upstreamRequests.push(req.clone());
+      return new Response(
+        JSON.stringify({
+          id: 'resp_subscription',
+          object: 'response',
+          output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'hello' }] }],
+          usage: { input_tokens: 55, output_tokens: 7, total_tokens: 62 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+
+    let captured: ProxyEvent | undefined;
+    const proxy = createProxy({
+      upstream: 'http://anthropic.test',
+      openAIUpstream: 'http://chatgpt.test/backend-api/codex',
+      transform: { charsPerToken: 1, minCompressChars: 1 },
+      onRequest: (e) => {
+        captured = e;
+      },
+    });
+
+    const reqBody = JSON.stringify({
+      model: 'gpt-5.6-sol',
+      instructions: 'System instruction. '.repeat(900),
+      input: [{ role: 'user', content: 'hi' }],
+    });
+
+    const res = await proxy(
+      new Request('http://localhost/responses?trace=subscription', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer fake-subscription-token',
+          'chatgpt-account-id': 'acct_fake',
+        },
+        body: reqBody,
+      }),
+    );
+    await res.text();
+    await new Promise((r) => setTimeout(r, 20));
+    restore();
+
+    expect(upstreamRequests).toHaveLength(1);
+    expect(upstreamRequests[0]!.url).toBe(
+      'http://chatgpt.test/backend-api/codex/responses?trace=subscription',
+    );
+    expect(upstreamRequests[0]!.headers.get('authorization')).toBe('Bearer fake-subscription-token');
+    expect(upstreamRequests[0]!.headers.get('chatgpt-account-id')).toBe('acct_fake');
+    const sent = JSON.parse(await upstreamRequests[0]!.text()) as any;
+    const firstUser = sent.input.find((m: any) => m.role === 'user');
+    expect(firstUser.content[0].type).toBe('input_image');
+    expect(captured?.model).toBe('gpt-5.6-sol');
+    expect(captured?.info?.compressed).toBe(true);
+    expect(captured?.info?.imageCount ?? 0).toBeGreaterThan(0);
+  });
+
   it('extracts usage tokens from an SSE stream (message_start event)', async () => {
     const sseBody =
       'event: message_start\n' +

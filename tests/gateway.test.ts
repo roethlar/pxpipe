@@ -171,6 +171,101 @@ describe('gateway end-to-end routing (stubbed fetch)', () => {
   });
 });
 
+describe('direct OpenAI-compatible routing (stubbed fetch)', () => {
+  const proxy = () =>
+    createProxy({
+      upstream: 'http://anthropic.test',
+      openAIUpstream: 'http://openai.test',
+    });
+
+  it('routes plain /responses to OpenAI and preserves its query and subscription headers', async () => {
+    const cap: { url?: string; headers?: Headers } = {};
+    stubFetch(cap);
+
+    await proxy()(
+      new Request('http://localhost/responses?trace=plain', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer fake-subscription-token',
+          'chatgpt-account-id': 'acct_fake',
+        },
+        body: JSON.stringify({ model: 'gpt-not-enabled', input: 'hi' }),
+      }),
+    );
+
+    expect(cap.url).toBe('http://openai.test/responses?trace=plain');
+    expect(cap.headers?.get('authorization')).toBe('Bearer fake-subscription-token');
+    expect(cap.headers?.get('chatgpt-account-id')).toBe('acct_fake');
+  });
+
+  it.each([
+    '/models?client_version=0.144.1',
+    '/models/gpt-5.6-sol?view=full',
+  ])('routes authenticated %s to OpenAI unchanged', async (path) => {
+    const cap: { url?: string; headers?: Headers } = {};
+    stubFetch(cap);
+
+    await proxy()(
+      new Request('http://localhost' + path, {
+        headers: {
+          authorization: 'Bearer fake-subscription-token',
+          'chatgpt-account-id': 'acct_fake',
+        },
+      }),
+    );
+
+    expect(cap.url).toBe('http://openai.test' + path);
+    expect(cap.headers?.get('authorization')).toBe('Bearer fake-subscription-token');
+    expect(cap.headers?.get('chatgpt-account-id')).toBe('acct_fake');
+  });
+
+  it.each([
+    ['/models', {}],
+    ['/models?client_version=0.144.1', { 'chatgpt-account-id': 'acct_fake' }],
+    ['/models/gpt-5.6-sol', { 'x-api-key': 'fake-anthropic-key' }],
+  ])('keeps unauthenticated or Anthropic-authenticated %s on the generic upstream', async (path, headers) => {
+    const cap: { url?: string; headers?: Headers } = {};
+    stubFetch(cap);
+
+    await proxy()(new Request('http://localhost' + path, { headers }));
+
+    expect(cap.url).toBe('http://anthropic.test' + path);
+  });
+
+  it('routes authenticated exact /v1/settings to OpenAI and preserves its query and headers', async () => {
+    const cap: { url?: string; headers?: Headers } = {};
+    stubFetch(cap);
+
+    await proxy()(
+      new Request('http://localhost/v1/settings?client=grok', {
+        headers: {
+          authorization: 'Bearer fake-subscription-token',
+          'x-client-version': '0.2.93',
+        },
+      }),
+    );
+
+    expect(cap.url).toBe('http://openai.test/v1/settings?client=grok');
+    expect(cap.headers?.get('authorization')).toBe('Bearer fake-subscription-token');
+    expect(cap.headers?.get('x-client-version')).toBe('0.2.93');
+  });
+
+  it.each([
+    ['/v1/settings', {}],
+    ['/v1/settings/', { authorization: 'Bearer fake-subscription-token' }],
+    ['/v1/settings/child', { authorization: 'Bearer fake-subscription-token' }],
+    ['/v1/settingsish', { authorization: 'Bearer fake-subscription-token' }],
+  ])('keeps non-matching settings route %s on the generic upstream', async (path, headers) => {
+    const cap: { url?: string; headers?: Headers } = {};
+    stubFetch(cap);
+
+    await proxy()(new Request('http://localhost' + path, { headers }));
+
+    expect(cap.url).toBe('http://anthropic.test' + path);
+  });
+});
+
 describe('provider-prefixed passthrough routing', () => {
   it('forwards non-Anthropic provider prefixes to the generic upstream', async () => {
     const cap: { url?: string; headers?: Headers } = {};
