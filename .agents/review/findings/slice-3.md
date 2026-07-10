@@ -81,3 +81,20 @@ headings now fall back to native — never dropped or elevated. Guard test red
 before/green after; 751 tests, typecheck, build all clean. Focused r2
 re-review dispatched on the fix; slice-1's delegated closure rides on the
 same verdict (its findings were fixed by this slice's code).
+
+- r2 (2026-07-10 ~09:35 UTC, codex-cli 0.144.1, reviewed SHA
+  `ee992d3be0eda714dbd688ea16185b9f5afc0b0c`, base `38a08ba`): **reopened**,
+  `guard_confirmed: true`. Reviewer verified the r1 closure (guard red
+  against parent, 29/29 restored; its own repro fails closed) and confirmed
+  slice-1's delegated closures (impossible-date and LF unknown-sibling both
+  guarded at head). Its adversarial probing found one residual evasion —
+  verbatim: "src/core/anthropic-context.ts:239 — A CRLF-terminated
+  `# futureSibling` is captured as `futureSibling\r`, bypassing the
+  lowerCamel check. The r1-shaped probe still produced projectGuidance/
+  runtime partitions, and the transform removed the unknown bytes from
+  native output. Normalize CRLF and add a regression guard."
+- Adjudication: **accepted** — CRLF repo files embed verbatim in the
+  LF-framed bundle, so mixed EOLs are realistic; LF/CRLF must behave
+  identically. Fixed in commit `c3e8744` (strip trailing `\r` from the H1
+  capture before the lowerCamel test). Guard red before/green after;
+  752 tests, typecheck, build all clean. r3 dispatched.
