@@ -191,4 +191,13 @@ which retain their own checks even when an unknown opening stays native. The
 existing unknown-opening/history test and documentation checks cover the
 described behavior.
 
-Findings 5–14 remain pending individual adjudication against the merged head.
+### Finding 5 — adopted and fixed
+
+The final-wire diagram now follows the implemented manifest order: project,
+optional tool reference, then runtime. It also names both opening-carrier
+changes: the project span becomes a reference and the recognized runtime
+suffix moves to the final data-only block. This is a documentation correction;
+the existing project, tool-reference, and runtime-tail tests verify the three
+implemented passes without adding a test that would already pass unchanged.
+
+Findings 6–14 remain pending individual adjudication against the merged head.

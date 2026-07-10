@@ -68,14 +68,15 @@ system:
   <pxpipe_project_guidance_manifest version="1">   ← ref, page count, exact
     ref / source / position / priority / rendering    position + boundary
   </pxpipe_project_guidance_manifest>
-  <pxpipe_runtime_context_manifest version="1">    ← only when runtime moved
   <pxpipe_tool_reference_manifest version="1">     ← only in experimental tool mode
+  <pxpipe_runtime_context_manifest version="1">    ← only when runtime moved
 
 messages[0] (user):
   image ×N        ← PROJECT GUIDANCE · ref <id> · page i/N (inert labels)
   text            ← "[End of rendered project guidance ref=<id>]" boundary
-  text            ← the opening reminder, byte-exact except the claudeMd span,
-                     which becomes an inert placeholder naming the ref
+  text            ← the opening reminder: the claudeMd span becomes an inert
+                     ref placeholder, and the exact userEmail/currentDate
+                     suffix moves to the final data-only block
   text            ← the caller's live prompt, byte-exact, still owning its
                      original cache_control marker
 ...
