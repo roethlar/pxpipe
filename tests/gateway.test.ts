@@ -246,6 +246,35 @@ describe('direct OpenAI-compatible routing (stubbed fetch)', () => {
     expect(cap.url).toBe('http://anthropic.test' + path);
   });
 
+  it.each([
+    ['/v1/models?client_version=0.2.93', 'GET', undefined],
+    [
+      '/v1/responses?trace=grok',
+      'POST',
+      JSON.stringify({ model: 'grok-not-enabled', input: 'hi' }),
+    ],
+  ])('routes authenticated Grok %s to its configured upstream unchanged', async (path, method, body) => {
+    const cap: { url?: string } = {};
+    stubFetch(cap);
+    const grokProxy = createProxy({
+      upstream: 'http://anthropic.test',
+      openAIUpstream: 'https://cli-chat-proxy.test',
+    });
+
+    await grokProxy(
+      new Request('http://localhost' + path, {
+        method,
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer fake-subscription-token',
+        },
+        body,
+      }),
+    );
+
+    expect(cap.url).toBe('https://cli-chat-proxy.test' + path);
+  });
+
   it('routes authenticated exact /v1/settings to OpenAI and preserves its query and headers', async () => {
     const cap: { url?: string; headers?: Headers } = {};
     stubFetch(cap);
