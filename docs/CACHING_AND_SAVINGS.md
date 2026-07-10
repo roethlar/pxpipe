@@ -48,11 +48,14 @@ The transformed request shape is:
 system:
   ...original native system blocks, byte-exact, markers untouched...
   <pxpipe_project_guidance_manifest>  ← vouches for the leading pages
+  <pxpipe_runtime_context_manifest>   ← vouches for the moved runtime tail
 
 messages[0] user:
   image block ×N                      ← PROJECT GUIDANCE pages, no markers
   [End of rendered project guidance ref=…]
-  opening reminder (claudeMd span → inert placeholder; siblings verbatim)
+  opening reminder (claudeMd span → inert placeholder;
+                    recognized userEmail/currentDate suffix → runtime tail;
+                    all other siblings verbatim)
   live prompt + caller's own cache_control   ← unmoved
   ...
 messages[last] user:

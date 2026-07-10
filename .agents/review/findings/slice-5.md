@@ -356,4 +356,11 @@ behind the project boundary from native or uncaptured `<env>` bytes that remain
 in `system`. It promises a stable project digest only when native-system prefix
 bytes are unchanged and explicitly records the cache miss when those bytes vary.
 
-Findings 4–9 remain pending individual adjudication against the reviewed head.
+### Finding 4 — adopted and fixed
+
+The cache-shape diagram now includes the native runtime manifest and states
+that the exactly recognized `userEmail` / `currentDate` suffix leaves the
+opening reminder for the final runtime block. Only the remaining siblings are
+described as byte-exact.
+
+Findings 5–9 remain pending individual adjudication against the reviewed head.
