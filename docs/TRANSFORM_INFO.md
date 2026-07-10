@@ -208,9 +208,10 @@ The transform emits SHA-256-prefixed fingerprints (first 8 hex chars) on
 - **`systemSha8`** — the older static-system fingerprint. Consumers use its
   persisted `system_sha8` form only when a historical row lacks
   `cache_prefix_sha8`.
-- **`historyImageSha`** — hash of collapsed-history image bytes; located via
-  the synthetic history marker, not an index-0 assumption. Diagnoses that one
-  component's stability; not whole-prefix identity.
+- **`historyImageSha`** — hash of the collapsed-history images' concatenated
+  base64 payload strings in wire order; located via the synthetic history
+  marker, not an index-0 assumption. Diagnoses that one component's stability,
+  not whole-prefix identity.
 - **`claudeMdSha8`** — hash of the exact recognized project-guidance segment.
   Buckets requests by project even when cwd isn't visible.
 - **`firstUserSha8`** — hash of the first *live* user text after the

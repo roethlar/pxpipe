@@ -208,4 +208,11 @@ option is not read by a generic imaging pass. Source search confirms no
 orchestration use, and the existing `compressReminders: true` fail-closed test
 continues to pin the safe behavior.
 
-Findings 7–14 remain pending individual adjudication against the merged head.
+### Finding 7 — adopted and fixed
+
+`historyImageSha` is now documented as the hash of concatenated base64 image
+payload strings in wire order, matching the implementation and the existing
+cache-stability assertion. It is no longer described as a hash of decoded PNG
+bytes.
+
+Findings 8–14 remain pending individual adjudication against the merged head.
