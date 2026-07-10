@@ -169,12 +169,21 @@ When a recognized project-guidance segment passes its own profitability gate:
    treat rendered pages as session operating instructions.
 6. Prepend the pages and a deterministic end marker before the caller's original
    first-user content. The caller's content remains byte-for-byte and block-order
-   intact after that boundary.
+   intact after that boundary. Define the marker once as an exported constant/helper
+   in `src/core/anthropic-context.ts`; `transform.ts` and `history.ts` must consume
+   that shared definition rather than matching independent string literals.
 
 The manifest, image labels, page count, reference, and boundary form one contract.
 The system manifest—not the label inside a user-role image—vouches for it. The
 binding is positional as well as referential: user-supplied later images or copied
 identifiers are outside the vouched-for leading range.
+
+Every current rendered-boundary consumer must migrate in the same slice: emission,
+anchor relocation, cache-prefix digesting, typed-user-text extraction, and protected
+head demotion. This closes the existing three-way literal coupling between
+`transform.ts`, `history.ts`, and the rendered marker; a marker format change cannot
+silently make the history compressor treat trusted leading pages as ordinary stale
+user content.
 
 The project gate accounts for:
 
@@ -307,7 +316,7 @@ pass, and round-trip tests prove non-selected content and metadata are byte-exac
 
 Files:
 
-- Modify `src/core/transform.ts`.
+- Modify `src/core/transform.ts` and `src/core/history.ts`.
 - Add `tests/anthropic-role-integrity.test.ts`.
 - Update relevant assertions in `tests/render.test.ts`,
   `tests/design-behavior-e2e.test.ts`, `tests/history.test.ts`, and
@@ -317,6 +326,8 @@ Deliverables:
 
 - Native system manifest and inert project-page labels.
 - Deterministic reference/page-count/position binding.
+- One exported boundary constant/helper used by every emitter and detector in
+  `transform.ts` and `history.ts`; no duplicated marker literal remains.
 - Project-only profitability gate including manifest overhead.
 - Original first-user content remains verbatim after the exact boundary.
 - Base/unknown system content stays native.
@@ -324,9 +335,10 @@ Deliverables:
 - Gate/render failure restores the original request region.
 
 Guard proof: against the legacy transform, the role-integrity tests must fail
-because static runtime text leaves `system`, no native manifest exists, and project
-pages are mixed with tool docs. Restore the implementation and prove focused plus
-full suites green.
+because static runtime text leaves `system`, no native manifest exists, project
+pages are mixed with tool docs, and boundary consumers are independently coupled to
+the old literal. Restore the implementation and prove focused plus full suites
+green, including a history-collapse case using the new shared marker.
 
 ### Slice 3 — Narrow, vouched-for runtime metadata tail
 
@@ -416,7 +428,8 @@ Tests must prove at least:
 14. Project gate math includes manifest overhead and is unaffected by tool size.
 15. A project gate miss does not suppress reminder, tool-result, or history
     compression.
-16. History collapse cannot absorb or detach the role-bound leading blocks.
+16. History collapse cannot absorb or detach the role-bound leading blocks, and all
+    boundary emitters/detectors use the one shared marker definition.
 17. Existing OpenAI behavior is unchanged.
 18. Telemetry omits source text and remains compatible with older rows.
 
@@ -551,5 +564,12 @@ does not authorize implementation.
 
 ### Review log
 
-- Pending initial Claude review.
-
+- Pre-r1 dispatch (2026-07-10, Claude Code 2.1.205 / Sonnet 5): no verdict;
+  bounded read pass hit `max_turns=30` and was discarded fail-closed.
+- r1 (2026-07-10, Claude Code 2.1.205 / Sonnet 5, reviewed SHA `b6352af`):
+  **accepted**, zero must-fix findings, one MEDIUM should-fix finding. Claude
+  confirmed the current transform, dynamic-tag, tool-default, and cache-test claims.
+  Finding adopted: the rendered-context boundary was coupled through independent
+  literals in `transform.ts` and `history.ts`; Slice 2 now owns both files, requires
+  one shared exported boundary definition, migrates every consumer, and names the
+  history-collapse guard. Revised plan awaits a fresh pinned-SHA review.
