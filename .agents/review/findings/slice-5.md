@@ -174,4 +174,12 @@ project-guidance pages. Tool-result and history images remain listed as
 separate compression paths without a manifest claim, matching the code. No
 additional product change is needed for this finding.
 
-Findings 3–14 remain pending individual adjudication against the merged head.
+### Finding 3 — adopted and fixed
+
+The README no longer says every non-imaged byte passes through unchanged. It
+now names the exact `userEmail` / `currentDate` move that can occur without an
+image, the final data-only block, and the native system note, while preserving
+the fail-closed statement for unknown opening shapes. The focused
+project-disabled runtime-tail test and documentation checks cover this claim.
+
+Findings 4–14 remain pending individual adjudication against the merged head.

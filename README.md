@@ -215,9 +215,12 @@ Three kinds of *input* blocks, each behind a profitability gate:
    native system manifest vouches for
    (`docs/TRANSFORM_INFO.md` has the trust model)
 
-Everything else passes through byte-identical: your messages, recent turns,
-the model's output (it is the response, the proxy never touches it), sparse
-prose, and anything too small to win. Models outside the allowlist pass
+Outside those three image paths, content stays text: your messages, recent
+turns, the model's output, sparse prose, and anything too small to win. One
+non-image rewrite remains for an exactly recognized Claude Code opening:
+`userEmail` and `currentDate` move from the opening host-context block to a
+final data-only block, with a native system note describing that position.
+Unknown opening shapes stay untouched. Models outside the allowlist pass
 through entirely — the built-in default scope is Fable 5 only. Sol, Opus 4.8,
 GPT 5.5, and Grok are deliberately opt-in via the dashboard or
 `PXPIPE_MODELS`, never silently imaged. Sol joined that list after both its
