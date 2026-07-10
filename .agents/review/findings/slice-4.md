@@ -1,7 +1,7 @@
 # slice-4: Independent tool bucket, per-bucket telemetry, host wiring
 
 **Severity**: N/A — implementation slice under review, not a defect finding
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `525cb5bce12c0089c657a8238278da5e523c3bf8` (base: parent `2334b98`)
 
@@ -60,4 +60,15 @@ In your own disposable worktree at the head SHA (`525cb5b`):
 - Live A/B matrix (plan §7) is separately owner-gated and has NOT run.
 
 ## Reviewer comments
-(pending)
+- Reviewer: codex-cli 0.144.1 (`codex exec --json --sandbox workspace-write`,
+  stdin prompt), disposable worktree `/private/tmp/pxpipe-review-slice4`.
+- Reviewed SHA: `525cb5bce12c0089c657a8238278da5e523c3bf8`;
+  base SHA: `2334b9840b961c2a031ecbb2131da3e08315da15`.
+- `guard_confirmed: true` — reviewer ran the revert→FAIL→restore→PASS proof
+  (18 focused assertions failed with `src/` reverted; full suite 748 green
+  restored at this SHA) plus typecheck/build and a static edge-case audit
+  (post-history tool-result ordering, shared recursive 100-image budget,
+  nested cache-marker accounting, ordinal JSON-framed tool digests).
+- Verdict: **accepted** (2026-07-10 ~10:45 UTC), zero comments.
+
+**Slice-4 review closed: accepted at r1.** Merge remains owner-gated.
