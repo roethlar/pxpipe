@@ -231,4 +231,12 @@ the exactly recognized opening email/date suffix and states that other native
 content remains in place and can change the provider cache key. The runtime
 fail-closed and native-env cache tests cover those cases.
 
-Findings 10–14 remain pending individual adjudication against the merged head.
+### Finding 10 — adopted and fixed
+
+The history guide no longer describes one stable system/tool/reminder/history
+slab being swapped wholesale. It now documents the native defaults and the
+separate project, history, tool-result, optional tool-reference, marker, and
+runtime paths. Focused role-integrity, tool-reference, and history tests cover
+those boundaries.
+
+Findings 11–14 remain pending individual adjudication against the merged head.

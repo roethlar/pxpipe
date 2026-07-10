@@ -188,22 +188,25 @@ collapse closed rather than being serialized as `<user>` history.
 
 ---
 
-## 6. This is just Claude Code's own model
+## 6. Separate buckets preserve caller structure
 
-Claude Code natively ships a big **stable prefix** (system prompt, tool docs,
-`<system-reminder>`s, older history) terminated by a `cache_control` breakpoint,
-followed by a thin per-turn tail. pxpipe preserves that exact shape. It only:
+pxpipe does not swap one monolithic stable prefix. Native system blocks, tool
+definitions, unknown reminders, and literal system-role attachments stay in
+their original role by default. Independent paths then handle only the content
+they can identify safely:
 
-1. Swaps the stable prefix's **representation** — verbose text → byte-stable image.
-2. **Keeps every caller mark on its own logical content** (preserve or
-   re-plant, never add) so the seam stays in the same logical place and
-   pxpipe spends none of the 4-breakpoint budget.
-3. Quantizes the history boundary so the imaged region's bytes change only at
-   chunk crossings, keeping the native byte-stability Claude Code relied on.
+1. Exact recognized project guidance may become leading labeled pages bound by
+   a native manifest and boundary.
+2. Profitable closed history and large tool results may become images under
+   their own structural checks.
+3. Tool-reference pages are experimental and off by default; enabling them
+   does not combine them with project pages.
+4. Caller cache markers stay on their logical content (preserve or re-plant,
+   never add), and history boundaries remain quantized so frozen history bytes
+   change only at chunk crossings.
 
-The one-time-ness isn't luck — it's enforced by keeping the marks pinned to
-their content and pushing all per-turn churn (including the relocated
-runtime-context tail) past them.
+The exact recognized email/date suffix may move to the final runtime-context
+tail. Other native system and host content remains where the caller placed it.
 
 ---
 
