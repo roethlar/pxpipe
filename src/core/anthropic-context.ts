@@ -239,7 +239,9 @@ function parseCapturedTail(text: string, projectStart: number): ParsedTail | und
   const h1Pattern = /\n# ([^\n]*)/g;
   let h1Match: RegExpExecArray | null;
   while ((h1Match = h1Pattern.exec(projectCandidate)) !== null) {
-    const heading = h1Match[1]!;
+    // CRLF payload lines capture a trailing \r (CRLF repo files embed verbatim in
+    // the LF-framed bundle); strip it so EOL style cannot bypass the refusal.
+    const heading = h1Match[1]!.replace(/\r$/, '');
     if (
       /^[a-z][A-Za-z0-9]*$/.test(heading) &&
       heading !== 'userEmail' &&

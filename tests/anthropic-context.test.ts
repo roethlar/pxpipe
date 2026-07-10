@@ -250,6 +250,16 @@ describe('Claude Code 2.1.205 Anthropic context partition', () => {
         '\n# futureSibling\nopaque synthetic data\n# Notes\nmore opaque data\n# currentDate\n',
       ),
     ],
+    [
+      // Reviewloop slice-3 r2 (codex): a CRLF-terminated heading captures as
+      // "futureSibling\r" and must not bypass the lowerCamel refusal — CRLF repo
+      // files embed verbatim inside the LF-framed bundle, so mixed EOLs are real.
+      'unknown CRLF-terminated lowerCamel sibling',
+      (text: string) => text.replace(
+        '\n# currentDate\n',
+        '\n# futureSibling\r\nopaque synthetic data\n# currentDate\n',
+      ),
+    ],
   ])('leaves %s framing unpartitioned', (_name, mutate) => {
     const req = makeCapturedRequest();
     const changed = withOpeningText(req, mutate(openingText(req)));
