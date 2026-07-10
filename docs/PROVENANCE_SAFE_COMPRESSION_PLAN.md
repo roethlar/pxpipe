@@ -1,19 +1,18 @@
 # Provenance-safe Anthropic compaction without losing project governance
 
-Status: **APPROVED 2026-07-10 — implementation in progress**.
+Status: **APPROVED 2026-07-10 — implementation complete and independently
+reviewed; live A/B and merge remain owner-gated**.
 
-Checkpoint (2026-07-10, post-r2 adjudication): Slices 1–5 are complete on
-`fix/provenance-safe-compression`, and the slice-by-slice synchronous review
-(reviewloop, codex-cli 0.144.1 as reviewer, guard proofs run independently in
-disposable worktrees) is recorded in `.agents/review/` on this branch. Slices
-1–4 are closed **accepted**. Slice 5 (docs + eval harness, `162a00f`) was
-reopened at r2; all nine r2 findings are individually adjudicated and fixed at
-`808c18e` — see `.agents/review/findings/slice-5.md`. The next action is a
-fresh pinned-head review. Local verification at `808c18e`: 793 tests +
-typecheck + build (build requires pnpm on PATH or
-`npx -y -p pnpm@10.21.0 npm run build`). The live Claude/Fable A/B matrix
-remains separately gated and has not been run or authorized; merge to main
-remains owner-gated.
+Checkpoint (2026-07-10, accepted implementation): Slices 1–5 are complete on
+`fix/provenance-safe-compression`. The slice-by-slice synchronous review and
+independent guard proofs are recorded in `.agents/review/` on this branch.
+Slices 1–4 were accepted by codex-cli. Claude Code 2.1.206 / Sonnet 5 accepted
+Slice 5 at `fd548c8` after independently reconfirming three representative
+guards; the verdict is recorded at `c6b9437`. Local verification at the
+reviewed head: 793 tests + typecheck + build. When pnpm is off PATH, use
+`npx -y pnpm@10.21.0 run build`. The plan section 7 Fable/Sonnet live A/B matrix has
+not been run or authorized, and merge to main remains owner-gated. No further
+agent-authorized implementation or review work remains.
 
 Plan base: `b1f5a01` (`origin/main`, 2026-07-09). The plan is intentionally
 isolated from the unrelated `fix/escape-atlas-missing-glyphs` branch.
