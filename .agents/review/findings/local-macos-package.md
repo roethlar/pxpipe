@@ -1,7 +1,7 @@
 # local-macos-package: Loopback-only macOS package and installer
 
 **Severity**: N/A — owner-approved implementation slice, not a defect finding
-**Status**: Verified
+**Status**: In progress
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `eab46e6aec752530f01dbbcc0ad8488854315f0a`
 
@@ -107,3 +107,28 @@ rollback, uninstall, no Cloudflare, and an unconditional `127.0.0.1` bind.
   7. "No LaunchAgent was installed on this machine, no push/commit/model call
      was made, and the worktree was restored to a clean aff8bf1 (build/ output
      removed) at the end of the review."
+
+## Owner correction — stable delivery directory
+
+The owner rejected generated deliverables under `/private` and required the
+complete bundle in `~/Dev/pxpipe-deploy`. The first accepted implementation's
+`build/macos-local` default was therefore reopened as a delivery defect.
+
+- Plan correction: `6acbd1f`.
+- Stable-output implementation: `23b3618`.
+- pnpm separator fix found by the real command: `ca598a0`.
+- `package:macos-local` now requires `--output`, rejects `/private` and source
+  worktree destinations before running the gate, resolves symlinks before
+  publishing, stages beside the destination, replaces only its own three
+  outputs, and preserves unrelated files in `pxpipe-deploy`.
+- README commands now build, install, and uninstall through
+  `~/Dev/pxpipe-deploy`.
+- Guard proof removed the `/private` rejection: the focused suite failed, then
+  passed after restoration.
+- Restored verification: 803 tests, typecheck, build, and the real pnpm
+  package command passed. `~/Dev/pxpipe-deploy/manifest.json` records source
+  `ca598a0`; no generated `build/macos-local` directory remains.
+
+### Reviewer comments — output correction r2
+
+Pending independent Claude review.
