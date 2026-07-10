@@ -215,4 +215,12 @@ payload strings in wire order, matching the implementation and the existing
 cache-stability assertion. It is no longer described as a hash of decoded PNG
 bytes.
 
-Findings 8–14 remain pending individual adjudication against the merged head.
+### Finding 8 — adopted and fixed
+
+The caching summary no longer says one caller marker is globally relocated.
+It now describes the two real cases: project pages sit before the untouched
+live-prompt marker, and history may re-plant one existing marker on its
+replacement. It also states the enforced invariant that marker count never
+increases. The cache-stability marker-ownership test covers this behavior.
+
+Findings 9–14 remain pending individual adjudication against the merged head.

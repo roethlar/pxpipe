@@ -213,7 +213,16 @@ The live dashboard and replay path both use `deriveBaselineWarmth`, `computeBase
 
 ## Summary
 
-pxpipe stays cache-aligned by replacing stable text context with stable image context and relocating the caller's existing cache marker to the end of the rewritten content. Savings are measured by comparing the real transformed request with a `/count_tokens` text counterfactual under the same observed cache state. If the actual request read cache, both sides are warm. If it did not, both sides are cold. Therefore the provider cache discount is not counted as pxpipe savings; the reported savings are only the token reduction from text to images.
+pxpipe stays cache-aligned by keeping transformed prefixes deterministic and
+preserving caller cache-marker ownership. Project pages and their boundary are
+inserted before the untouched live-prompt marker; history replacement may
+re-plant one existing marker on the replacement block, but the transform never
+adds or multiplies markers. Savings are measured by comparing the real
+transformed request with a `/count_tokens` text counterfactual under the same
+observed cache state. If the actual request read cache, both sides are warm. If
+it did not, both sides are cold. Therefore the provider cache discount is not
+counted as pxpipe savings; the reported savings are only the token reduction
+from text to images.
 
 ---
 
