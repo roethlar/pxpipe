@@ -370,4 +370,14 @@ separate vouched reference with digest-bound stubs. They also label generic
 reminder compression and its threshold as retained compatibility settings with
 no active Anthropic imaging pass.
 
-Findings 6–9 remain pending individual adjudication against the reviewed head.
+### Finding 6 — adopted and fixed
+
+`--prepare-only` now rebuilds and validates the selected source before exiting:
+the source must be a Git worktree with no untracked files and a readable built
+output fingerprint. The runner test now proves clean source succeeds, non-Git
+and untracked source fail, the intentional LEGACY-to-PROJECT label is the only
+relabel allowed, and no model process is called on any prepare-only path.
+Guard proof removed the pre-exit validation: the focused test failed because
+untracked source incorrectly returned success, then passed after restoration.
+
+Findings 7–9 remain pending individual adjudication against the reviewed head.

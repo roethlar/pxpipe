@@ -68,6 +68,7 @@ fi
 SOURCE_DIR="$(pwd)"
 [ "$VARIANT" = LEGACY ] && SOURCE_DIR="$LEGACY_DIR"
 ( cd "$SOURCE_DIR" && npm run build >/dev/null ) || exit 1
+node eval/provenance-ab/run-metadata.mjs --validate-source "$SOURCE_DIR" || exit 1
 [ "$PREPARE_ONLY" -eq 0 ] || exit 0
 
 for r in $(seq 1 "$REPLICATES"); do

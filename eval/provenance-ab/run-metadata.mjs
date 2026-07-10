@@ -28,7 +28,7 @@ function buildTreeSha256(distDir) {
   return hash.digest('hex');
 }
 
-export function buildRunMetadata({ variant, workspace, replicate, requestedModel, sourceDir }) {
+export function buildSourceReceipt(sourceDir) {
   const sourceCommit = git(sourceDir, ['rev-parse', 'HEAD']).trim();
   const status = git(sourceDir, ['status', '--porcelain']);
   const patch = git(sourceDir, ['diff', '--binary', 'HEAD']);
@@ -41,11 +41,6 @@ export function buildRunMetadata({ variant, workspace, replicate, requestedModel
     throw new Error(`${sourceDir}: built output is required; build the source worktree first`);
   }
   return {
-    schema_version: 1,
-    variant,
-    workspace,
-    replicate,
-    requested_model: requestedModel,
     source_commit: sourceCommit,
     source_dirty: status.length > 0,
     source_patch_sha256: patch.length > 0
@@ -53,6 +48,17 @@ export function buildRunMetadata({ variant, workspace, replicate, requestedModel
       : null,
     source_untracked: untracked,
     source_build_sha256: buildTreeSha256(distDir),
+  };
+}
+
+export function buildRunMetadata({ variant, workspace, replicate, requestedModel, sourceDir }) {
+  return {
+    schema_version: 1,
+    variant,
+    workspace,
+    replicate,
+    requested_model: requestedModel,
+    ...buildSourceReceipt(sourceDir),
     assessment: {
       project_guidance_legitimate: null,
       live_request_distinguishable: null,
@@ -69,6 +75,16 @@ function option(args, name) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
+  const validateSource = option(args, 'validate-source');
+  if (validateSource) {
+    try {
+      buildSourceReceipt(validateSource);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   const output = option(args, 'output');
   const variant = option(args, 'variant');
   const workspace = option(args, 'workspace');

@@ -173,7 +173,7 @@ describe('provenance A/B collector evidence', () => {
     })).toThrow(/untracked source files/);
   });
 
-  it('builds the selected patched source and allows only its PROJECT label', () => {
+  it('validates the selected source before prepare-only can succeed', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pxpipe-provenance-runner-'));
     roots.push(root);
     const fakeBin = path.join(root, 'bin');
@@ -181,6 +181,17 @@ describe('provenance A/B collector evidence', () => {
     const marker = path.join(root, 'built-from.txt');
     fs.mkdirSync(fakeBin);
     fs.mkdirSync(sourceDir);
+    fs.writeFileSync(path.join(sourceDir, '.gitignore'), 'dist/\n');
+    fs.writeFileSync(path.join(sourceDir, 'source.txt'), 'source\n');
+    execFileSync('git', ['-C', sourceDir, 'init', '-q']);
+    execFileSync('git', ['-C', sourceDir, 'add', '.']);
+    execFileSync('git', [
+      '-C', sourceDir,
+      '-c', 'user.email=ab@pxpipe',
+      '-c', 'user.name=ab',
+      '-c', 'commit.gpgSign=false',
+      'commit', '-qm', 'seed',
+    ]);
     const fakeNpm = path.join(fakeBin, 'npm');
     fs.writeFileSync(fakeNpm, [
       '#!/usr/bin/env bash',
@@ -191,10 +202,20 @@ describe('provenance A/B collector evidence', () => {
       '',
     ].join('\n'));
     fs.chmodSync(fakeNpm, 0o755);
+    const modelMarker = path.join(root, 'model-called.txt');
+    const fakeClaude = path.join(fakeBin, 'claude');
+    fs.writeFileSync(fakeClaude, [
+      '#!/usr/bin/env bash',
+      'touch "$PXPIPE_TEST_MODEL_MARKER"',
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeClaude, 0o755);
     const env = {
       ...process.env,
       PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
       PXPIPE_TEST_BUILD_MARKER: marker,
+      PXPIPE_TEST_MODEL_MARKER: modelMarker,
+      CLAUDE_BIN: fakeClaude,
     };
     const runner = path.join(process.cwd(), 'eval', 'provenance-ab', 'run-variant.sh');
 
@@ -207,6 +228,31 @@ describe('provenance A/B collector evidence', () => {
     ], { cwd: process.cwd(), env, encoding: 'utf8' });
     expect(accepted.status, accepted.stderr).toBe(0);
     expect(fs.readFileSync(marker, 'utf8').trim()).toBe(sourceDir);
+    expect(fs.existsSync(modelMarker)).toBe(false);
+
+    fs.writeFileSync(path.join(sourceDir, 'untracked.txt'), 'unknown source\n');
+    const untracked = spawnSync('bash', [
+      runner,
+      '--variant', 'LEGACY',
+      '--record-variant', 'PROJECT',
+      '--legacy-dir', sourceDir,
+      '--prepare-only',
+    ], { cwd: process.cwd(), env, encoding: 'utf8' });
+    expect(untracked.status).not.toBe(0);
+    expect(untracked.stderr).toMatch(/untracked source files/);
+    expect(fs.existsSync(modelMarker)).toBe(false);
+
+    const nonGitSource = path.join(root, 'non-git-source');
+    fs.mkdirSync(nonGitSource);
+    const nonGit = spawnSync('bash', [
+      runner,
+      '--variant', 'LEGACY',
+      '--record-variant', 'PROJECT',
+      '--legacy-dir', nonGitSource,
+      '--prepare-only',
+    ], { cwd: process.cwd(), env, encoding: 'utf8' });
+    expect(nonGit.status).not.toBe(0);
+    expect(fs.existsSync(modelMarker)).toBe(false);
 
     fs.rmSync(marker);
     const rejected = spawnSync('bash', [
@@ -218,5 +264,6 @@ describe('provenance A/B collector evidence', () => {
     expect(rejected.status).toBe(2);
     expect(rejected.stderr).toMatch(/may only relabel a patched LEGACY run as PROJECT/);
     expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.existsSync(modelMarker)).toBe(false);
   });
 });
