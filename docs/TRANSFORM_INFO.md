@@ -183,10 +183,11 @@ an unprofitable project render pass, and vice versa.
 
 ### 5d. Generic reminders (`compressReminders`, default off)
 
-The legacy whole-reminder imaging path still exists behind this flag for
-non-recognized `<system-reminder>` blocks, but it is off by default and the
-recognized project carrier can never fall through into it. Unknown reminders
-stay native.
+Unknown `<system-reminder>` blocks always stay native. The compatibility option
+is still accepted by public and host configuration surfaces, but the current
+orchestration has no generic reminder-imaging pass, so setting it to `true`
+does not image an unknown reminder. Recognized project guidance uses its
+separate exact path and can never fall through into generic reminder handling.
 
 ## 6. Determinism and fingerprints
 

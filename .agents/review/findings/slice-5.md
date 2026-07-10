@@ -200,4 +200,12 @@ suffix moves to the final data-only block. This is a documentation correction;
 the existing project, tool-reference, and runtime-tail tests verify the three
 implemented passes without adding a test that would already pass unchanged.
 
-Findings 6–14 remain pending individual adjudication against the merged head.
+### Finding 6 — adopted and fixed
+
+The transform guide no longer claims a legacy whole-reminder path exists. It
+states that unknown reminders remain native and that the retained compatibility
+option is not read by a generic imaging pass. Source search confirms no
+orchestration use, and the existing `compressReminders: true` fail-closed test
+continues to pin the safe behavior.
+
+Findings 7–14 remain pending individual adjudication against the merged head.
