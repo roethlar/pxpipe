@@ -240,6 +240,16 @@ describe('Claude Code 2.1.205 Anthropic context partition', () => {
         '\n# futureSibling\nopaque synthetic data\n# currentDate\n',
       ),
     ],
+    [
+      // Reviewloop slice-3 r1 (codex): a multiline unknown sibling whose value
+      // contains a later non-lowerCamel H1 must not evade the sibling guard by
+      // hiding behind that heading.
+      'unknown multiline sibling hiding behind a later H1',
+      (text: string) => text.replace(
+        '\n# currentDate\n',
+        '\n# futureSibling\nopaque synthetic data\n# Notes\nmore opaque data\n# currentDate\n',
+      ),
+    ],
   ])('leaves %s framing unpartitioned', (_name, mutate) => {
     const req = makeCapturedRequest();
     const changed = withOpeningText(req, mutate(openingText(req)));

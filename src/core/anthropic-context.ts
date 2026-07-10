@@ -218,31 +218,33 @@ function parseCapturedTail(text: string, projectStart: number): ParsedTail | und
     }
   }
 
-  // `attachedProject` is an optional 2.1.205 sibling but was not present in the
-  // wire capture. Its value is unescaped/multiline, so v1 refuses the shape rather
-  // than guessing an authority boundary. This may conservatively reject a payload
-  // with the same heading; it never drops or elevates those bytes.
-  if (body.slice(projectStart, currentAt).includes('\n# attachedProject\n')) return undefined;
-
   const priorCurrentAt = beforeCurrent.lastIndexOf(currentMarker);
   if (
     priorCurrentAt >= 0 &&
     isExactCapturedDate(beforeCurrent.slice(priorCurrentAt + currentMarker.length))
   ) return undefined;
 
-  // Captured sibling keys use lowerCamelCase. If the last H1 before the exact
-  // runtime suffix has that shape but is not one of the recognized fields above,
-  // the boundary is ambiguous: it may be a new host sibling. Refuse the entire
-  // tail/project partition rather than image unknown host data as governance.
+  // Captured sibling keys use lowerCamelCase. Any UNRECOGNIZED lowerCamelCase H1
+  // anywhere before the exact runtime suffix may be a new host sibling — and its
+  // unescaped multiline value can hide behind a later payload-style heading
+  // (reviewloop slice-3 r1), so checking only the last H1 is evadable. Refuse the
+  // entire tail/project partition rather than image unknown host data as
+  // governance. This subsumes the uncaptured optional `attachedProject` sibling
+  // and may conservatively reject a payload that uses such a heading; it never
+  // drops or elevates those bytes. The recognized keys stay payload-eligible
+  // because their exact-valid duplicates are refused separately above.
+  // The structural `# claudeMd` heading sits at position 0 of this slice with no
+  // preceding newline in-slice, so the \n-anchored pattern skips it by design.
   const projectCandidate = body.slice(projectStart, runtimeStart);
-  const lastHeadingAt = projectCandidate.lastIndexOf('\n# ');
-  if (lastHeadingAt >= 0) {
-    const headingStart = lastHeadingAt + '\n# '.length;
-    const headingEnd = projectCandidate.indexOf('\n', headingStart);
-    const heading = headingEnd < 0
-      ? projectCandidate.slice(headingStart)
-      : projectCandidate.slice(headingStart, headingEnd);
-    if (/^[a-z][A-Za-z0-9]*$/.test(heading)) return undefined;
+  const h1Pattern = /\n# ([^\n]*)/g;
+  let h1Match: RegExpExecArray | null;
+  while ((h1Match = h1Pattern.exec(projectCandidate)) !== null) {
+    const heading = h1Match[1]!;
+    if (
+      /^[a-z][A-Za-z0-9]*$/.test(heading) &&
+      heading !== 'userEmail' &&
+      heading !== 'currentDate'
+    ) return undefined;
   }
 
   return {
