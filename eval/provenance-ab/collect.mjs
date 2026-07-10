@@ -68,8 +68,6 @@ function loadMetadata(dir) {
 
 export function collectRun(dir) {
   const name = path.basename(dir.replace(/\/+$/, ''));
-  // Kept for compatibility until the directory-name parser is retired.
-  const match = name.match(/^\d{8}-\d{6}-(.+)-([^-]+)-r(\d+)$/);
   const metadata = loadMetadata(dir);
   const events = loadJsonl(path.join(dir, 'events.jsonl')).filter(
     (row) => (row.path ?? '').includes('/v1/messages') && !(row.path ?? '').includes('count_tokens'),
@@ -108,10 +106,9 @@ export function collectRun(dir) {
 
   return {
     run: name,
-    // Finding 14 separately replaces these three directory-derived fields.
-    variant: match?.[1] ?? 'unknown',
-    workspace: match?.[2] ?? 'unknown',
-    replicate: match ? Number(match[3]) : undefined,
+    variant: metadata.variant,
+    workspace: metadata.workspace,
+    replicate: metadata.replicate,
     source_commit: metadata.source_commit,
     source_dirty: metadata.source_dirty === true,
     source_patch_sha256: metadata.source_patch_sha256 ?? null,

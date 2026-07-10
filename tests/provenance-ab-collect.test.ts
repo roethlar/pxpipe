@@ -100,6 +100,24 @@ describe('provenance A/B collector evidence', () => {
     expect(() => collectRun(dir)).toThrow(/does not match metadata.requested_model/);
   });
 
+  it('preserves a hyphenated workspace label from run metadata', () => {
+    const original = makeRun(completeAssessment);
+    const dir = path.join(
+      path.dirname(original),
+      '20260710-120000-PROJECT_RUNTIME-ai-rpg-engine-r1',
+    );
+    fs.renameSync(original, dir);
+    const metadataPath = path.join(dir, 'metadata.json');
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    metadata.workspace = 'ai-rpg-engine';
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+
+    const row = collectRun(dir);
+    expect(row.variant).toBe('PROJECT_RUNTIME');
+    expect(row.workspace).toBe('ai-rpg-engine');
+    expect(row.replicate).toBe(1);
+  });
+
   it('fingerprints the built proxy that a recorded source tree will execute', () => {
     const sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pxpipe-provenance-source-'));
     roots.push(sourceDir);

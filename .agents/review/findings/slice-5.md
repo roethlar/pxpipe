@@ -275,4 +275,12 @@ passed after restoration. A final reversal fingerprinted only the CLI entry
 instead of the complete built tree; the focused build-identity test failed,
 then passed after restoration.
 
-Finding 14 remains pending individual adjudication against the merged head.
+### Finding 14 — adopted and fixed
+
+The collector now takes variant, workspace, and replicate from the validated
+run metadata instead of trying to split a directory name on hyphens. A focused
+test uses the required `ai-rpg-engine` workspace label and preserves all three
+identifiers correctly. Guard proof restored the old directory parser: that
+focused test failed, then passed after the metadata fields were restored.
+
+All r1 findings have now been adjudicated individually against the merged head.
