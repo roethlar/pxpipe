@@ -2,17 +2,15 @@
 
 Status: **APPROVED 2026-07-10 — implementation in progress**.
 
-Checkpoint (2026-07-10, post-review): Slices 1–5 are complete on
-`fix/provenance-safe-compression`, and a slice-by-slice synchronous review
+Checkpoint (2026-07-10, post-r2 adjudication): Slices 1–5 are complete on
+`fix/provenance-safe-compression`, and the slice-by-slice synchronous review
 (reviewloop, codex-cli 0.144.1 as reviewer, guard proofs run independently in
 disposable worktrees) is recorded in `.agents/review/` on this branch. Slices
-1–4 are closed **accepted**; four review-driven fix commits landed
-(`371322d` copied-boundary inertness, `4dca949` mid-message marker fail-closed,
-`ee992d3` full-H1 sibling scan, `c3e8744` CRLF normalization). Slice 5
-(docs + eval harness, `162a00f`) is **reopened at r1 with 14 findings pending
-coder adjudication** — see `.agents/review/findings/slice-5.md`; that
-adjudication is the next action. Local verification at the review head:
-752 tests + typecheck + build (build requires pnpm on PATH or
+1–4 are closed **accepted**. Slice 5 (docs + eval harness, `162a00f`) was
+reopened at r2; all nine r2 findings are individually adjudicated and fixed at
+`808c18e` — see `.agents/review/findings/slice-5.md`. The next action is a
+fresh pinned-head review. Local verification at `808c18e`: 793 tests +
+typecheck + build (build requires pnpm on PATH or
 `npx -y -p pnpm@10.21.0 npm run build`). The live Claude/Fable A/B matrix
 remains separately gated and has not been run or authorized; merge to main
 remains owner-gated.
