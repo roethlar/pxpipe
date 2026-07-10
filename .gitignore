@@ -48,3 +48,7 @@ eval/corpus/
 
 # Bench artifacts (events.jsonl, PNG dumps, workspaces) — one dir per run
 bench/runs/
+
+# Provenance A/B run dirs hold real session transcripts + rendered output;
+# only the redacted matrix.jsonl / SUMMARY.md may be committed (plan §7).
+eval/provenance-ab/runs/

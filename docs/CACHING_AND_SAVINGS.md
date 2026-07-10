@@ -34,31 +34,33 @@ A stable prefix is cheap after it is cached, but a prefix that changes every tur
 
 ## Cache-Aligned Rewrite
 
-Claude Code sends a large stable prefix: system prompt, tool docs, reminders, and older history. It also sends a small per-turn tail: the current user message and dynamic runtime context.
+Claude Code sends a large stable prefix: project guidance in the opening user-context reminder, accumulated tool results, and older history. It also sends a small per-turn tail: the current user message and volatile runtime context.
 
-pxpipe rewrites only the bulky, cacheable parts into images. The dynamic parts stay as text so they do not pollute the image cache key.
+pxpipe rewrites only the bulky, provenance-recognized parts into images (see `docs/TRANSFORM_INFO.md` for the buckets and the native-manifest trust model). The volatile parts stay as text so they do not pollute the image cache key.
 
 The key invariant:
 
-> pxpipe does not add new cache-control markers. It relocates the caller's existing marker onto the last image block produced from the same logical content.
-
-That keeps the breakpoint at the end of the rewritten stable content. The provider then caches the image prefix exactly as it would have cached the text prefix, just with fewer input tokens under that cache entry.
+> pxpipe never adds a cache-control marker and never increases the marker count. Caller markers survive: a marker carried by compressed tool_result content moves onto the last image rendered from that same logical content, and history collapse re-plants the one unambiguous marker a collapsed message carried (multiple markers in one message fail that bucket closed).
 
 The transformed request shape is:
 
 ```text
 system:
-  billing line / dynamic context / other text-only system content
+  ...original native system blocks, byte-exact, markers untouched...
+  <pxpipe_project_guidance_manifest>  ← vouches for the leading pages
 
 messages[0] user:
-  image block
-  image block
-  image block + cache_control
-  [End of rendered context.]
-  original user content / live tail
+  image block ×N                      ← PROJECT GUIDANCE pages, no markers
+  [End of rendered project guidance ref=…]
+  opening reminder (claudeMd span → inert placeholder; siblings verbatim)
+  live prompt + caller's own cache_control   ← unmoved
+  ...
+messages[last] user:
+  ...original content...
+  PXPIPE RUNTIME CONTEXT block        ← volatile tail, after every marker
 ```
 
-Images must be placed in a user message because Anthropic does not accept images in the `system` field.
+The project pages land *before* the caller's existing live-prompt marker, so the provider caches the image prefix under the caller's own breakpoint — pxpipe spends none of the 4-breakpoint budget. Images must be placed in a user message because Anthropic does not accept images in the `system` field.
 
 ---
 

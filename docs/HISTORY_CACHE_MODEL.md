@@ -9,7 +9,7 @@ It's the conceptual companion to [`CACHING_AND_SAVINGS.md`](./CACHING_AND_SAVING
 which carries the pricing math. Where the two disagree, the **code wins**:
 
 - `src/core/history.ts` — `collapseHistory`, the quantized boundary, `blocksToText`
-- `src/core/transform.ts` — the splice, the cache-mark relocation, the gates
+- `src/core/transform.ts` — the splice, caller-marker preservation, the gates
 - `src/core/baseline.ts` — `CACHE_CREATE_RATE = 1.25`, `CACHE_READ_RATE = 0.1`
 
 ---
@@ -140,17 +140,20 @@ Everything above collapses into one rule:
 > **Byte-stable content goes *before* the cache mark; per-turn-volatile content
 > goes *after* it. "One-time" is defined relative to that mark.**
 
-pxpipe never *adds* a breakpoint — Task #21: it **relocates** the caller's
-existing `cache_control` marker onto the **last static image** produced from the
-content that marker covered (transform.ts; doc: "the marker rides the last
-image"). So the breakpoint lands exactly at the stable↔volatile seam:
+pxpipe never *adds* a breakpoint. Caller markers are **preserved in place or
+re-planted onto the same logical content**: the project pages ride *before*
+the caller's own live-prompt marker in the opening message, and history
+collapse re-plants the one unambiguous marker a collapsed message carried onto
+that chunk's last image (`messageCacheControls`; two markers in one message
+fail the bucket closed). So the breakpoint still lands exactly at the
+stable↔volatile seam:
 
 ```
-[ intro / static slab image(s) ]            ← stable
-[ last static image ] ← cache_control          ◄── the mark (relocated, not added)
+[ PROJECT GUIDANCE image(s) + boundary ]     ← stable, no markers of their own
+[ opening reminder + live prompt ] ← caller's cache_control, unmoved
 ─────────────── cache breakpoint ───────────────
-[ end-marker + dynamic <env> + billing line ]  ← per-turn, changes every turn
-[ history image, current user content ]        ← after the mark
+[ synthetic history message ]                ← re-planted caller marker, if the
+[ live tail, runtime-context tail ]            collapsed range carried one
 ```
 
 Two conditions make the burn one-time, and the layout arranges both:
@@ -166,15 +169,19 @@ re-keys **only** when the bytes at/before the mark genuinely change — i.e. the
 initial text→image flip and each chunk crossing. That's the one-time create;
 everything in between is a warm read.
 
-### Why the slab is protected
+### Why the leading project carrier is protected
 
-The leading slab-bearing user message is shielded from collapse via
-`protectedPrefix` (transform.ts: `slabAnchorIdx + 1`). If history collapse swept
-it in, `blocksToText` would reduce the system-prompt/tool-docs images to
-`[image]` placeholders and the slab's `cache_control` anchor would vanish — so
-every grid-crossing would invalidate the whole prefix. Keeping it out of the
-collapse range pins it at the front as the stable cache anchor and places the
-history image *after* it.
+The opening user message that carries the project pages, their shared
+boundary, and the reconstructed host reminder is shielded from collapse by
+`roleBoundProtectedPrefix` (history.ts): when the shared project-guidance
+boundary ref and the exact opening-carrier text are present, that message —
+plus any literal `role: "system"` attachments contiguously following it —
+never enters the collapse range. If collapse swept it in, `blocksToText`
+would reduce the project pages to `[image]` placeholders and detach the
+vouched-for leading range from its native manifest. A boundary-shaped marker
+with a different ref (or one copied into a later message) cannot expand the
+head; system-role messages inside a *later* collapse candidate fail that
+collapse closed rather than being serialized as `<user>` history.
 
 ---
 
@@ -185,13 +192,15 @@ Claude Code natively ships a big **stable prefix** (system prompt, tool docs,
 followed by a thin per-turn tail. pxpipe preserves that exact shape. It only:
 
 1. Swaps the stable prefix's **representation** — verbose text → byte-stable image.
-2. **Moves the mark with it** (relocate, not add) so the seam stays in the same
-   logical place and pxpipe spends none of the 4-breakpoint budget.
+2. **Keeps every caller mark on its own logical content** (preserve or
+   re-plant, never add) so the seam stays in the same logical place and
+   pxpipe spends none of the 4-breakpoint budget.
 3. Quantizes the history boundary so the imaged region's bytes change only at
    chunk crossings, keeping the native byte-stability Claude Code relied on.
 
-The one-time-ness isn't luck — it's enforced by anchoring the mark to the last
-stable image and pushing all per-turn churn past it.
+The one-time-ness isn't luck — it's enforced by keeping the marks pinned to
+their content and pushing all per-turn churn (including the relocated
+runtime-context tail) past them.
 
 ---
 
@@ -202,7 +211,7 @@ stable image and pushing all per-turn churn past it.
 | `keepTail`          |       4 | Most-recent turns always kept as text (live tail).            |
 | `minCollapsePrefix` |      10 | Don't bother collapsing fewer than this many turns.           |
 | `collapseChunk`     |      50 | Grid the boundary snaps to → byte-stable image between steps. |
-| `protectedPrefix`   |       0 | Leading messages never collapsed (set to slab anchor + 1).    |
+| `protectedPrefix`   |       0 | Leading messages never collapsed (the transform passes 0; the role-bound project carrier + contiguous system attachments extend it automatically). |
 | `cols`              |     100 | Soft-wrap column hint (history renders dense single-col).     |
 
 Related (in `TransformOptions`):
@@ -231,8 +240,8 @@ tool-closed point), so the imaged region's bytes stay identical for a whole
 `collapseChunk` window and the prefix reads warm every turn. New content ages
 into the image only at chunk crossings; each crossing costs a single one-time
 `cache_create`, gated by a symmetric burn term and an amortization horizon so it
-only fires when the warm reads pay it back. The whole thing works because the
-caller's `cache_control` mark is **relocated** (never added) onto the last stable
-image, putting every byte-stable thing before the seam and every per-turn-volatile
-thing after it — which is exactly the prefix-cache shape Claude Code already
-relies on.
+only fires when the warm reads pay it back. The whole thing works because every
+caller `cache_control` mark stays pinned to its own logical content (preserved
+in place, or re-planted onto the image rendered from it — never added), putting
+every byte-stable thing before the seam and every per-turn-volatile thing after
+it — which is exactly the prefix-cache shape Claude Code already relies on.

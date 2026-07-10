@@ -1,6 +1,6 @@
 # pxpipe
 
-**Cut Claude Code's input tokens by rendering bulky context as images — the same system prompt, tool docs, and history, in a fraction of the tokens.**
+**Cut Claude Code's input tokens by rendering bulky context as images — the same project guidance, tool output, and history, in a fraction of the tokens.**
 
 An image's token cost is fixed by its pixel dimensions, not by how much text
 is inside it. Dense content (code, JSON, tool output) packs ~3.1 chars per
@@ -16,11 +16,12 @@ measured per-request against a free `count_tokens` counterfactual in
 
 This is what the model sees instead of text:
 
-![example: a real `transformRequest` output: system prompt + tool docs reflowed into one dense 1573×1248 page, instruction banner on top, ↵ marking original newlines](https://raw.githubusercontent.com/teamchong/pxpipe/main/docs/assets/example-render.png)
+![example: a pxpipe render — ~48k chars of dense context reflowed into one 1573×1248 page, label banner on top, ↵ marking original newlines](https://raw.githubusercontent.com/teamchong/pxpipe/main/docs/assets/example-render.png)
 
-*~48k chars of system prompt + tool docs: ≈25k tokens as text, ≈2.7k image
-tokens as this page. Real pipeline output; the model reads renders like this
-at 100/100 (see benchmarks).*
+*~48k chars of dense context: ≈25k tokens as text, ≈2.7k image tokens as
+this page (render from a pre-0.9 pipeline; current pages carry inert
+`PROJECT GUIDANCE` labels instead of an instruction banner). The model reads
+renders like this at 100/100 (see benchmarks).*
 
 ## Demo
 
@@ -52,8 +53,9 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude  # point Claude Code at it
 Dashboard at <http://127.0.0.1:47821/>: tokens saved, every text→image
 conversion side by side, kill switch, live model chips. Responses stream
 normally — pxpipe compresses the *request* only, never the model's output.
-Recent turns stay text; the system prompt, tool docs, and older bulk history
-are imaged.
+Recent turns stay text; recognized project guidance, bulky tool results, and
+older history are imaged. The base system prompt and tool definitions stay
+native.
 
 ## The honest part
 
@@ -110,8 +112,10 @@ tool_result string ──► wrap at 1928px-wide columns ──► pack ~92,000 
 ```
 
 The proxy intercepts `/v1/messages`, rewrites eligible bulk into image
-blocks, splices them back cache-friendly (static prefix preserved, prompt
-caching keeps working), and forwards. A 1928×1928 image costs ≈4,761 vision
+blocks, splices them back cache-friendly (caller cache markers preserved —
+never added or multiplied — so prompt caching keeps working), and forwards.
+Who-supplied-what stays unambiguous: a native system manifest vouches for
+every rendered page, and unrecognized content stays native text. A 1928×1928 image costs ≈4,761 vision
 tokens and holds ≈92,000 chars, so text wins only above ~19 chars/token —
 Claude Code traffic runs ~1.91 (N=391). A per-request estimator decides;
 sparse prose stays text. Events log to `~/.pxpipe/events.jsonl`.
@@ -171,15 +175,21 @@ Three kinds of *input* blocks, each behind a profitability gate:
    ~6k chars of token-dense content
 2. older collapsed history: turns behind the live tail get re-rendered as
    image pages, recent turns always stay text
-3. the static system prompt + tool docs slab
+3. recognized repository project guidance (CLAUDE.md + imported AGENTS.md)
+   from Claude Code's opening context — rendered as labeled pages that a
+   native system manifest vouches for
+   (`docs/TRANSFORM_INFO.md` has the trust model)
 
 Everything else passes through byte-identical: your messages, recent turns,
-the model's output (it is the response, the proxy never touches it), sparse
-prose, and anything too small to win. Models outside the allowlist pass
-through entirely — the default scope is Fable 5 and GPT 5.6 only. Opus 4.8
-and GPT 5.5 read imaged content measurably worse (FINDINGS.md 2026-06-16),
-so they are deliberately opt-in via the dashboard or `PXPIPE_MODELS`, never
-silently imaged.
+the base system prompt, tool definitions (native JSON by default), unknown
+reminders, the model's output (it is the response, the proxy never touches
+it), sparse prose, and anything too small to win. Content is imaged only
+when an exact versioned recognizer identified it — unknown shapes fail
+closed to native text. Models outside the allowlist pass through entirely —
+the default scope is Fable 5 and GPT 5.6 only. Opus 4.8 and GPT 5.5 read
+imaged content measurably worse (FINDINGS.md 2026-06-16), so they are
+deliberately opt-in via the dashboard or `PXPIPE_MODELS`, never silently
+imaged.
 
 **Has it ever failed for real, outside the benchmarks?**
 Yes, once in weeks of daily use: the model recalled a person's name from

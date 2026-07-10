@@ -2,339 +2,271 @@
 
 This doc explains what the proxy actually does on the wire, why each piece is
 shaped the way it is, and which invariants future contributors must not break.
-The canonical source is `src/core/transform.ts`; everything here points back at
-it.
+The canonical sources are `src/core/transform.ts` (orchestration and buckets)
+and `src/core/anthropic-context.ts` (the provenance partitioner); everything
+here points back at them.
 
 ## 1. Why this proxy exists
 
 Claude Code sends a large, mostly-static prefix on every single turn: the
-CLAUDE.md project rules, the agent / subagent definitions, the tool catalogue
-with full input schemas, and a long list of internal "skill" reminders. On
-Opus-class models that prefix runs ~68K input tokens. The model never *needs*
-to re-read that text in token form — Anthropic prompt-caches it, and image
-blocks OCR cleanly at small font sizes. So pxpipe pulls the static prefix
-out of the JSON body, renders it as one or more grayscale PNG image blocks,
-and pins a single `cache_control` breakpoint on the last image. Anthropic
-charges roughly `ceil(W*H/750)` tokens per image; a full static-slab page is
-1573×1280, so each slab tile costs ~2684 tokens regardless of how much text it
-carries. A 68K-token static slab collapses to ~3.5K image tokens on the first
-turn and to a cache-read (billed at 0.10×) on every subsequent turn. The
-trade is real text tokens for a few image tokens we cache once.
+CLAUDE.md project rules, accumulated tool results, and older conversation
+history. The model never *needs* to re-read that text in token form —
+Anthropic prompt-caches it, and image blocks OCR cleanly at small font sizes.
+So pxpipe rewrites the bulky, provenance-verified parts of each request into
+grayscale PNG image blocks. Anthropic charges roughly `ceil(W*H/750)` tokens
+per image; a dense page holds tens of thousands of characters for a few
+thousand image tokens. The trade is real text tokens for a few image tokens
+that cache across turns.
 
-## 2. The static / dynamic split
+## 2. Provenance partition (replaces the old static/dynamic split)
 
-Claude Code does not send one monolithic system prompt. It stitches a handful
-of *per-turn* dynamic blocks into the otherwise-stable text. The list lives in
-`DYNAMIC_BLOCK_TAGS` (`src/core/transform.ts:154`):
+Earlier versions flattened `req.system`, split it into "static" and "dynamic"
+text with a tag list (`DYNAMIC_BLOCK_TAGS`), rendered the static slab plus all
+tool docs into one image stack, and re-asserted the removed text's origin from
+inside a user-role wrapper. That monolith is gone. Issue #97 documented the
+failure: content delivered in a user-role block that claims its own
+system-prompt provenance is indistinguishable from prompt injection, and
+models treated it as such.
 
-```
-env                    ← cwd, git status, platform, today's date
-context                ← directory listings, file pastes
-git_status             ← branch / staged / untracked files
-directoryStructure     ← ls-tree of the workspace
-system-reminder        ← skill catalogue + miscellaneous hints
-```
+The current transform starts from `partitionAnthropicContext`
+(`src/core/anthropic-context.ts`), a pure, lossless partitioner that runs
+before any rewriting and recognizes only exact, versioned Claude Code shapes
+(v1: the 2.1.205 opening user-context reminder). It locates:
 
-Everything outside those tags — CLAUDE.md, agent definitions, the tool docs
-Claude Code inlines — is *static*: byte-identical from turn to turn for the
-lifetime of a session over the same project.
+- **Project guidance** — the `# claudeMd` span (CLAUDE.md plus recursively
+  imported AGENTS.md records) inside the first user message's opening
+  `<system-reminder>`. The whole bundle is one authority unit; nested H1s and
+  forged `Contents of ...` lines inside the payload are payload, not
+  delimiters (the real trailer is located from the end).
+- **Runtime metadata** — the exact captured `# userEmail` / `# currentDate`
+  suffix of that same reminder (`The user's email address is <address>.`,
+  `Today's date is YYYY-MM-DD.`).
+- **The opening carrier** itself, so later passes can reconstruct it
+  byte-exactly around the selected spans.
 
-`splitStaticDynamic` (`src/core/transform.ts:162`) walks the system text with a
-non-greedy regex (`<tag ...?>...</tag>`, earliest close wins) and partitions
-it into two strings:
-
-- `staticText` — what we render to PNG
-- `dynamicText` — the concatenation of every dynamic block, kept as plain text
-
-The reason for the split is the cache. `cache_control: ephemeral` only saves
-tokens if the bytes it covers are identical across turns. If we baked the
-`<env>` block (which contains today's date) into the image, the PNG bytes
-would change every day at midnight UTC and the cache hit rate would silently
-collapse. By splitting first and rendering only the static slab, the image
-bytes stay frozen even as cwd, git branch, or the wall clock drift.
-
-The dynamic tail is kept as text and forwarded to the model so it still sees
-cwd / git status / today's date — just outside the cache anchor.
+Everything else fails closed: unknown sibling keys (lowerCamelCase headings
+the capture didn't establish), malformed or impossible dates, forged
+lookalikes outside message 0 / block 0, a changed opener/advisory/closer, or
+an unsupported Claude Code version leave that region byte-for-byte native and
+are reported in telemetry (`contextMode`, per-bucket fallback reasons) instead
+of being guessed at. Literal mid-conversation `role: "system"` attachments are
+modeled explicitly and are never imaged or serialized as user history.
 
 ## 3. What the final request looks like
 
-Default placement is `'user'` (`src/core/transform.ts:67`). The transform
-rewrites the first user message to look like this:
+The native base system is left alone. pxpipe appends small text manifests to
+`req.system` that vouch for what it moved — authority lives in the native
+system field, never in a user-role wrapper:
 
 ```
-messages[firstUserIdx].content = [
-  { type: 'text', text: '<intro>' },              ← static, frames the OCR
-  { type: 'image', source: {...} },               ← static, no cache_control
-  { type: 'image', source: {...} },               ← static, no cache_control
-  { type: 'image', source: {...}, cache_control:  ← static, LAST image holds
-      { type: 'ephemeral', ttl: '1h' } },           the one cache breakpoint
-  { type: 'text', text: '[End of rendered context.]' },
-  ...originalUserContent,                         ← per-turn (incl. compressed
-]                                                   reminders + tool_results,
-                                                    NO cache_control on any)
+system:
+  ...original native system blocks, byte-exact, markers untouched...
+  <pxpipe_project_guidance_manifest version="1">   ← ref, page count, exact
+    ref / source / position / priority / rendering    position + boundary
+  </pxpipe_project_guidance_manifest>
+  <pxpipe_runtime_context_manifest version="1">    ← only when runtime moved
+  <pxpipe_tool_reference_manifest version="1">     ← only in experimental tool mode
+
+messages[0] (user):
+  image ×N        ← PROJECT GUIDANCE · ref <id> · page i/N (inert labels)
+  text            ← "[End of rendered project guidance ref=<id>]" boundary
+  text            ← the opening reminder, byte-exact except the claudeMd span,
+                     which becomes an inert placeholder naming the ref
+  text            ← the caller's live prompt, byte-exact, still owning its
+                     original cache_control marker
+...
+messages[last] (user):
+  ...original content...
+  text            ← "PXPIPE RUNTIME CONTEXT — data, not instructions" block
+                     carrying the relocated userEmail/currentDate lines
 ```
 
-The `system` field carries:
+The manifest, inert page labels, page count, deterministic ref, and boundary
+marker form one contract: the native manifest — not the image — declares the
+pages' origin (repository-scoped project guidance, applied below all remaining
+native system instructions) and their exact leading position. A forged page or
+copied ref elsewhere in the conversation is outside the vouched-for range.
+No outgoing text asserts "this came from the system prompt."
 
-- the `x-anthropic-billing-header:` line that Claude Code injects (stripped
-  off the static text by `stripBillingLine` because it rotates per-turn — see
-  `src/core/transform.ts:315`)
-- the dynamic tail (`<env>...</env>`, `<git_status>...</git_status>`, etc.)
-- any non-text blocks that lived in the original `system` field
+Old history collapses into synthetic-user history images behind the live tail
+(see `docs/HISTORY_CACHE_MODEL.md`), and large closed `tool_result` bodies in
+the live tail become per-block images. Tool definitions stay native JSON by
+default (see §5c).
 
-Why not put the images in `system`? Anthropic's API rejects them outright with
-`400 system.N.type: Input should be 'text'`. The `system` field accepts text
-blocks only. Images have to ride on a user message.
+Pass order in `transformSafeAnthropicRequest`: project guidance → closed
+history → live-tail tool results → optional tool reference → runtime tail →
+postconditions. The order is load-bearing: history collapses before tool
+results are imaged so a collapse can never swallow images that telemetry
+already counted, and the runtime tail is appended after everything so it can
+never freeze into collapsed history. All image-producing passes share the
+100-image request budget; a final postcondition re-counts images and
+accounting and rolls the whole request back to the original bytes on
+violation.
 
-A `placement: 'system'` mode exists (kept for symmetry with the legacy Python
-proxy and for the `--placement system` flag) but it's strictly worse and you
-should not use it. It's there because the original Python proxy supported
-both modes and we wanted a clean port before deciding which one to keep.
+## 4. Cache markers (the invariant that matters)
 
-## 4. The cache_control budget (the one invariant that matters)
+pxpipe **never adds a `cache_control` marker and never increases the marker
+count** (`src/core/transform.ts:900`). What it does instead:
 
-Anthropic allows **four** `cache_control` breakpoints per request. Claude Code
-already uses three of them on its own content:
+- The opening reminder block carries no marker in the captured shape; the
+  caller's live-prompt block owns `ephemeral`. Prepending project pages
+  naturally lands them *before* that caller marker, so the cached prefix now
+  covers the stable pages.
+- When a compressed `tool_result`'s content carried a caller marker, the
+  marker moves onto the last image rendered from that same logical content
+  (`src/core/transform.ts:2120`).
+- History collapse recognizes at most one caller marker per collapsed
+  message (including markers nested in tool_result content) and re-plants it
+  on the collapsed representation; multiple same-message markers or any
+  count/value mismatch fails that history bucket closed.
+- System-field markers are never touched or moved.
 
-1. One on the last `tools[]` entry
-2. One on the `system` field
-3. One inside `messages[]`, typically with `ttl='1h'`
+The turn-over-turn cache identity is `cachePrefixSha8` — a digest that stops
+at the exact vouched-for boundary (project boundary, tool-reference boundary,
+or collapsed-history anchor), not at whole-message granularity. Same
+governance plus a changed live prompt or environment must produce identical
+manifest bytes, image bytes, and prefix digest through the project boundary;
+changed governance must change all three.
 
-That leaves us exactly **one** breakpoint. We spend it on the last image
-block in the first user message.
+## 5. The compression buckets
 
-Anthropic enforces two ordering rules that together pin our choice of `ttl`:
+Each bucket has its own recognizer, profitability gate, telemetry, and
+fail-closed rollback; one bucket's failure never disables another. Defaults
+(`src/core/transform.ts` `DEFAULTS`):
 
-- Breakpoints are processed in the order `tools → system → messages`, and
-  within `messages` in array order.
-- Within that processing order, **`ttl='1h'` must NOT appear after
-  `ttl='5m'`**. The API returns 400 if it does.
+| bucket | option | default |
+|---|---|---|
+| project guidance | `compressProjectGuidance` | **on** |
+| closed history | (always-on, gate-governed) | on |
+| live-tail tool_results | `compressToolResults` | on |
+| tool reference pages | `compressTools` | **off** (experimental) |
+| generic reminders | `compressReminders` | **off** (legacy) |
 
-`cache_control` defaults to `ttl='5m'` if you leave the field off. Our
-breakpoint lands inside `messages[firstUserIdx]`, *before* Claude Code's own
-`ttl='1h'` breakpoint further down the message list. If we let our image
-default to `ttl='5m'`, that 5m breakpoint would land before the 1h one and the
-request would 400 at runtime. So `makeImageBlock` (`src/core/transform.ts:334`)
-always stamps `ttl='1h'` on the cache anchor. This is verified by the
-"uses ttl='1h' on the image cache_control" test in `tests/render.test.ts`.
+### 5a. Project guidance (`compressProjectGuidance`, default on)
 
-This is the single most important invariant in the codebase. The string
-`ttl: '1h'` is load-bearing. Do not "clean up" the comments above
-`makeImageBlock`; they exist so the next person who tries to drop the field
-or change it to `5m` reads the reason first.
+Only a recognized `claudeMd` span is eligible. The gate accounts for source
+tokens, rendered image tokens, native manifest overhead, and warm-cache burn,
+independent of every other bucket. On success the span becomes an inert
+placeholder and the pages+boundary are prepended (§3); on gate miss or render
+error the original region is restored byte-exactly and the reason lands in
+telemetry. A gate miss here must not and does not suppress history or
+tool-result compression.
 
-## 5. Per-message compressions (no cache_control)
+### 5b. Tool_result compression (`compressToolResults`, default on)
 
-The static slab covers most of the wire savings, but two recurring sources of
-text live in user messages and miss the cache anchor. The transform compresses
-those too, but **without** attaching `cache_control` — we already spent our
-one breakpoint, and these blocks are per-turn anyway.
+Unchanged concept from earlier versions: closed `tool_result` blocks ≥
+`minToolResultChars` (default 6000) across all user messages render to
+per-block images, `is_error: true` blocks are skipped (Anthropic rejects
+images there), and no `cache_control` is spent — inner caller markers are
+preserved per §4.
 
-### 5a. Reminder compression
+### 5c. Tool reference (`compressTools`, default off — experimental)
 
-Claude Code re-injects long `<system-reminder>...</system-reminder>` blocks
-into the *first user message* every turn. The skill catalogue is the worst
-offender (multiple KB of reusable-skill names and descriptions every single
-turn). These reminders are text inside `messages[]`, not inside the system
-prompt, so they do not hit the system+tools image cache.
+Full `tools[]` definitions stay native JSON by default. Historical evidence
+(#37, reverted commit `c04e8f8`) identifies tool documentation's
+shell/permission/credential vocabulary as the likely `cyber` classifier
+trigger, so this bucket ships dark until its own live A/B matrix passes.
+When explicitly enabled: tool docs render to separately-referenced pages
+(`TOOL REFERENCE · ref <id>`), a separate native manifest vouches for them,
+and each tool's description is stubbed to point at a JSON-escaped, ordinal,
+per-entry digest binding (`tb_<hash>`) so tool-supplied headings cannot
+impersonate another entry. Stubs are installed only after rendering succeeds;
+any failure leaves the original definitions byte-exact. Tool size cannot make
+an unprofitable project render pass, and vice versa.
 
-`compressReminders` (default `true`, threshold `minReminderChars=1000`) walks
-the first user message's content array, finds every text block that starts
-with `<system-reminder>` and is at least 1000 chars, and replaces it with
-image blocks. Short reminders are left alone — below the threshold the image
-overhead would dominate. The replacement images carry **no `cache_control`**;
-they're per-turn savings on raw token cost, not cache reuse.
+### 5d. Generic reminders (`compressReminders`, default off)
 
-Test coverage: "compresses long `<system-reminder>` blocks in the first user
-message" and "leaves short `<system-reminder>` blocks alone (below
-minReminderChars)" in `tests/render.test.ts`.
-
-### 5b. Tool_result compression
-
-Tool output (Bash stdout/stderr, file reads, Write confirmations) accumulates
-across the session. Once a tool result is produced its bytes are static —
-turn N+1 ships the same `tool_result` block as turn N, plus one more. Over a
-long session this compounds into tens of KB of text re-sent every turn.
-
-`compressToolResults` (default `true`, threshold `minToolResultChars=2000`)
-walks **all** user messages (not just the first), finds every `tool_result`
-block with content ≥ 2000 chars, and replaces the content with image blocks.
-The block's `content` may be either a string or an array of TextBlock /
-ImageBlock; the transform handles both shapes (see `src/core/transform.ts:573`
-onwards).
-
-One mandatory exception: **skip `is_error: true` tool_results**. Anthropic
-rejects images nested inside an `is_error` tool_result. Test:
-"leaves is_error tool_results untouched (Anthropic forbids images there)" in
-`tests/render.test.ts`.
-
-Like reminder images, tool_result images carry no `cache_control`.
+The legacy whole-reminder imaging path still exists behind this flag for
+non-recognized `<system-reminder>` blocks, but it is off by default and the
+recognized project carrier can never fall through into it. Unknown reminders
+stay native.
 
 ## 6. Determinism and fingerprints
 
-Identical input must produce byte-identical PNG output. Without that property,
-two consecutive turns with the same static slab would render to different
-image bytes and the cache hit rate would be 0%. This is a hard invariant:
+Identical input must produce byte-identical PNG output — otherwise the cache
+key churns and the hit rate collapses. Hard rules: no `Math.random` on the
+render path, no timestamps in PNG metadata, no locale-dependent string
+handling, atlas generated at build time. The locked-in test is "renders
+identical input to byte-identical output (determinism = cacheability)" in
+`tests/render.test.ts`.
 
-- No `Math.random` on the render path.
-- No timestamps in PNG metadata.
-- No locale-dependent string handling (no `toLocaleString`, etc.).
-- Glyph atlas is generated at *build* time (`scripts/gen-atlas.ts` →
-  `src/core/atlas.ts`) so runtime never touches the font file.
+The transform emits SHA-256-prefixed fingerprints (first 8 hex chars) on
+`TransformInfo`, persisted to the JSONL event log:
 
-The locked-in test is "renders identical input to byte-identical output
-(determinism = cacheability)" in `tests/render.test.ts:271`. If you change
-anything on the render path, that test must continue to pass.
+- **`cachePrefixSha8`** — hash of the exact pxpipe-vouched prefix through the
+  project / tool-reference / collapsed-history boundary, excluding the live
+  tail. Primary turn-over-turn cache identity; dashboard, session summaries,
+  and stats prefer its persisted `cache_prefix_sha8` form.
+- **`systemSha8`** — the older static-system fingerprint. Consumers use its
+  persisted `system_sha8` form only when a historical row lacks
+  `cache_prefix_sha8`.
+- **`historyImageSha`** — hash of collapsed-history image bytes; located via
+  the synthetic history marker, not an index-0 assumption. Diagnoses that one
+  component's stability; not whole-prefix identity.
+- **`claudeMdSha8`** — hash of the exact recognized project-guidance segment.
+  Buckets requests by project even when cwd isn't visible.
+- **`firstUserSha8`** — hash of the first *live* user text after the
+  host-context/project boundary (not the opening reminder), capped at 4 KiB.
+  Rough thread id.
 
-The transform also emits SHA-256-prefixed fingerprints (first 8 hex chars,
-32 bits — collision-safe for the request volume a single proxy instance sees).
-They live on the `TransformInfo` struct and get persisted to the JSONL event log
-so `pxpipe stats` can analyze them:
+None of these carry raw text — they're privacy-safe to log. Per-bucket
+telemetry additionally records source chars, image counts, refs, recognition/
+fallback reasons, and dispositions (`contextMode`, `runtimeMetadataDisposition`,
+tool mode fields) without logging source text.
 
-- **`cachePrefixSha8`** — hash of the exact pxpipe-vouched prefix sent through
-  the project, tool-reference, or collapsed-history boundary, excluding the
-  live tail. This is the primary turn-over-turn cache identity;
-  the dashboard, session summaries, and stats prefer its persisted
-  `cache_prefix_sha8` form.
-- **`systemSha8`** — the older/provider-specific static-system fingerprint.
-  Consumers use its persisted `system_sha8` form only when a historical row
-  lacks `cache_prefix_sha8`.
-- **`historyImageSha`** — hash of collapsed-history image bytes. It diagnoses
-  stability of that one rendered history component; it is not whole-prefix
-  identity and does not by itself prove cache warmth. Warmth comes from the
-  server-observed `cache_read_tokens > 0` signal.
-- **`claudeMdSha8`** — hash of the exact project-guidance segment recognized
-  in Claude Code's versioned opening context. Lets you bucket requests by
-  project even when `cwd` isn't reported in the env block.
-- **`firstUserSha8`** — hash of the first user message text, capped at 4 KiB
-  to keep long pastes from dominating. Rough thread/session id, since the
-  wire protocol doesn't include one.
+## 7. Unknown shapes fail closed (replaces the unknown-tag canary)
 
-None of these fingerprints carry raw text — they're privacy-safe to log.
-
-## 7. The unknown-tag canary
-
-`DYNAMIC_BLOCK_TAGS` is a hard-coded list. Claude Code is free to ship a new
-per-turn dynamic tag at any time (a future `<recent_files>...`,
-`<todo_list>...`, whatever). If that happens and we don't update the list,
-the new tag's content will be silently baked into the cached image bytes.
-Every turn, the dynamic content of that tag would differ, so the image bytes
-would differ, and the cache hit rate would collapse — before anyone noticed.
-
-The canary lives in `splitStaticDynamic` (`src/core/transform.ts:187`). After
-splitting, it sweeps the *static* slab for any other tag-shaped opening
-(`<foo>...</foo>` with `foo` under 64 chars, alphanumeric / dot / dash /
-underscore) and emits the tag names on `info.unknownStaticTags`. Both the
-Node host (`src/node.ts:367`) and the Worker (`src/worker.ts:74`) log a
-warning to stderr / Workers Logs when this array is non-empty. `pxpipe
-stats` also tallies these tag names across the JSONL log.
-
-`<types>` is a *static* tag used inside Claude Code's built-in tool docs
-(it was tripping the canary on 93% of real requests). Commit `167ce3d`
-added a second list, `KNOWN_STATIC_TAGS`, alongside `DYNAMIC_BLOCK_TAGS`:
-
-```typescript
-const KNOWN_STATIC_TAGS = ['types'] as const;
-```
-
-The canary now excludes both lists. A tag is reported on
-`info.unknownStaticTags` only when it appears in NEITHER set — i.e. it's
-genuinely new. When you see a fresh entry, decide whether it's per-turn
-(extend `DYNAMIC_BLOCK_TAGS`) or static-but-tag-shaped (extend
-`KNOWN_STATIC_TAGS`). The warn-log line in `src/node.ts` names both
-options.
+The old design scanned the flattened static slab for unrecognized tag shapes
+and warned (`unknownStaticTags`). The provenance design inverts the burden:
+nothing is imaged unless an exact versioned recognizer claimed it, so a new
+Claude Code shape degrades to *native text and a telemetry reason*, never to
+silently churning image bytes. Watch `contextMode` and the per-bucket
+fallback reasons in the event log; a spike of `safe_native` rows after a
+Claude Code upgrade means the recognizers need a new version, and cache
+behavior in the meantime is only as bad as uncompressed text. (The
+`unknownStaticTags` TransformInfo field and its host log lines remain for
+old-row compatibility but have no emitter on the current path.)
 
 ## 8. The savings math
 
-Source of truth for the formula is `src/dashboard.ts` (`effectiveCost`,
-`baselineCost`). It was originally ported from a Python reference
-implementation; that reference has been removed now that live
-validation passed.
+Source of truth for the request-level accounting is `src/core/baseline.ts`
+and `docs/CACHING_AND_SAVINGS.md` (measured `/count_tokens` counterfactual,
+same observed cache state on both sides, cache discount cancels). The
+dashboard and `pxpipe stats` surface those numbers.
 
-**Per-call effective input cost** — what the call actually billed for:
-
-```
-effective = input_tokens
-          + cache_creation_input_tokens * 1.25
-          + cache_read_input_tokens     * 0.10
-```
-
-The `1.25` and `0.10` multipliers match Anthropic's published cache pricing
-for Opus: writing to the cache costs 1.25× the per-token input rate; reading
-from the cache costs 0.10×.
-
-**Per-call baseline cost** — what the *same* call would have billed if we had
-NOT compressed:
-
-```
-text_tokens_we_removed = origChars / 4              # ~4 chars per token, rough
-image_tokens_we_added  = imageCount * 4761          # dense 1928×1928 ≈ 4761 tokens (slab ~2684)
-extra_text_baseline    = max(0, text_tokens_we_removed - image_tokens_we_added)
-
-# cache_create dominates the first turn; bias the baseline toward 1.25 in
-# that regime. Otherwise assume a fully warm cache (0.10).
-cache_total = cache_create + cache_read
-baseline_rate = cache_create > 0
-              ? (cache_create / cache_total) * 1.25 + (1 - cache_create / cache_total) * 0.10
-              : 0.10
-
-baseline = effective + extra_text_baseline * baseline_rate
-saved    = baseline - effective
-```
-
-The dashboard's "tokens saved" and "$ saved" cards (and
-`pxpipe stats` for the offline aggregate) both surface these numbers.
-The $ figure in `src/dashboard.ts` uses a fixed per-Mtok input rate — note
-Fable 5 (the current supported model) bills $10/M input, so re-check the
-constant if you care about the dollar card.
-
-**Important framing**: do not quote 65–73% as a benchmark. That number is
-the architectural ceiling — the steady-state savings on a long session over
-the same codebase where the image cache is warm and the cumulative
-tool_result history is large. A short session with no warm cache may save
-much less. The first turn always pays cache-creation cost; cache-read
-amortization kicks in from turn 2 onwards. Cite the per-session number that
-`pxpipe stats` reports, not the headline.
+**Important framing**: do not quote the headline steady-state percentage as a
+benchmark. The first turn pays cache-creation; amortization starts at turn 2.
+Cite the per-session number that `pxpipe stats` reports.
 
 ## 9. What deliberately did NOT get built
 
-(From HANDOFF.md principle #7. These were considered during the original
-session and rejected for stated reasons. The point of recording them is so
-the next contributor doesn't relitigate the same decisions.)
+(Considered and rejected; recorded so the next contributor doesn't relitigate.)
 
-- **Compression of user message content.** User text is volatile (different
-  every turn) so it would cache-miss anyway. Image overhead would dominate.
-- **Per-conversation render caching.** `cache_control` already gives us this
-  upstream; adding a second layer in the proxy is duplicate work and
-  invalidation is harder than it sounds.
-- **Smart heuristics for "should I compress this".** The current rules
-  (`minReminderChars`, `minToolResultChars`, fixed `DYNAMIC_BLOCK_TAGS`) are
-  simple, predictable, and correct. Heuristics that try to be cleverer
-  ("only compress if X and Y and not Z") trade predictability for marginal
-  wins and make the failure modes harder to debug.
-- **Streaming the request body to the renderer.** The transform is fast
-  enough that fully buffering the body is fine. Streaming would force a
-  rewrite of the splitter and the cache-control placement logic for no
-  measured latency win.
+- **Compression of user message content.** Volatile, would cache-miss anyway.
+- **Per-conversation render caching.** `cache_control` already provides it.
+- **Heuristic per-file splits of the claudeMd bundle.** Claude Code's inner
+  file framing is unescaped; a payload line can imitate it. The bundle is one
+  authority unit or it is native.
+- **A shipped `legacy` mode.** Reproduce legacy behavior from a pinned
+  worktree when experimenting; production rollback is the kill switch /
+  `PXPIPE_DISABLE`, which returns the original request.
+- **Automatic retry/fallback after a safety refusal.** Streaming may already
+  have reached the client; replay could duplicate side effects.
 
 ## 10. Wiring (one-paragraph map)
 
-`src/core/transform.ts` is the transform itself — the runtime-agnostic
-function that takes a request body and returns the rewritten body plus
-`TransformInfo` telemetry. `src/core/proxy.ts` is the runtime-agnostic
-request handler that calls the transform, forwards the rewritten request to
-the Anthropic API, tees the response body to extract usage tokens, and fires
-the `onRequest` callback. `src/node.ts` is the Node `http` server entrypoint
-— it parses CLI flags / env vars, instantiates a `FileTracker` (JSONL log
-writer with size-based rotation), and also serves the dashboard at `/` plus
-the JSON / PNG endpoints (`/proxy-stats`, `/proxy-recent`,
-`/proxy-latest-png`). `src/worker.ts` is the Cloudflare Worker entrypoint —
-same proxy logic, `JsonLogTracker` writes to Workers Logs via `console.log`
-(Logpush picks it up for R2/S3 export). `src/core/tracker.ts` defines the
-`TrackEvent` shape that lands in JSONL and the `toTrackEvent` normalizer that
-strips heavy fields (the `firstImagePng` byte buffer) before persistence.
-`src/dashboard.ts` aggregates events in memory for the Node live view (capped
-ring buffer, ~50 most recent calls). `src/stats.ts` is the offline aggregator
-that powers `pxpipe stats`; it streams the JSONL file line-by-line so
-100 MB logs don't blow the heap. Tests live in `tests/` and pin the
-invariants — byte-output determinism most of all (see section 6).
+`src/core/anthropic-context.ts` is the pure partitioner (exact recognizers,
+span locators, boundary constants shared by every emitter and detector).
+`src/core/transform.ts` is the transform itself — buckets, gates, manifests,
+postconditions — returning the rewritten body plus `TransformInfo`.
+`src/core/history.ts` owns history collapse and consumes the shared boundary
+definitions. `src/core/proxy.ts` forwards to Anthropic and tees usage.
+`src/node.ts` is the Node entrypoint (flags, JSONL `FileTracker`, dashboard);
+`src/worker.ts` the Cloudflare Worker (env-var config; provider-specific
+options are omitted when their env vars are unset so per-provider defaults
+survive). `src/core/tracker.ts` defines the persisted `TrackEvent` shape —
+new provenance fields are optional so old rows stay readable.
+`src/dashboard.ts` aggregates for the live view; `src/stats.ts` streams the
+JSONL for offline aggregates; both key warmth by
+`cache_prefix_sha8 ?? system_sha8`. Tests in `tests/` pin the invariants —
+byte-output determinism and the §4 marker rules most of all.
