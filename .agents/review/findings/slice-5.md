@@ -166,4 +166,12 @@ absent from the live README. The merge preserved the provenance-safe code and
 passed typecheck, all 770 tests, and build. No additional product change is
 needed for this finding.
 
-Findings 2–14 remain pending individual adjudication against the merged head.
+### Finding 2 — adopted; resolved by newer main-branch documentation
+
+The merge removed the false blanket claim that a native manifest vouches for
+every rendered page. The live README now limits that statement to recognized
+project-guidance pages. Tool-result and history images remain listed as
+separate compression paths without a manifest claim, matching the code. No
+additional product change is needed for this finding.
+
+Findings 3–14 remain pending individual adjudication against the merged head.
