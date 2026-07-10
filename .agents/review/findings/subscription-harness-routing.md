@@ -171,3 +171,12 @@ The coder worktree's complete gate passed all 818 tests both before dispatch
 and at the final implementation head. The reviewer's one failure reproduced
 unchanged at the pinned base in its isolated environment and does not reopen
 this slice.
+
+### Post-review cleanup correction
+
+The structured transcript disclosed that the reviewer ran `npm install -g
+pnpm@10.21.0 --offline` because pnpm was initially off PATH. That machine-wide
+change contradicts the final quoted claim that only the disposable worktree
+was touched. The coder removed that freshly installed package, verified pnpm
+was absent from PATH again, and removed the disposable worktree. This
+review-process side effect did not touch the product branch or verdict.
