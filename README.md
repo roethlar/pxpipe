@@ -95,7 +95,7 @@ installed program (while preserving logs and events) with:
 "$HOME/Dev/pxpipe-deploy/install.sh" --uninstall
 ```
 
-### Use Codex or Grok subscriptions locally
+### Manually route Codex or Grok subscriptions locally
 
 No API key is required: both CLIs can forward their existing browser login.
 Sol and Grok remain opt-in, so `PXPIPE_MODELS` must be set on the **proxy**
@@ -103,7 +103,14 @@ process. Codex and Grok need separate proxy processes because their identical
 request paths go to different subscription services. Leave the installed
 login service on `47821` alone.
 
-For a bounded run, start each child from a clean environment so an unrelated
+The commands below are manual one-call connectivity examples. They spend
+subscription quota, do not enforce the acceptance smoke's no-tools rule, and
+do not prove that context handling is correct. The separately owner-gated
+acceptance smoke adds a fixed temporary repository and checks the recorded
+path, model, result, and positive image count.
+
+For an isolated manual run, start each child from a clean environment so an
+unrelated
 exported key cannot replace the subscription login. This helper passes only
 the reviewed non-secret fields; define it in each terminal:
 
