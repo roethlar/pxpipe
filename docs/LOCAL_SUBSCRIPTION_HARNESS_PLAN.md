@@ -83,11 +83,13 @@ Expected routing:
 Authorization and `ChatGPT-Account-ID` remain ordinary forwarded headers.
 pxpipe must not inspect, persist, replace, or print subscription tokens.
 Spawn every proxy and harness child from an explicit allowlisted environment,
-never inherited `process.env` or the ambient shell. Retain only the minimum
-runtime fields (`HOME`, `PATH`, user/locale fields, and a smoke-local
-`TMPDIR`), then add the exact routing variables for that child. Set
-`PXPIPE_CONFIG=/dev/null` on proxy children and set `PXPIPE_MODELS` explicitly.
-Do not copy `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, or
+never inherited `process.env` or the ambient shell. Start empty and copy
+exactly `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_ALL`, and
+`TERM` when they are defined; copy no other ambient field. Force `TMPDIR` to a
+directory under the smoke root, then add only that child's documented routing
+variables. Set `PXPIPE_CONFIG` to a known-missing path under the smoke root and
+set `PXPIPE_MODELS` explicitly on proxy children. Do not copy
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, or
 `GROK_CODE_XAI_API_KEY` into any child. This prevents an unrelated ambient key
 from replacing the subscription bearer that the harness forwards.
 
@@ -236,5 +238,10 @@ authorize code, live calls, installation, or push.
   Claude subscription probe resolved the first question: it sent only HEAD `/`
   and bearer-authenticated POST `/v1/messages?beta=true`, never `/v1/models`;
   nothing was forwarded to a model. The owner had already been told about the
-  earlier out-of-band Codex diagnostic, resolving the second question. Fresh r2
-  review is pending.
+  earlier out-of-band Codex diagnostic, resolving the second question.
+- r2 (2026-07-10, Claude Code 2.1.206 / Sonnet 5, reviewed
+  `62a19f2164ee4b683cc9ca3ae188019b778facd0`): **accepted**, no findings and
+  one non-blocking open question. The question was adopted: the plan now pins
+  the complete ambient-field allowlist and a known-missing smoke-local config
+  path so execution cannot vary by shell or emit an invalid-config warning.
+  Fresh r3 review is pending.
