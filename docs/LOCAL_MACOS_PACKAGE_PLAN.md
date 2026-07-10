@@ -1,8 +1,10 @@
 # Local macOS package and installer
 
-Status: **IMPLEMENTED AND ACCEPTED 2026-07-10**. The owner selected the
-Node-based macOS service-package shape described in chat, required
-loopback-only operation, and said to continue.
+Status: **APPROVED 2026-07-10 — output-location correction in progress**. The
+owner selected the Node-based macOS service-package shape described in chat,
+required loopback-only operation, and said to continue. After the first
+accepted implementation, the owner corrected the delivery contract: generated
+install artifacts must live in `~/Dev/pxpipe-deploy`, never under `/private`.
 
 Checkpoint: implementation commit `eab46e6`; independent Claude Code 2.1.206 /
 Sonnet 5 review accepted `aff8bf1` after reconfirming the localhost and
@@ -40,8 +42,10 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude
 - Package version `0.8.0` is already the public version. The fork package must
   use a valid prerelease version so `pxpipe --version` cannot be mistaken for
   the public build.
-- Generated archives are reproducible outputs, not source. They stay under
-  ignored `build/` and are not committed.
+- Generated archives are reproducible outputs, not source. The builder requires
+  an explicit stable output directory, rejects `/private` and paths inside the
+  source worktree, and never defaults to an ignored worktree directory. The
+  owner's current output directory is `~/Dev/pxpipe-deploy`.
 
 ## Design
 
@@ -63,9 +67,10 @@ Add `scripts/package-macos-local.mjs` and package script
    `package/dist/node.js`, and `package/package.json`;
 6. extract it to a temporary directory and verify the bundled CLI reports the
    expected version; and
-7. emit `build/macos-local/{archive,manifest.json,install.sh}`, where the
-   manifest records the complete source commit, version, archive name, and
-   SHA-256 digest.
+7. require `--output <stable-directory>` and atomically place
+   `{archive,manifest.json,install.sh}` there, where the manifest records the
+   complete source commit, version, archive name, and SHA-256 digest; and
+8. reject output under `/private` or inside the source worktree.
 
 The builder does not fetch, publish, push, install a service, or call a model.
 
@@ -138,6 +143,8 @@ Claude review with an independent guard proof.
 - No Cloudflare configuration or deployment.
 - No live Claude/model calls.
 - No actual LaunchAgent installation during automated verification.
+- No generated install artifact under `/private` or inside the source
+  worktree.
 - No main-project contribution, pull request, merge, release, or public
   publish.
 - Pushing new commits to the fork requires a fresh explicit owner go.
