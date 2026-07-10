@@ -156,18 +156,21 @@ stable↔volatile seam:
 [ live tail, runtime-context tail ]            collapsed range carried one
 ```
 
-Two conditions make the burn one-time, and the layout arranges both:
+Two conditions make a cache burn one-time when the caller's actual marker
+placement permits it:
 
 1. **Everything up to the mark is byte-identical across turns** — guaranteed by
    the quantized boundary (§3).
-2. **Everything volatile sits after the mark** — the billing line, dynamic
-   `<env>`, and current user message are spliced *after* the breakpoint, so they
-   never pollute the prefix cache key.
+2. **Bytes covered by that marker stay stable.** pxpipe does not generically
+   move volatile content after it. Only an exactly recognized opening
+   `userEmail` / `currentDate` suffix moves to the final runtime-context block.
+   Native system `<env>`, billing data, unknown host content, and the caller's
+   current message remain in their original role and position; changes there
+   can legitimately change the provider's cache key.
 
-When both hold, the prefix up to the mark reads warm every turn, and the prefix
-re-keys **only** when the bytes at/before the mark genuinely change — i.e. the
-initial text→image flip and each chunk crossing. That's the one-time create;
-everything in between is a warm read.
+When both hold, the prefix up to the mark reads warm. The separate
+`cache_prefix_sha8` measurement tracks the vouched-for project boundary without
+pretending that pxpipe controls or relocates every volatile caller byte.
 
 ### Why the leading project carrier is protected
 

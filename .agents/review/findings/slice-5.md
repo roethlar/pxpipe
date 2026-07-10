@@ -223,4 +223,12 @@ live-prompt marker, and history may re-plant one existing marker on its
 replacement. It also states the enforced invariant that marker count never
 increases. The cache-stability marker-ownership test covers this behavior.
 
-Findings 9–14 remain pending individual adjudication against the merged head.
+### Finding 9 — adopted and fixed
+
+The history/cache guide no longer claims billing data, native `<env>`, and the
+current user message are moved after a breakpoint. It now limits relocation to
+the exactly recognized opening email/date suffix and states that other native
+content remains in place and can change the provider cache key. The runtime
+fail-closed and native-env cache tests cover those cases.
+
+Findings 10–14 remain pending individual adjudication against the merged head.
