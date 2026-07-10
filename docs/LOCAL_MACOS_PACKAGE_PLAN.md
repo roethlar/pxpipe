@@ -1,10 +1,10 @@
 # Local macOS package and installer
 
-Status: **APPROVED 2026-07-10 — output-location correction in progress**. The
-owner selected the Node-based macOS service-package shape described in chat,
-required loopback-only operation, and said to continue. After the first
-accepted implementation, the owner corrected the delivery contract: generated
-install artifacts must live in `~/Dev/pxpipe-deploy`, never under `/private`.
+Status: **IMPLEMENTED AND ACCEPTED 2026-07-10**. The owner selected the
+Node-based macOS service-package shape described in chat, required
+loopback-only operation, and said to continue. After the first accepted
+implementation, the owner corrected the delivery contract: generated install
+artifacts must live in `~/Dev/pxpipe-deploy`, never under `/private`.
 
 Checkpoint: implementation commit `eab46e6`; independent Claude Code 2.1.206 /
 Sonnet 5 review accepted `aff8bf1` after reconfirming the localhost and
@@ -13,6 +13,13 @@ checksum guards, attacking archive traversal/link inputs, reproducing the full
 recorded at `c0af68d`. Generated bundles remain ignored local outputs. No real
 LaunchAgent, model call, Cloudflare deployment, public release, merge, or push
 was performed by this slice.
+
+Output-location correction checkpoint: plan `6acbd1f`; implementation
+`23b3618` plus pnpm forwarding fix `ca598a0`; Claude Code 2.1.206 / Sonnet 5
+accepted reviewed head `2d683da` after independently proving the `/private`
+guard, stable staging, symlink rejection, unrelated-file preservation, and
+both pnpm command forms. Verdict recorded at `85126a5`. The complete bundle is
+now generated only into `~/Dev/pxpipe-deploy`.
 
 ## Outcome
 
