@@ -56,4 +56,60 @@ system-role protection, and that no duplicated boundary literal survives
   absence here is by design.
 
 ## Reviewer comments
-(pending)
+- Reviewer: codex-cli 0.144.1 (`codex exec --json --sandbox workspace-write`,
+  prompt via stdin), disposable worktree `/private/tmp/pxpipe-review-slice2`.
+- Reviewed SHA: `fbf9b0c6aec9696ca65974978c6d57f4d2574467`;
+  base SHA: `1d25d570a30f0e6e61130f99426548047686033e`.
+- `guard_confirmed: true` — reviewer ran the revert→FAIL→restore→PASS proof
+  (all 9 role-integrity tests failed with `src/` reverted; full suite passed
+  restored at the reviewed SHA).
+- Verdict: **reopened** (2026-07-10, ~05:45 UTC).
+- Comments (verbatim):
+  1. `src/core/transform.ts:718` — With a project ref, the synthetic-history
+     scan starts at msgs.length and never runs. Reproduced marked
+     collapsed-history changes altering historyImageSha while cachePrefixSha8
+     stayed unchanged at the earlier project boundary, so the claimed exact
+     cache-boundary digest cannot diagnose those cache busts.
+  2. `src/core/history.ts:372` — typedUserText accepts the genuine project
+     boundary in every collapsed user message rather than only the vouched
+     opening range. A later copied same-ref marker after the latest task made
+     the synthetic recency pointer select an older user turn, so copied
+     identifiers are not inert and current-task context is misidentified.
+  3. `src/core/history.ts:262` — messageCacheControl retains only the last
+     block marker and loses its block position before collapse re-emits it
+     after the full message. A valid message with two marked text blocks
+     reproduced a 2-to-1 marker loss; a non-final marker also moves across
+     later content, changing caller-owned breakpoint and TTL semantics.
+
+## Coder adjudication
+Adjudicated 2026-07-10 against the branch head. All three findings valid at
+the reviewed slice-2 SHA; dispositions differ:
+
+1. **Fixed at head by slice 4, guarded.** `cachePrefixDigest`
+   (`src/core/transform.ts:770-869`) now scans all messages for the marked
+   synthetic-history image; a caller-owned history boundary wins over the
+   earlier project boundary. Guard:
+   `tests/anthropic-tool-adversarial.test.ts:278` ("selects a later
+   caller-owned history boundary over an earlier project boundary",
+   asserting `cacheBoundaryKind: 'history'` and the digest through the
+   marker). No further action.
+2. **Live at head — fixed now, commit `371322d`.** Verified the repro shape:
+   a text block equal to the genuine boundary (`makeProjectGuidanceBoundary(ref)`)
+   placed AFTER the typed task text in a later collapsed user turn emptied
+   `typedUserText` and rolled the recency pointer to an older turn.
+   Fix binds the boundary/carrier rules to absolute message index 0 in
+   `latestCollapsedUserPointer` and `demoteProtectedHeadText`. Guard test
+   red before fix, green after; full suite 749 green + typecheck + build.
+3. **Fixed at head by slice 4, guarded.** Multiple caller markers in one
+   collapse-range message fail the bucket closed
+   (`ambiguous_cache_markers_in_collapse_range`, `src/core/history.ts:659`)
+   and a rendered-marker mismatch fails closed (`cache_marker_mismatch`,
+   `src/core/history.ts:797`). Guards: `tests/history.test.ts:564,611`.
+   Positional note: within a single-marker collapsed message the marker is
+   re-planted at the collapsed chunk end — the plan's slice-4 contract
+   promises count/value preservation, not intra-message positional fidelity;
+   treated as within-contract.
+
+Disposition: findings 1 and 3 closed by existing slice-4 code+guards;
+finding 2 closed by fix commit `371322d`. Focused re-review of the fix-up
+dispatched per the playbook's reopened flow.
