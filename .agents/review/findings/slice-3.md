@@ -50,4 +50,34 @@ Also grep outgoing-text builders for the banned self-asserted wrapper phrase.
   v1 (fail-closed rule) — not a defect.
 
 ## Reviewer comments
-(pending)
+- Reviewer: codex-cli 0.144.1 (`codex exec --json --sandbox workspace-write`,
+  stdin prompt), disposable worktree `/private/tmp/pxpipe-review-slice3`.
+- Reviewed SHA: `2334b9840b961c2a031ecbb2131da3e08315da15`;
+  base SHA: `fbf9b0c6aec9696ca65974978c6d57f4d2574467`.
+- `guard_confirmed: true` — reviewer ran the revert→FAIL→restore→PASS proof
+  (15 focused failures reverted, including missing runtime partition
+  metadata, missing native runtime manifest/tail, suffix left in the opening
+  carrier; full suite 34 files / 698 green restored).
+- Verdict: **reopened** (2026-07-10 ~09:20 UTC). Comment (verbatim):
+  1. "src/core/anthropic-context.ts:238 — The unknown-sibling guard inspects
+     only the last H1 before the runtime suffix. A multiline `# futureSibling`
+     value containing a later `# Notes` bypasses it; reproduced output imaged
+     the unknown instructional bytes and removed them from native text,
+     violating the byte-exact fail-closed contract."
+
+## Coder adjudication
+**Accepted.** Reproduced the evasion at branch head with a live probe: the
+`# futureSibling` bytes appeared inside `projectGuidance.text` (imaged as
+governance) with runtime fields still recognized — exactly the fail-closed
+violation the plan's §4.1 invariant forbids.
+
+Fixed in commit `ee992d3`: the guard now refuses the partition when ANY
+unrecognized lowerCamelCase H1 appears before the runtime suffix (the
+structural `# claudeMd` at slice position 0 is skipped by the \n-anchored
+pattern; `userEmail`/`currentDate` remain payload-eligible because their
+exact-valid duplicates are refused separately; the `attachedProject` special
+case is subsumed). Conservative direction: payloads using lowerCamel H1
+headings now fall back to native — never dropped or elevated. Guard test red
+before/green after; 751 tests, typecheck, build all clean. Focused r2
+re-review dispatched on the fix; slice-1's delegated closure rides on the
+same verdict (its findings were fixed by this slice's code).
