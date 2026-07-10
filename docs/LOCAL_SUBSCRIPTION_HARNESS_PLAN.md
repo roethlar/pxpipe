@@ -1,6 +1,7 @@
 # Local subscription-harness routing and smoke tests
 
-Status: **DRAFT — code and live calls await separate owner approval**.
+Status: **REVIEWED 2026-07-10 — code and live calls await separate owner
+approval**.
 
 Plan base: `102b983` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was still `8d7ba3e` when this plan was drafted. Recheck upstream before
@@ -244,4 +245,7 @@ authorize code, live calls, installation, or push.
   one non-blocking open question. The question was adopted: the plan now pins
   the complete ambient-field allowlist and a known-missing smoke-local config
   path so execution cannot vary by shell or emit an invalid-config warning.
-  Fresh r3 review is pending.
+- r3 (2026-07-10, Claude Code 2.1.206 / Sonnet 5, reviewed
+  `54996128a9e3c1648a690fade1d2f491ae49d15d`): **accepted**, no comments and
+  no open questions. The reviewed plan is ready for owner judgment; no code,
+  installation, live smoke, or push is authorized by the verdict.

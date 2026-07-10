@@ -1,9 +1,9 @@
 # subscription-harness-plan: No-key local harness routing and smoke plan
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: Pending r3 after resolving r2 open question
+**Status**: Verified — implementation remains owner-gated
 **Branch**: `fix/provenance-safe-compression`
-**Commit**: `e8be447b3aefe2da565847131d58b2b58f6b4b11`
+**Commit**: `54996128a9e3c1648a690fade1d2f491ae49d15d`
 
 ## Plan authority
 
@@ -73,5 +73,13 @@ allowlisted environment for every child process.
 - **ADOPTED** — pin the complete inherited-field list in the plan and use a
   known-missing smoke-local config path instead of `/dev/null`. This removes
   implementation discretion and avoids an irrelevant invalid-JSON warning.
-- Fresh r3 review will grade only that precision change. No code or live call
-  is authorized.
+- R3 graded that precision change. No code or live call was authorized.
+
+## Reviewer comments — r3
+
+- Reviewer: Claude Code 2.1.206 / Sonnet 5 (`claude -p`, structured output),
+  run with pxpipe bypassed in a fresh disposable worktree under `~/Dev`.
+- Reviewed SHA: `54996128a9e3c1648a690fade1d2f491ae49d15d`.
+- Verdict: **accepted** (2026-07-10), no comments and no open questions.
+- The reviewed plan is ready for owner judgment. The verdict does not authorize
+  implementation, installation, a live subscription call, or push.
