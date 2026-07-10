@@ -26,3 +26,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | slice-4 | `525cb5b` | Independent tool bucket, telemetry, host wiring         | `[x]` accepted r1, zero comments |
 | slice-5 | `162a00f` | Docs, migration note, eval harness                       | `[x]` accepted r3 at `fd548c8`; Claude guard confirmed |
 | local-package | `eab46e6` | Loopback-only macOS package and installer             | `[x]` output correction accepted r2 at `2d683da` |
+| subscription-plan | `e8be447` | No-key local Fable, Sol, and Grok routing plan       | `[~]` accepted r1; one should-fix adopted, r2 pending |
