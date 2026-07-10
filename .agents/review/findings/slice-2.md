@@ -1,7 +1,7 @@
 # slice-2: Role-bound project-guidance transform
 
 **Severity**: N/A — implementation slice under review, not a defect finding
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `fbf9b0c6aec9696ca65974978c6d57f4d2574467` (base: parent `1d25d57`)
 
@@ -151,5 +151,27 @@ Code traffic marks final blocks, so the safe path is unaffected.
 
 Fixed in commit `4dca949` (`messageCacheControlAtEnd` + collapse check +
 reason union in both files + doc statements). Guard test red before/green
-after; 750 tests, typecheck, build all clean. r3 focused re-review
-dispatched on the fix.
+after; 750 tests, typecheck, build all clean.
+
+- r3 (2026-07-10 ~08:55 UTC, codex-cli 0.144.1, reviewed SHA
+  `4dca949c2240ff9015b970e86a4afac0b80590f0`, base
+  `3ffc46d1f5dccbdce25e8a705951091580b5d527`): **accepted**,
+  `guard_confirmed: true`. Reviewer independently ran the two-file
+  revert/restore proof (red for the intended reason at
+  tests/history.test.ts:591, green restored), re-ran its own r2 repro
+  (now `mid_message_cache_marker`, original messages reference and bytes
+  preserved), probed nested-tool_result and non-final-image adversaries
+  (both fail closed byte-exact), confirmed a valid final-block marker still
+  collapses and re-plants on exactly one image, and verified history 66/66,
+  full suite 750/750, typecheck clean. Comments (verbatim):
+  1. "src/core/history.ts:291 — Predicate correctly rejects non-final
+     top-level and nested tool_result markers; text, nested-tool-result,
+     and image probes failed closed byte-exact."
+  2. "src/core/history.ts:700 — The r2 repro returns mid_message_cache_marker
+     before rendering while preserving the original messages reference and
+     serialized bytes."
+  3. "tests/history.test.ts:568 — Guard failed against the base and passed
+     with the fix; history suite passed 66/66, full suite passed 750/750,
+     and typecheck passed."
+
+**Slice-2 review closed: accepted at r3.** Merge remains owner-gated.
