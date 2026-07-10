@@ -387,5 +387,15 @@ describe.skipIf(process.platform === 'win32')('local macOS package installer', (
     expect(privateResult.status).not.toBe(0);
     expect(privateResult.stderr).toContain('refusing to write local bundle under /private');
     expect(fs.existsSync(privateOutput)).toBe(false);
+
+    const privateViaPnpm = spawnSync(
+      process.execPath,
+      [packager, '--', '--output', privateOutput],
+      { cwd: root, encoding: 'utf8' },
+    );
+    expect(privateViaPnpm.status).not.toBe(0);
+    expect(privateViaPnpm.stderr).toContain(
+      'refusing to write local bundle under /private',
+    );
   });
 });

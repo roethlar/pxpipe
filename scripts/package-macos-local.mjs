@@ -70,13 +70,18 @@ function assertStableOutput(outputDir) {
 }
 
 async function requestedOutputDir(args) {
-  if (args.length !== 2 || args[0] !== '--output' || !args[1]?.trim()) {
+  const normalized = args[0] === '--' ? args.slice(1) : args;
+  if (
+    normalized.length !== 2 ||
+    normalized[0] !== '--output' ||
+    !normalized[1]?.trim()
+  ) {
     throw new Error(
       'usage: pnpm run package:macos-local -- --output <stable-directory>',
     );
   }
 
-  const requested = resolve(args[1]);
+  const requested = resolve(normalized[1]);
   assertStableOutput(requested);
   await mkdir(requested, { recursive: true });
   const canonical = await realpath(requested);
