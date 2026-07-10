@@ -1,7 +1,7 @@
 # slice-5: Documentation, migration note, and evaluation harness
 
 **Severity**: N/A — implementation slice under review, not a defect finding
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `162a00f` (base: parent `e8c87da`)
 
@@ -413,3 +413,62 @@ Guard proof restored best-effort parsing: all three strict-reader/consumer tests
 failed, then passed after strict parsing was restored.
 
 All r2 findings have now been adjudicated individually against the reviewed head.
+
+## Reviewer comments — Claude r3
+
+- Reviewer: Claude Code 2.1.206 / Sonnet 5 (`claude -p`, structured output),
+  independently run with pxpipe bypassed.
+- Reviewed SHA: `fd548c8f74423d8c1edbbc3a4fdf03c0775f264e`;
+  base SHA: `8d7ba3ee871c3b1053b188d0f68938229748051a`.
+- `guard_confirmed: true` (the reviewer independently reversed three
+  representative r2 fixes, observed their focused failures, restored them, and
+  observed the focused passes; the disposable worktree was restored to the
+  reviewed SHA).
+- Verdict: **accepted** (2026-07-10 17:05 UTC), no must-fix or should-fix
+  findings.
+- Comments (verbatim):
+  1. "No must-fix or should-fix findings. Verification: pnpm typecheck / test
+     (793/793) / build all green at fd548c8, matching the plan checkpoint
+     note."
+  2. "Independently reversed and re-confirmed three representative r2 guard
+     fixes in the disposable worktree, each restored afterward: (1)
+     eval/provenance-ab/run-evidence.mjs requestedModelMatches — reverting to
+     symmetric date-stripping reproduced the exact 3 failing tests the r2
+     finding-8 adjudication claims (tests/provenance-ab-stop.test.ts +
+     tests/provenance-ab-collect.test.ts); (2)
+     eval/provenance-ab/run-evidence.mjs createDrainTracker.drain() — removing
+     the wait-for-completion loop reproduced the finding-7 delayed-refusal
+     failures at both the unit level and the real subprocess variant-proxy.mjs
+     level; (3) eval/provenance-ab/run-variant.sh — removing the
+     `run-metadata.mjs --validate-source` prepare-only call reproduced the
+     finding-6 'validates the selected source before prepare-only can succeed'
+     failure. All three passed cleanly after restoration; worktree left clean
+     at the reviewed SHA (only the pre-existing untracked node_modules symlink
+     remains)."
+  3. "Spot-checked every doc-vs-code claim called out across r1 and r2 findings
+     against current source: DEFAULTS (compressProjectGuidance=true,
+     compressTools=false, compressReminders=false, unread), render.ts geometry
+     (1568x728, 312 cols) matches README/TRANSFORM_INFO, cachePrefixSha8
+     boundary/native-<env> cache-miss claim matches
+     tests/cache-stability-e2e.test.ts's FAIL CLOSED test,
+     CACHING_AND_SAVINGS diagram includes the runtime manifest and correctly
+     states siblings-minus-userEmail/currentDate, no `unknownStaticTags` setter
+     exists anywhere in src/, and collect.mjs now derives
+     variant/workspace/replicate from metadata.json rather than parsing
+     directory names (covers the hyphenated-workspace finding). CHANGELOG
+     Unreleased entry (dropped by the raw upstream merge per r2 finding 1) is
+     restored with the trust-boundary/defaults/telemetry/migration/rollback
+     notes intact."
+  4. "Confirmed the upstream merge (f70e530, merging origin/main at 8d7ba3e,
+     which equals this review's base_sha and origin/main's current tip) touched
+     no provenance-authority logic in src/core/transform.ts or
+     anthropic-context.ts beyond an unrelated render-geometry constant rename
+     (313->312 cols via ANTHROPIC_SLAB_COLS) and a visual-row-counting fix;
+     nothing in the merged upstream text or behavior contradicts the
+     implemented provenance-safe contract."
+  5. "Minor, non-blocking observation (not reopening):
+     docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md:14 checkpoint note reads
+     'npx -y -p pnpm@10.21.0 npm run build', which invokes system npm rather
+     than pnpm; it happens to work today because node_modules is already
+     populated, but the phrasing is inconsistent with the repo's pnpm-only
+     policy and could mislead a future reader."
