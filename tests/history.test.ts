@@ -565,6 +565,35 @@ describe('collapseHistory', () => {
     expect(messageCacheControls(out[2]!)).toHaveLength(2);
   });
 
+  it('fails closed when a collapsed message carries a mid-message caller marker', async () => {
+    // Reviewloop slice-2 r2 (codex): a single marked block FOLLOWED by more content
+    // in the same message used to collapse fine, re-planting the marker on the final
+    // image of a segment containing both blocks — silently expanding the caller's
+    // breakpoint scope across the later content. Position it cannot honor, so the
+    // bucket must fail closed and leave the request byte-exact.
+    const marker = { type: 'ephemeral' as const, ttl: '1h' as const };
+    const midMarked = usr([
+      { type: 'text', text: `marked prefix ${'a'.repeat(1200)}`, cache_control: marker },
+      { type: 'text', text: `unmarked suffix ${'b'.repeat(1200)}` },
+    ]);
+    const msgs: Message[] = [usr('start'), asst('ack'), midMarked];
+    for (let index = 0; index < 10; index++) {
+      msgs.push(index % 2 === 0 ? asst(`a${index}`) : usr(`u${index}`));
+    }
+    msgs.push(usr('live tail'));
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+    });
+
+    expect(out).toBe(msgs);
+    expect(info.reason).toBe('mid_message_cache_marker');
+    expect(info.collapsedTurns).toBe(0);
+    expect(messageCacheControls(out[2]!)).toEqual([marker]);
+  });
+
   it('preserves one typed cache marker from each of two collapsed messages', async () => {
     const short = { type: 'ephemeral' as const };
     const long = { type: 'ephemeral' as const, ttl: '1h' as const };

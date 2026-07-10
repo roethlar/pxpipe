@@ -683,6 +683,7 @@ export interface TransformInfo {
     | 'privileged_role_in_collapse_range'
     | 'context_reminder_in_collapse_range'
     | 'ambiguous_cache_markers_in_collapse_range'
+    | 'mid_message_cache_marker'
     | 'cache_marker_mismatch'
     | 'below_min_chars'
     | 'below_min_tokens'

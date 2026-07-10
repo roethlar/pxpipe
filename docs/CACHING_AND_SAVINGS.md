@@ -40,7 +40,7 @@ pxpipe rewrites only the bulky, provenance-recognized parts into images (see `do
 
 The key invariant:
 
-> pxpipe never adds a cache-control marker and never increases the marker count. Caller markers survive: a marker carried by compressed tool_result content moves onto the last image rendered from that same logical content, and history collapse re-plants the one unambiguous marker a collapsed message carried (multiple markers in one message fail that bucket closed).
+> pxpipe never adds a cache-control marker and never increases the marker count. Caller markers survive: a marker carried by compressed tool_result content moves onto the last image rendered from that same logical content, and history collapse re-plants the one unambiguous end-of-message marker a collapsed message carried. Multiple markers in one message — or a single marker anywhere but its message's final content position — fail that bucket closed rather than letting the breakpoint's scope drift.
 
 The transformed request shape is:
 

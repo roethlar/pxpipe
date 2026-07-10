@@ -117,8 +117,10 @@ count** (`src/core/transform.ts:900`). What it does instead:
   (`src/core/transform.ts:2120`).
 - History collapse recognizes at most one caller marker per collapsed
   message (including markers nested in tool_result content) and re-plants it
-  on the collapsed representation; multiple same-message markers or any
-  count/value mismatch fails that history bucket closed.
+  on the collapsed representation at that message's chunk end. Multiple
+  same-message markers, a single marker not at its message's final content
+  position, or any count/value mismatch fails that history bucket closed —
+  a breakpoint's scope never silently expands across later content.
 - System-field markers are never touched or moved.
 
 The turn-over-turn cache identity is `cachePrefixSha8` — a digest that stops

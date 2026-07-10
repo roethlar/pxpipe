@@ -124,6 +124,7 @@ export interface HistoryCollapseInfo {
     | 'privileged_role_in_collapse_range'
     | 'context_reminder_in_collapse_range'
     | 'ambiguous_cache_markers_in_collapse_range'
+    | 'mid_message_cache_marker'
     | 'cache_marker_mismatch'
     | 'not_profitable'
     | 'render_empty'
@@ -280,6 +281,29 @@ export function messageCacheControls(m: Message): CacheControl[] {
 export function messageCacheControl(m: Message): CacheControl | undefined {
   const controls = messageCacheControls(m);
   return controls.length === 1 ? controls[0] : undefined;
+}
+
+/** True when every caller marker on the message sits at its final content
+ * position: the last top-level block, or the last inner part of a last
+ * tool_result. Collapse re-plants a marker at its chunk's END, so a marker
+ * anywhere else would silently expand the caller's breakpoint scope across the
+ * message's later content — such messages fail the history bucket closed. */
+export function messageCacheControlAtEnd(m: Message): boolean {
+  if (!Array.isArray(m.content) || m.content.length === 0) return true;
+  const last = m.content[m.content.length - 1]!;
+  for (const block of m.content) {
+    const cc = (block as { cache_control?: CacheControl }).cache_control;
+    if (cc !== undefined && block !== last) return false;
+    if (block.type === 'tool_result' && Array.isArray(block.content)) {
+      const innerLast = block.content[block.content.length - 1];
+      for (const inner of block.content) {
+        if (inner.cache_control !== undefined && (block !== last || inner !== innerLast)) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
 }
 
 function sameCacheControls(
@@ -668,6 +692,13 @@ export async function collapseHistory(
   const collapseRange = messages.slice(protectedPrefix, collapseLen);
   if (collapseRange.some((message) => messageCacheControls(message).length > 1)) {
     info.reason = 'ambiguous_cache_markers_in_collapse_range';
+    return { messages, info };
+  }
+  // A single marker NOT at its message's end cannot be re-planted without
+  // expanding the caller's breakpoint across the message's later content
+  // (reviewloop slice-2 r2). Position it cannot honor → fail closed.
+  if (collapseRange.some((message) => !messageCacheControlAtEnd(message))) {
+    info.reason = 'mid_message_cache_marker';
     return { messages, info };
   }
   const sourceCacheControls = collapseRange.flatMap(messageCacheControls);
