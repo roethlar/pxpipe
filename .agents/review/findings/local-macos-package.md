@@ -1,7 +1,7 @@
 # local-macos-package: Loopback-only macOS package and installer
 
 **Severity**: N/A — owner-approved implementation slice, not a defect finding
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `eab46e6aec752530f01dbbcc0ad8488854315f0a`
 
@@ -59,4 +59,51 @@ rollback, uninstall, no Cloudflare, and an unconditional `127.0.0.1` bind.
 
 ## Reviewer comments
 
-Pending independent Claude review.
+- Reviewer: Claude Code 2.1.206 / Sonnet 5 (`claude -p`, structured output),
+  run with pxpipe bypassed in a disposable worktree.
+- Reviewed SHA: `aff8bf15dc824fbf037ab77f3a340cfc5a395db9`;
+  base SHA: `926c90f687313dbd70ccb0766d8606a6ad9e9b91`.
+- `guard_confirmed: true`.
+- Verdict: **accepted** (2026-07-10 21:11 UTC), no material findings.
+- Comments (verbatim):
+  1. "No concrete observable failure found. Full gate reproduced clean: pnpm
+     typecheck (pass), pnpm test (803/803 pass), pnpm build (version smoke
+     check prints 0.8.0-provenance-safe.1), pnpm run package:macos-local
+     (emits archive+manifest+install.sh bound to HEAD aff8bf1)."
+  2. "Independently reversed two guards cited in the finding record and
+     confirmed they are load-bearing: (1) changed HOST_BIND from 127.0.0.1 to
+     0.0.0.0 in deploy/macos-local/install.sh:8 — the loopback-assertion test
+     failed as expected; (2) bypassed the checksum comparison at
+     deploy/macos-local/install.sh:168 — the checksum-mismatch test failed as
+     expected. Both reverted (diff clean) and the full 10/10 focused suite
+     passed again afterward."
+  3. "Also manually attacked archive extraction safety, which is not covered
+     by the automated test suite: built a crafted tgz with a
+     `package/../../outside_pwned.txt` entry and a symlink entry pointing at
+     /etc/passwd, matched each to a valid manifest, and ran the real install.sh
+     against them in a sandboxed HOME. Both were correctly rejected before
+     extraction ('package archive contains an unsafe path' at install.sh:172,
+     'package archive contains a link or unsupported entry type' at
+     install.sh:179) with no file escaping the staging tree — confirms the
+     extraction-safety design (deploy/macos-local/install.sh:170-181) actually
+     works, though it has no direct regression test (minor coverage gap, not a
+     defect)."
+  4. "Ran the real packaged archive directly (extracted in isolation,
+     `PORT=48173 node package/bin/cli.js`, no launchd involved) and confirmed
+     with lsof that the process bound only to 127.0.0.1:48173 and the dashboard
+     returned 200, matching the finding record's smoke-test claim."
+  5. "Reviewed update/rollback transaction logic (install.sh:206-280):
+     new-release creation is gated on the port becoming free before any
+     plist/symlink mutation; a failed health check restores the prior plist and
+     `current` symlink and deletes only the newly staged release; a successful
+     update prunes releases other than current+previous. Uninstall
+     (install.sh:106-117) removes the LaunchAgent and INSTALL_ROOT while leaving
+     ~/Library/Logs/pxpipe and ~/.pxpipe/events.jsonl untouched, matching the
+     plan and the passing test."
+  6. "Manifest/version/commit validation (install.sh:132-165) uses
+     regex-anchored fields (40-hex commit, 64-hex sha256, safe version charset)
+     to reconstruct the expected archive name before use, and rejects
+     symlinked manifest/archive files — no path-injection surface found."
+  7. "No LaunchAgent was installed on this machine, no push/commit/model call
+     was made, and the worktree was restored to a clean aff8bf1 (build/ output
+     removed) at the end of the review."
