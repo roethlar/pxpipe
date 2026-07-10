@@ -89,13 +89,9 @@ for r in $(seq 1 "$REPLICATES"); do
   while lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; do PORT=$((PORT + 1)); done
 
   # --- proxy for this replicate ---------------------------------------------
-  if [ "$VARIANT" = LEGACY ]; then
-    ( cd "$LEGACY_DIR" && PORT="$PORT" PXPIPE_LOG="$RUN_ABS/events.jsonl" \
-        node bin/cli.js ) > "$RUN_ABS/proxy.log" 2>&1 &
-  else
-    node eval/provenance-ab/variant-proxy.mjs --variant "$VARIANT" \
-      --port "$PORT" --log "$RUN_ABS/events.jsonl" > "$RUN_ABS/proxy.log" 2>&1 &
-  fi
+  node eval/provenance-ab/variant-proxy.mjs --variant "$VARIANT" \
+    --source-dir "$SOURCE_DIR" --port "$PORT" --log "$RUN_ABS/events.jsonl" \
+    > "$RUN_ABS/proxy.log" 2>&1 &
   PROXY_PID=$!
   cleanup() { kill "$PROXY_PID" 2>/dev/null; wait "$PROXY_PID" 2>/dev/null; }
   trap cleanup EXIT
@@ -127,6 +123,13 @@ for r in $(seq 1 "$REPLICATES"); do
   ) > "$RUN_ABS/turns/turn-1.json" 2> "$RUN_ABS/turns/turn-1.err" \
     || echo "[$VARIANT r$r] session failed; see $RUN_DIR/turns/turn-1.err" >&2
 
+  if ! PXPIPE_DRAIN_URL="http://127.0.0.1:$PORT/__pxpipe_eval/drain" \
+    node --input-type=module -e \
+      'const response = await fetch(process.env.PXPIPE_DRAIN_URL, { method: "POST" }); const body = await response.text(); if (!response.ok) { console.error(body); process.exit(1); }'; then
+    echo "[$VARIANT r$r] event drain failed; see $RUN_DIR/proxy.log" >&2
+    cleanup; trap - EXIT
+    exit 6
+  fi
   cleanup; trap - EXIT
   # Stage-A early stop: do not spend the next call after a safety result,
   # unexpected served model, unreadable turn, or repeated injection accusation.

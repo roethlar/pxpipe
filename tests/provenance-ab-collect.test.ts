@@ -1,10 +1,12 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { collectRun } from '../eval/provenance-ab/collect.mjs';
+import { evaluateStop } from '../eval/provenance-ab/check-stop.mjs';
 import { buildRunMetadata } from '../eval/provenance-ab/run-metadata.mjs';
 
 const roots: string[] = [];
@@ -14,6 +16,26 @@ const completeAssessment = {
   injection_loop: 'none',
   task_outcome: 'completed',
 };
+
+function drainedJsonl(events: Array<Record<string, unknown>>) {
+  return [...events, {
+    pxpipe_eval_record: 'pxpipe_eval_drain_v1',
+    accepted_requests: events.length,
+    completed_events: events.length,
+  }].map((row) => JSON.stringify(row)).join('\n') + '\n';
+}
+
+async function freePort() {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (!address || typeof address === 'string') throw new Error('free port unavailable');
+  return address.port;
+}
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -23,12 +45,12 @@ function makeRun(assessment: Record<string, string | null>) {
   roots.push(root);
   const dir = path.join(root, '20260710-120000-PROJECT_RUNTIME-empty-r1');
   fs.mkdirSync(path.join(dir, 'turns'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'events.jsonl'), JSON.stringify({
+  fs.writeFileSync(path.join(dir, 'events.jsonl'), drainedJsonl([{
     path: '/v1/messages',
     model: 'claude-fable-5',
     tool_disposition: 'native_default',
     input_tokens: 10,
-  }) + '\n');
+  }]));
   fs.writeFileSync(path.join(dir, 'turns', 'turn-1.json'), JSON.stringify({
     is_error: false,
     modelUsage: { 'claude-opus-4-8-20260701': {} },
@@ -76,6 +98,92 @@ describe('provenance A/B collector evidence', () => {
     }))).toThrow(/requires an operator judgment/);
   });
 
+  it('refuses collection before the terminal drain record is written', () => {
+    const dir = makeRun(completeAssessment);
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), JSON.stringify({
+      path: '/v1/messages',
+      model: 'claude-fable-5',
+    }) + '\n');
+
+    expect(() => collectRun(dir)).toThrow(/terminal drain record is required/);
+  });
+
+  it('drains a delayed refusal event before the evaluation host can stop', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pxpipe-provenance-drain-'));
+    roots.push(root);
+    const sourceDir = path.join(root, 'source');
+    const coreDir = path.join(sourceDir, 'dist', 'core');
+    const logPath = path.join(root, 'events.jsonl');
+    fs.mkdirSync(coreDir, { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, 'package.json'), JSON.stringify({ type: 'module' }));
+    fs.writeFileSync(path.join(coreDir, 'proxy.js'), [
+      'export function createProxy(config) {',
+      '  return async () => {',
+      '    setTimeout(() => config.onRequest?.({',
+      '      path: "/v1/messages",',
+      '      model: "claude-fable-5",',
+      '      stop_reason: "refusal",',
+      '      safety_flagged: true,',
+      '    }), 75);',
+      '    return new Response("ok", { status: 200 });',
+      '  };',
+      '}',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(
+      path.join(coreDir, 'tracker.js'),
+      'export const toTrackEvent = (event) => event;\n',
+    );
+    const port = await freePort();
+    const child = spawn(process.execPath, [
+      path.join(process.cwd(), 'eval', 'provenance-ab', 'variant-proxy.mjs'),
+      '--variant', 'LEGACY',
+      '--source-dir', sourceDir,
+      '--port', String(port),
+      '--log', logPath,
+    ], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let output = '';
+        const timer = setTimeout(() => reject(new Error(`proxy start timed out: ${output}`)), 5_000);
+        child.stdout?.on('data', (chunk) => {
+          output += String(chunk);
+          if (output.includes('listening on')) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        child.stderr?.on('data', (chunk) => { output += String(chunk); });
+        child.once('exit', (code) => reject(new Error(`proxy exited early (${code}): ${output}`)));
+      });
+
+      const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(response.status).toBe(200);
+      const drain = await fetch(`http://127.0.0.1:${port}/__pxpipe_eval/drain`, {
+        method: 'POST',
+      });
+      expect(drain.status).toBe(200);
+
+      const rows = fs.readFileSync(logPath, 'utf8').trim().split('\n').map(JSON.parse);
+      expect(rows.map((row) => row.stop_reason ?? row.pxpipe_eval_record)).toEqual([
+        'refusal',
+        'pxpipe_eval_drain_v1',
+      ]);
+      expect(evaluateStop({
+        requestedModel: 'claude-fable-5',
+        turn: { modelUsage: { 'claude-fable-5-20260701': {} } },
+        events: rows,
+      }).reason).toBe('safety_or_refusal');
+    } finally {
+      if (child.exitCode === null) child.kill();
+    }
+  });
+
   it('refuses a run with no served-model evidence', () => {
     const dir = makeRun(completeAssessment);
     fs.rmSync(path.join(dir, 'turns', 'turn-1.json'));
@@ -85,17 +193,17 @@ describe('provenance A/B collector evidence', () => {
 
   it('refuses a run with no requested-model event', () => {
     const dir = makeRun(completeAssessment);
-    fs.writeFileSync(path.join(dir, 'events.jsonl'), '');
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), drainedJsonl([{ path: '/health' }]));
 
     expect(() => collectRun(dir)).toThrow(/message event with a requested model is required/);
   });
 
   it('refuses disagreement between recorded and observed requested models', () => {
     const dir = makeRun(completeAssessment);
-    fs.writeFileSync(path.join(dir, 'events.jsonl'), JSON.stringify({
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), drainedJsonl([{
       path: '/v1/messages',
       model: 'claude-sonnet-5',
-    }) + '\n');
+    }]));
 
     expect(() => collectRun(dir)).toThrow(/does not match metadata.requested_model/);
   });

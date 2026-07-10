@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { splitCompletedEvents } from './run-evidence.mjs';
 
 const loadJsonl = (file) =>
   fs.existsSync(file)
@@ -69,7 +70,12 @@ function loadMetadata(dir) {
 export function collectRun(dir) {
   const name = path.basename(dir.replace(/\/+$/, ''));
   const metadata = loadMetadata(dir);
-  const events = loadJsonl(path.join(dir, 'events.jsonl')).filter(
+  const loadedEvents = loadJsonl(path.join(dir, 'events.jsonl'));
+  const { events: completedEvents } = splitCompletedEvents(
+    loadedEvents,
+    `${dir}/events.jsonl`,
+  );
+  const events = completedEvents.filter(
     (row) => (row.path ?? '').includes('/v1/messages') && !(row.path ?? '').includes('count_tokens'),
   );
 

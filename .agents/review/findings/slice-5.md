@@ -380,4 +380,16 @@ relabel allowed, and no model process is called on any prepare-only path.
 Guard proof removed the pre-exit validation: the focused test failed because
 untracked source incorrectly returned success, then passed after restoration.
 
-Findings 7–9 remain pending individual adjudication against the reviewed head.
+### Finding 7 — adopted and fixed
+
+Every matrix variant, including the pinned legacy and patched PROJECT sources,
+now runs through one evaluation host loaded from the selected built tree. Before
+the runner kills that host, a local drain handshake stops new work, waits until
+every accepted request has produced a durable event row, and appends a terminal
+count record. Early-stop and collection reject missing or inconsistent drain
+evidence. A synthetic delayed-refusal test proves the completion record cannot
+be written first.
+Guard proof bypassed the wait for completed events: both the state-level and
+host-level delayed-refusal tests failed, then passed after restoration.
+
+Findings 8–9 remain pending individual adjudication against the reviewed head.

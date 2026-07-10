@@ -3,6 +3,7 @@
 
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { splitCompletedEvents } from './run-evidence.mjs';
 
 const modelBase = (model) => String(model ?? '').replace(/-\d{8}$/, '');
 
@@ -13,7 +14,13 @@ const accusationPatterns = [
 ];
 
 export function evaluateStop({ requestedModel, turn, events }) {
-  const safety = events.some(
+  let observedEvents;
+  try {
+    ({ events: observedEvents } = splitCompletedEvents(events, 'early-stop events'));
+  } catch {
+    return { stop: true, code: 6, reason: 'event_log_incomplete' };
+  }
+  const safety = observedEvents.some(
     (event) =>
       event?.safety_flagged === true ||
       event?.stop_reason === 'refusal' ||

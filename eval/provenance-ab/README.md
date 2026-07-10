@@ -12,9 +12,9 @@ defenses.
 
 ## Files
 
-- `variant-proxy.mjs` — loopback proxy wiring `createProxy` (from the built
-  `dist/`) with explicit per-variant transform overrides; logs redactable
-  TrackEvents to a per-run `events.jsonl`. The stock Node entrypoint
+- `variant-proxy.mjs` — loopback proxy wiring `createProxy` from the selected
+  worktree's built `dist/` with explicit per-variant transform overrides;
+  logs redactable TrackEvents to a per-run `events.jsonl`. The stock Node entrypoint
   deliberately exposes no per-bucket config, so the matrix gets its own host.
 - `run-variant.sh` — one cell = one variant × one workspace × N cold
   replicates, each a fresh proxy + one `claude -p` session. Stops the cell on
@@ -31,6 +31,11 @@ The runner rebuilds the selected source tree before the first call and records
 the resulting proxy fingerprint. `--prepare-only` performs that validation and
 build without making a model call. Untracked source or missing model evidence
 is rejected rather than recorded as a clean result.
+
+Before stopping a replicate's proxy, the runner closes it to new work and waits
+for every accepted request's event record to be written, including delayed
+safety and usage data. The proxy then appends a terminal count record. Early-stop
+and collection both reject a missing or inconsistent terminal record.
 
 ## What a row records (redacted by design)
 
