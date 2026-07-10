@@ -1,6 +1,6 @@
 # Provenance-safe Anthropic compaction without losing project governance
 
-Status: **PROPOSED — cross-harness review in progress; not approved and not implemented**.
+Status: **PROPOSED — Claude review accepted at r2; awaiting owner approval; not implemented**.
 
 Plan base: `b1f5a01` (`origin/main`, 2026-07-09). The plan is intentionally
 isolated from the unrelated `fix/escape-atlas-missing-glyphs` branch.
@@ -573,3 +573,8 @@ does not authorize implementation.
   literals in `transform.ts` and `history.ts`; Slice 2 now owns both files, requires
   one shared exported boundary definition, migrates every consumer, and names the
   history-collapse guard. Revised plan awaits a fresh pinned-SHA review.
+- r2 (2026-07-10, Claude Code 2.1.205 / Sonnet 5, reviewed SHA `55e47ad`):
+  **accepted**, zero must-fix findings, zero should-fix findings, no open questions.
+  Claude verified that all five functional rendered-boundary consumers are covered
+  by Slice 2 and that the round-1 history-detachment risk is closed. Consensus
+  reached; acceptance makes the plan ready for owner judgment, not implementation.
