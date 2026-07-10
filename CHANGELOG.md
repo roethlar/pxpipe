@@ -6,6 +6,41 @@ behavioral changes, patch = fixes).
 
 ## Unreleased
 
+The provenance-safe structural change is implemented and covered by automated
+checks. Release remains gated on the separately owner-authorized live matrix in
+`docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` §7.
+
+### Security — provenance boundary (#97, #37)
+- The Anthropic transform no longer flattens the native system prompt and tool
+  definitions into a user-message image. Recognized repository guidance gets
+  role-bound `PROJECT GUIDANCE` pages and an exact native-system manifest;
+  unknown host-context shapes stay native. Independent history and tool-result
+  compression retain their own guards.
+- The self-asserted “Context relocated by pxpipe from the system prompt” wrapper
+  is gone. Exactly recognized `userEmail` / `currentDate` data moves to a final
+  data-only runtime block vouched for by a native-system manifest. Other native
+  system content remains in place.
+- Anthropic tool definitions stay native by default. Experimental tool imaging
+  has an independent manifest, reference, gate, and digest-bound stubs; it is
+  never silently enabled. The retained `compressReminders` compatibility option
+  does not activate a generic reminder-imaging pass.
+- Cache markers are never added or multiplied. Project pages leave the caller’s
+  live-prompt marker in place; guarded tool-result and history paths can transfer
+  one existing marker only within its owning content.
+- Literal `role: "system"` attachments are modeled and protected byte-exact;
+  they cannot be serialized into user-role history images.
+
+### Added
+- `compressProjectGuidance` (on by default for recognized Anthropic project
+  guidance).
+- Per-bucket provenance telemetry, including modes, source sizes, references,
+  dispositions, fallback reasons, and `cache_prefix_sha8` /
+  `cache_boundary_kind`. New fields are optional so old event rows remain
+  readable.
+- `eval/provenance-ab/`, an owner-gated live comparison harness that records
+  redacted outcomes, fingerprints, model evidence, judgments, and aggregate
+  token counts without storing prompts or transcripts in the matrix.
+
 ### Changed
 - `gpt-5.6-sol` is now opt-in rather than silently enabled. Its exact profile
   remains available when selected, and sibling 5.6 variants do not inherit it.
@@ -15,6 +50,16 @@ behavioral changes, patch = fixes).
   the factsheet.
 - Dashboard exposes the GPT model row and `?` controls now show accessible
   hover/focus tooltips.
+
+### Migration notes
+- No operator configuration change is required. `PXPIPE_DISABLE=1` and the
+  dashboard kill switch still forward the original request while retaining
+  usage accounting.
+- Worker settings `COMPRESS_PROJECT_GUIDANCE`, `COMPRESS_TOOLS`, and
+  `COMPRESS_REMINDERS` are applied only when explicitly set, preserving each
+  provider’s defaults. Anthropic tools remain native by default.
+- Event readers should prefer `cache_prefix_sha8 ?? system_sha8` for cache
+  identity; bundled readers already do. OpenAI behavior is unchanged.
 
 ### Known limitations / evidence
 - A direct `gpt-5.6-sol` raw-image pilot tested **both** the new JetBrains

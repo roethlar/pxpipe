@@ -333,4 +333,12 @@ All r1 findings have now been adjudicated individually against the merged head.
 
 ## Coder adjudication — r2
 
-Findings 1–9 remain pending individual adjudication against the reviewed head.
+### Finding 1 — adopted and fixed
+
+The normal upstream merge correctly kept the newer model-profile release notes
+but accidentally dropped the entire provenance-safe Unreleased entry. The live
+changelog now keeps those upstream notes and restores the required trust-boundary,
+safe-default, telemetry, migration, rollback, and owner-gated live-matrix notes
+with the r1 wording corrections included.
+
+Findings 2–9 remain pending individual adjudication against the reviewed head.
