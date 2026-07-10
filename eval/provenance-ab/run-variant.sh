@@ -43,7 +43,8 @@ case "$VARIANT" in
   PROJECT)
     echo "PROJECT (runtime native) is not config-expressible on this build; run it" >&2
     echo "from a disposable worktree with the one-line neutralization in README.md," >&2
-    echo "then use --variant PROJECT_RUNTIME --legacy-dir <that worktree>." >&2
+    echo "then use --variant LEGACY --legacy-dir <that worktree> and rename the" >&2
+    echo "resulting run directory from LEGACY to PROJECT before collection." >&2
     exit 2 ;;
   *) echo "unknown variant: $VARIANT" >&2; exit 2 ;;
 esac

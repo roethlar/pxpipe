@@ -239,4 +239,12 @@ separate project, history, tool-result, optional tool-reference, marker, and
 runtime paths. Focused role-integrity, tool-reference, and history tests cover
 those boundaries.
 
-Findings 11–14 remain pending individual adjudication against the merged head.
+### Finding 11 — adopted and fixed
+
+The PROJECT refusal now gives a command the runner actually honors:
+`--variant LEGACY --legacy-dir <patched worktree>`, followed by the documented
+LEGACY-to-PROJECT run-directory rename. The old instruction selected a variant
+that ignored `--legacy-dir`. The refusal path was observed before and after the
+fix, and the shell script passes syntax checking.
+
+Findings 12–14 remain pending individual adjudication against the merged head.
