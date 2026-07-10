@@ -519,14 +519,19 @@ function isOpenAIResponsesPath(pathname: string): boolean {
     || pathname === '/openai/responses';
 }
 
-function isCanonicalOpenAIPath(pathname: string, headers: Headers, hasOpenAIKey: boolean): boolean {
+function isCanonicalOpenAIPath(
+  pathname: string,
+  method: string,
+  headers: Headers,
+  hasOpenAIKey: boolean,
+): boolean {
   const isModelsPath = pathname === '/models'
     || pathname.startsWith('/models/')
     || pathname === '/v1/models'
     || pathname.startsWith('/v1/models/');
   const isSettingsPath = pathname === '/v1/settings';
   const looksOpenAIAuth = hasOpenAIKey || (headers.has('authorization') && !headers.has('x-api-key'));
-  return pathname === '/responses'
+  return (method === 'POST' && pathname === '/responses')
     || pathname === '/v1/chat/completions'
     || pathname === '/v1/responses'
     || pathname.startsWith('/v1/responses/')
@@ -703,6 +708,7 @@ export function createProxy(config: ProxyConfig = {}) {
     const isOpenAIResponses = req.method === 'POST' && isOpenAIResponsesPath(url.pathname);
     const isOpenAIPath = isCanonicalOpenAIPath(
       url.pathname,
+      req.method,
       req.headers,
       config.openAIApiKey !== undefined,
     );

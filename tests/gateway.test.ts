@@ -199,6 +199,19 @@ describe('direct OpenAI-compatible routing (stubbed fetch)', () => {
     expect(cap.headers?.get('chatgpt-account-id')).toBe('acct_fake');
   });
 
+  it('keeps authenticated non-POST /responses on the generic upstream', async () => {
+    const cap: { url?: string } = {};
+    stubFetch(cap);
+
+    await proxy()(
+      new Request('http://localhost/responses?trace=get', {
+        headers: { authorization: 'Bearer fake-subscription-token' },
+      }),
+    );
+
+    expect(cap.url).toBe('http://anthropic.test/responses?trace=get');
+  });
+
   it.each([
     '/models?client_version=0.144.1',
     '/models/gpt-5.6-sol?view=full',
