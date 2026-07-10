@@ -7,6 +7,62 @@
 import type { ProxyEvent } from './proxy.js';
 import { bytesToBase64 } from './png.js';
 
+/** Canonical bucket keys emitted by current transforms. Deriving the union from
+ * this allow-list keeps runtime projection and persisted typing in lockstep. */
+const TRACK_BUCKET_NAMES = [
+  'project_guidance',
+  'static_slab',
+  'reminder',
+  'tool_reference',
+  'tool_result_json',
+  'tool_result_log',
+  'tool_result_prose',
+  'history',
+] as const;
+export type TrackBucketName = typeof TRACK_BUCKET_NAMES[number];
+
+/** `tool_result_structured` was emitted by an older tracker type. Readers keep
+ * accepting it, while new projection emits the canonical `tool_result_json`. */
+export type TrackBucketChars = Partial<Record<
+  TrackBucketName | 'tool_result_structured',
+  number
+>>;
+
+export type ContextMode = 'claude_code_2_1_205' | 'safe_native';
+export type ProjectDisposition =
+  | 'imaged'
+  | 'native_disabled'
+  | 'native_below_threshold'
+  | 'native_not_profitable'
+  | 'native_too_many_images'
+  | 'native_render_error';
+export type RuntimeMetadataDisposition = 'moved' | 'native_apply_error';
+export type UncertainContextReason =
+  | 'unsupported_or_missing_claude_md_section'
+  | 'unsupported_or_malformed_claude_context_tail';
+const UNCERTAIN_CONTEXT_REASONS = new Set<UncertainContextReason>([
+  'unsupported_or_missing_claude_md_section',
+  'unsupported_or_malformed_claude_context_tail',
+]);
+export type ToolMode = 'native' | 'experimental_image';
+export type ToolDisposition =
+  | 'native_default'
+  | 'native_below_threshold'
+  | 'native_not_profitable'
+  | 'native_too_many_images'
+  | 'native_render_error'
+  | 'imaged';
+export type CacheBoundaryKind = 'project_guidance' | 'tool_reference' | 'history';
+
+export interface TrackGateEval {
+  site: 'tool_reference';
+  image_tokens: number;
+  text_tokens: number;
+  burn_image_side: number;
+  burn_text_side: number;
+  profitable: boolean;
+}
+
 /** Flat record persisted per request. Adding a field is non-breaking for readers. */
 export interface TrackEvent {
   ts: string;
@@ -22,7 +78,7 @@ export interface TrackEvent {
   compressed?: boolean;
   reason?: string;
   orig_chars?: number;
-  /** Text-chars replaced by image blocks (slab + reminders + tool_results).
+  /** Source chars successfully replaced by image blocks across all buckets.
    *  Compare with image_count: textTokens(n/4) vs imageTokens(n×2500). */
   compressed_chars?: number;
   image_count?: number;
@@ -39,11 +95,39 @@ export interface TrackEvent {
   static_chars?: number;
   dynamic_chars?: number;
   dynamic_block_count?: number;
+  /** Recognized Anthropic host-context framing mode. */
+  context_mode?: ContextMode;
+  /** Exact recognized project-guidance source size and provenance. No source text. */
+  project_source_chars?: number;
+  project_source_role?: 'user';
+  project_source_message_index?: number;
+  project_source_block_index?: number;
+  project_disposition?: ProjectDisposition;
+  project_image_count?: number;
+  project_source_sha8?: string;
+  project_ref?: string;
+  /** Recognized runtime source vs the subset actually moved to the vouched tail. */
+  runtime_metadata_source_chars?: number;
+  runtime_metadata_chars?: number;
+  runtime_metadata_disposition?: RuntimeMetadataDisposition;
+  /** Input-owned privileged text that remained native; generated manifests are excluded. */
+  native_system_chars?: number;
+  /** Disjoint fail-closed context spans and fixed reasons; never raw payloads. */
+  uncertain_context_chars?: number;
+  uncertain_context_reasons?: UncertainContextReason[];
+  /** Tool definitions use an independent native/experimental-image decision. */
+  tool_mode?: ToolMode;
+  tool_disposition?: ToolDisposition;
+  tool_source_chars?: number;
+  tool_image_count?: number;
+  tool_source_sha8?: string;
+  tool_ref?: string;
+  tool_gate_eval?: TrackGateEval;
   /** Images from compressing <system-reminder> blocks in the first user message. */
   reminder_imgs?: number;
   /** Images from compressing tool_result content. */
   tool_result_imgs?: number;
-  /** Chars of tool docs moved to the system-text Tool Reference (not imaged). */
+  /** Canonically framed tool-document chars considered by the experimental image gate. */
   tool_docs_chars?: number;
   /** tool_result blocks where text exceeded the per-result image budget and was truncated. */
   truncated_tool_results?: number;
@@ -62,30 +146,33 @@ export interface TrackEvent {
   /** Top-20 dropped codepoints (U+HHHH keys) by frequency. Only present when dropped_chars > 0. */
   dropped_codepoints_top?: Record<string, number>;
   /** Blocks that weren't image-compressed this request; only emitted when at least one counter > 0. */
-  passthrough_reasons?: { below_threshold?: number; not_profitable?: number };
+  passthrough_reasons?: {
+    below_threshold?: number;
+    not_profitable?: number;
+    kept_sharp?: number;
+  };
   /** Unrecognized tag names in the static slab — canary for Claude Code releases adding new dynamic tags. */
   unknown_static_tags?: string[];
   /** Slab tags whose content changed within a session — proven per-turn dynamics busting the image cache. */
   churning_static_tags?: string[];
-  /** Per-bucket TEXT chars through each gate call site (static_slab, reminder, tool_result_*, history).
-   *  Undefined on uncompressed requests; enables per-bucket cpt regression. */
-  bucket_chars?: Partial<Record<
-    'static_slab' | 'reminder' |
-    'tool_result_structured' | 'tool_result_log' | 'tool_result_prose' |
-    'history',
-    number
-  >>;
+  /** Pre-compression candidate chars through each gate, including rejected
+   *  candidates. Absent when no candidate gate fired; enables cpt regression. */
+  bucket_chars?: TrackBucketChars;
+  /** Disjoint source chars that were actually image-encoded. */
+  imaged_bucket_chars?: TrackBucketChars;
   /** TEXT chars that fed the history-image renderer; separate from bucket_chars because it credits a synthetic message. */
   history_text_chars?: number;
-  /** sha8 of the collapsed history image. Unchanged across turns proves the prompt cache is hitting (cache_read).
-   *  A drifting hash means the collapse boundary is unstable. Absent on no-collapse turns. */
+  /** sha8 of the collapsed history image. Diagnoses the collapse artifact only;
+   *  whole-prefix warmth identity is cache_prefix_sha8 with legacy system fallback. */
   history_image_sha8?: string;
-  /** sha8 of the exact cacheable prefix sent (tools+system+imaged prefix, live
+  /** sha8 of the exact pxpipe-vouched prefix (tools+system+imaged prefix, live
    *  tail excluded). Changes turn-over-turn within a session ⇒ pxpipe-side cache
    *  bust; stable while cache_create spikes ⇒ upstream eviction. See #11. */
   cache_prefix_sha8?: string;
   /** Approx chars in that pinned prefix (growth vs pure-invalidation split). */
   cache_prefix_bytes?: number;
+  /** Exact vouched boundary represented by cache_prefix_sha8. */
+  cache_boundary_kind?: CacheBoundaryKind;
 
   // From TransformInfo.env:
   cwd?: string;
@@ -162,6 +249,58 @@ export interface Tracker {
   flush?(): void | Promise<void>;
 }
 
+/** Forward-compatible view of provenance telemetry. Keeping this structural
+ * avoids coupling tracker rollout to the TransformInfo slice that produces the
+ * pending native/uncertain/tool fields. */
+interface ProvenanceTelemetryInfo {
+  contextMode?: ContextMode;
+  projectSourceChars?: number;
+  projectSourceRole?: 'user';
+  projectSourceMessageIndex?: number;
+  projectSourceBlockIndex?: number;
+  projectDisposition?: ProjectDisposition;
+  projectImageCount?: number;
+  projectSourceSha8?: string;
+  projectRef?: string;
+  runtimeMetadataSourceChars?: number;
+  runtimeMetadataChars?: number;
+  runtimeMetadataDisposition?: RuntimeMetadataDisposition;
+  nativeSystemChars?: number;
+  uncertainContextChars?: number;
+  uncertainContextReasons?: readonly UncertainContextReason[];
+  toolMode?: ToolMode;
+  toolDisposition?: ToolDisposition;
+  toolSourceChars?: number;
+  toolImageCount?: number;
+  toolSourceSha8?: string;
+  toolRef?: string;
+  toolGateEval?: {
+    site: 'tool_reference';
+    imageTokens: number;
+    textTokens: number;
+    burnImageSide: number;
+    burnTextSide: number;
+    profitable: boolean;
+  };
+  cacheBoundaryKind?: CacheBoundaryKind;
+  bucketChars?: Partial<Record<TrackBucketName, number>>;
+  imagedBucketChars?: Partial<Record<TrackBucketName, number>>;
+}
+
+/** Copy only known numeric bucket keys. Besides keeping old/new key names
+ * deterministic, this prevents an augmented info object from smuggling source
+ * payloads into JSONL through the nested map. */
+function projectBucketChars(value: unknown): TrackBucketChars | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value as Record<string, unknown>;
+  const out: TrackBucketChars = {};
+  for (const key of TRACK_BUCKET_NAMES) {
+    const chars = source[key];
+    if (typeof chars === 'number') out[key] = chars;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /** Convert a ProxyEvent to its flat persisted shape. Shared in core so Node/Worker hosts stay in sync. */
 export function toTrackEvent(ev: ProxyEvent): TrackEvent {
   const info = ev.info;
@@ -190,10 +329,14 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
   }
 
   if (info) {
+    const provenance = info as ProvenanceTelemetryInfo;
     if (info.compressed !== undefined) out.compressed = info.compressed;
     if (info.reason) out.reason = info.reason;
     if (info.origChars !== undefined) out.orig_chars = info.origChars;
-    if (info.compressedChars !== undefined && info.compressedChars > 0) {
+    // Zero is measured data for runtime-only rewrites. Persist it so consumers
+    // can distinguish a current zero-image row from legacy rows that predate
+    // compressed_chars and therefore need the orig_chars fallback.
+    if (info.compressedChars !== undefined) {
       out.compressed_chars = info.compressedChars;
     }
     if (info.imageCount !== undefined) out.image_count = info.imageCount;
@@ -213,6 +356,71 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
     if (info.staticChars !== undefined) out.static_chars = info.staticChars;
     if (info.dynamicChars !== undefined) out.dynamic_chars = info.dynamicChars;
     if (info.dynamicBlockCount !== undefined) out.dynamic_block_count = info.dynamicBlockCount;
+    if (provenance.contextMode !== undefined) out.context_mode = provenance.contextMode;
+    if (provenance.projectSourceChars !== undefined) {
+      out.project_source_chars = provenance.projectSourceChars;
+    }
+    if (provenance.projectSourceRole !== undefined) {
+      out.project_source_role = provenance.projectSourceRole;
+    }
+    if (provenance.projectSourceMessageIndex !== undefined) {
+      out.project_source_message_index = provenance.projectSourceMessageIndex;
+    }
+    if (provenance.projectSourceBlockIndex !== undefined) {
+      out.project_source_block_index = provenance.projectSourceBlockIndex;
+    }
+    if (provenance.projectDisposition !== undefined) {
+      out.project_disposition = provenance.projectDisposition;
+    }
+    if (provenance.projectImageCount !== undefined) {
+      out.project_image_count = provenance.projectImageCount;
+    }
+    if (provenance.projectSourceSha8) {
+      out.project_source_sha8 = provenance.projectSourceSha8;
+    }
+    if (provenance.projectRef) out.project_ref = provenance.projectRef;
+    if (provenance.runtimeMetadataSourceChars !== undefined) {
+      out.runtime_metadata_source_chars = provenance.runtimeMetadataSourceChars;
+    }
+    if (provenance.runtimeMetadataChars !== undefined) {
+      out.runtime_metadata_chars = provenance.runtimeMetadataChars;
+    }
+    if (provenance.runtimeMetadataDisposition !== undefined) {
+      out.runtime_metadata_disposition = provenance.runtimeMetadataDisposition;
+    }
+    if (provenance.nativeSystemChars !== undefined) {
+      out.native_system_chars = provenance.nativeSystemChars;
+    }
+    if (provenance.uncertainContextChars !== undefined) {
+      out.uncertain_context_chars = provenance.uncertainContextChars;
+    }
+    if (provenance.uncertainContextReasons?.length) {
+      const reasons = provenance.uncertainContextReasons.filter((reason) =>
+        UNCERTAIN_CONTEXT_REASONS.has(reason));
+      if (reasons.length > 0) out.uncertain_context_reasons = [...new Set(reasons)];
+    }
+    if (provenance.toolMode !== undefined) out.tool_mode = provenance.toolMode;
+    if (provenance.toolDisposition !== undefined) {
+      out.tool_disposition = provenance.toolDisposition;
+    }
+    if (provenance.toolSourceChars !== undefined) {
+      out.tool_source_chars = provenance.toolSourceChars;
+    }
+    if (provenance.toolImageCount !== undefined) {
+      out.tool_image_count = provenance.toolImageCount;
+    }
+    if (provenance.toolSourceSha8) out.tool_source_sha8 = provenance.toolSourceSha8;
+    if (provenance.toolRef) out.tool_ref = provenance.toolRef;
+    if (provenance.toolGateEval) {
+      out.tool_gate_eval = {
+        site: provenance.toolGateEval.site,
+        image_tokens: provenance.toolGateEval.imageTokens,
+        text_tokens: provenance.toolGateEval.textTokens,
+        burn_image_side: provenance.toolGateEval.burnImageSide,
+        burn_text_side: provenance.toolGateEval.burnTextSide,
+        profitable: provenance.toolGateEval.profitable,
+      };
+    }
     if (info.reminderImgs !== undefined) out.reminder_imgs = info.reminderImgs;
     if (info.toolResultImgs !== undefined) out.tool_result_imgs = info.toolResultImgs;
     if (info.toolDocsChars !== undefined) out.tool_docs_chars = info.toolDocsChars;
@@ -242,14 +450,21 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
     }
     if (info.passthroughReasons) {
       const pr = info.passthroughReasons;
-      if ((pr.below_threshold ?? 0) > 0 || (pr.not_profitable ?? 0) > 0) {
+      if (
+        (pr.below_threshold ?? 0) > 0 ||
+        (pr.not_profitable ?? 0) > 0 ||
+        (pr.kept_sharp ?? 0) > 0
+      ) {
         out.passthrough_reasons = pr;
       }
     }
-    if (info.bucketChars && Object.keys(info.bucketChars).length > 0) {
+    const bucketChars = projectBucketChars(provenance.bucketChars);
+    if (bucketChars) {
       // Omit empty object so noop-pass requests stay lean; presence means at least one gate fired.
-      out.bucket_chars = info.bucketChars;
+      out.bucket_chars = bucketChars;
     }
+    const imagedBucketChars = projectBucketChars(provenance.imagedBucketChars);
+    if (imagedBucketChars) out.imaged_bucket_chars = imagedBucketChars;
     if (info.historyTextChars !== undefined && info.historyTextChars > 0) {
       out.history_text_chars = info.historyTextChars;
     }
@@ -258,6 +473,9 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
     }
     if (info.cachePrefixSha8) out.cache_prefix_sha8 = info.cachePrefixSha8;
     if (info.cachePrefixBytes !== undefined) out.cache_prefix_bytes = info.cachePrefixBytes;
+    if (provenance.cacheBoundaryKind !== undefined) {
+      out.cache_boundary_kind = provenance.cacheBoundaryKind;
+    }
     if (info.unknownStaticTags && info.unknownStaticTags.length > 0)
       out.unknown_static_tags = info.unknownStaticTags;
     if (info.churningStaticTags && info.churningStaticTags.length > 0)

@@ -118,6 +118,12 @@ describe('role-bound project-guidance transform', () => {
     expect(transformed.info.projectDisposition).toBe('imaged');
     expect(transformed.info.projectRef).toMatch(/^pg_[0-9a-f]{32}$/);
     expect(transformed.info.projectImageCount).toBeGreaterThan(0);
+    expect(transformed.info.projectSourceRole).toBe('user');
+    expect(transformed.info.projectSourceMessageIndex).toBe(0);
+    expect(transformed.info.projectSourceBlockIndex).toBe(0);
+    expect(transformed.info.nativeSystemChars).toBeGreaterThan(0);
+    expect(transformed.info.uncertainContextReasons).toBeUndefined();
+    expect(transformed.info.toolMode).toBe('native');
     expect(out.tools).toEqual(originalTools);
     expect((out.system as ContentBlock[]).slice(0, originalSystem!.length)).toEqual(originalSystem);
     expect(out.messages[1]).toEqual(originalSystemAttachment);
@@ -164,6 +170,9 @@ describe('role-bound project-guidance transform', () => {
     expect(runtimeTail.text).not.toMatch(/treat .*instructions/i);
     expect(runtimeTail.cache_control).toBeUndefined();
     expect(transformed.info.runtimeMetadataChars).toBeGreaterThan(0);
+    expect(transformed.info.runtimeMetadataSourceChars).toBe(
+      transformed.info.runtimeMetadataChars,
+    );
     expect(transformed.info.runtimeMetadataDisposition).toBe('moved');
     expect(countCacheControlMarkers(transformed.body)).toBe(inputMarkers);
     expect(JSON.stringify(out)).not.toContain(project);
@@ -174,6 +183,7 @@ describe('role-bound project-guidance transform', () => {
     const expectedPrefix = await expectedProjectPrefix(out, transformed.info.projectRef!);
     expect(transformed.info.cachePrefixSha8).toBe(expectedPrefix.sha);
     expect(transformed.info.cachePrefixBytes).toBe(expectedPrefix.bytes);
+    expect(transformed.info.cacheBoundaryKind).toBe('project_guidance');
     const placeholder =
       `[Project guidance rendered as ref=${transformed.info.projectRef}; ` +
       'see the leading pages bound by the native manifest.]';
@@ -337,7 +347,7 @@ describe('role-bound project-guidance transform', () => {
     const input = encode(req);
     const transformed = await transformRequest(input, {
       compressReminders: true,
-      compressTools: true,
+      compressTools: false,
     });
     const out = decode(transformed.body);
 
@@ -346,6 +356,11 @@ describe('role-bound project-guidance transform', () => {
     expect(transformed.info.contextMode).toBe('claude_code_2_1_205');
     expect(transformed.info.projectDisposition).toBeUndefined();
     expect(transformed.info.runtimeMetadataDisposition).toBe('moved');
+    expect(transformed.info.runtimeMetadataSourceChars).toBeGreaterThan(0);
+    expect(transformed.info.uncertainContextReasons).toEqual([
+      'unsupported_or_missing_claude_md_section',
+    ]);
+    expect(transformed.info.uncertainContextChars).toBeGreaterThan(0);
     expect((out.system as ContentBlock[]).slice(0, originalSystem!.length)).toEqual(originalSystem);
     expect(out.tools).toEqual(originalTools);
     expect(out.messages[1]).toEqual(req.messages[1]);

@@ -60,15 +60,23 @@ export function deriveBaselineWarmth(
   prefixSha?: string,
 ): { warm: boolean; prevCacheable: number } {
   const age = prev !== undefined ? nowSec - prev.ts : Number.POSITIVE_INFINITY;
-  const samePrefix = prev === undefined
-    || prev.prefixSha === undefined
-    || prefixSha === undefined
-    || prev.prefixSha === prefixSha;
+  // A missing identity is unknown, never evidence of equality. This prevents
+  // an identity-less legacy/alternate row from bridging two exact digests and
+  // lending the later row an unrelated prior prefix size.
+  const samePrefix =
+    prev?.prefixSha !== undefined &&
+    prefixSha !== undefined &&
+    prev.prefixSha === prefixSha;
   // cr is the only warm/cold signal. A prior only refines the warm split.
   if (!(cr > 0)) return { warm: false, prevCacheable: 0 };
   // Fresh prior: use its real prefix size for the reused/grown split. Without
   // one, cr proves warmth but not the split, so assume full reuse.
-  const freshPrior = prev !== undefined && age >= 0 && age < ttlSec && samePrefix;
+  const freshPrior =
+    prev !== undefined &&
+    prev.cacheable > 0 &&
+    age >= 0 &&
+    age < ttlSec &&
+    samePrefix;
   return { warm: true, prevCacheable: freshPrior ? prev!.cacheable : cacheable };
 }
 

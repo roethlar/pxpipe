@@ -123,6 +123,8 @@ export interface HistoryCollapseInfo {
     | 'no_closed_prefix'
     | 'privileged_role_in_collapse_range'
     | 'context_reminder_in_collapse_range'
+    | 'ambiguous_cache_markers_in_collapse_range'
+    | 'cache_marker_mismatch'
     | 'not_profitable'
     | 'render_empty'
     | 'render_error';
@@ -256,16 +258,38 @@ export function blocksToText(content: string | ContentBlock[]): string {
   return parts.join('\n\n');
 }
 
-/** Return the caller's cache_control marker on a message, if any block carries one.
- *  Used to align freeze-chunk boundaries to roaming breakpoints so a marked segment
- *  stays independently cacheable instead of being silently flattened into the image. */
-export function messageCacheControl(m: Message): CacheControl | undefined {
-  if (!Array.isArray(m.content)) return undefined;
-  for (let i = m.content.length - 1; i >= 0; i--) {
-    const b = m.content[i] as { cache_control?: CacheControl } | undefined;
-    if (b && b.cache_control !== undefined) return b.cache_control;
+/** Return every caller cache marker carried by a message, including markers on
+ * nested tool_result parts. History collapse can preserve one marker per message;
+ * multiple markers in one message are ambiguous and make that bucket fail closed. */
+export function messageCacheControls(m: Message): CacheControl[] {
+  if (!Array.isArray(m.content)) return [];
+  const controls: CacheControl[] = [];
+  for (const block of m.content) {
+    const cc = (block as { cache_control?: CacheControl }).cache_control;
+    if (cc !== undefined) controls.push(cc);
+    if (block.type === 'tool_result' && Array.isArray(block.content)) {
+      for (const inner of block.content) {
+        if (inner.cache_control !== undefined) controls.push(inner.cache_control);
+      }
+    }
   }
-  return undefined;
+  return controls;
+}
+
+/** Return the one unambiguous caller marker on a message, if present. */
+export function messageCacheControl(m: Message): CacheControl | undefined {
+  const controls = messageCacheControls(m);
+  return controls.length === 1 ? controls[0] : undefined;
+}
+
+function sameCacheControls(
+  before: readonly CacheControl[],
+  after: readonly CacheControl[],
+): boolean {
+  const signature = (cc: CacheControl): string => `${cc.type}\u0000${cc.ttl ?? ''}`;
+  const a = before.map(signature).sort();
+  const b = after.map(signature).sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 /** Serialize messages [fromInclusive..upToExclusive) to a text blob with
@@ -631,6 +655,12 @@ export async function collapseHistory(
     info.reason = 'context_reminder_in_collapse_range';
     return { messages, info };
   }
+  const collapseRange = messages.slice(protectedPrefix, collapseLen);
+  if (collapseRange.some((message) => messageCacheControls(message).length > 1)) {
+    info.reason = 'ambiguous_cache_markers_in_collapse_range';
+    return { messages, info };
+  }
+  const sourceCacheControls = collapseRange.flatMap(messageCacheControls);
   // Exclude the role-bound protected head from serialization.
   const text = messagesToHistoryText(messages, collapseLen, protectedPrefix);
   if (!text || text.length === 0) {
@@ -761,6 +791,18 @@ export async function collapseHistory(
     // Record its ordinal so the relocator pins the cache breakpoint here instead of
     // on the still-growing newest chunk, which busts every window advance (#11).
     if (chunkEnd === carryOverEnd) carryOverOrdinal = imageBlocks.length - 1;
+  }
+  const renderedCacheControls = imageBlocks.flatMap((block) =>
+    block.cache_control === undefined ? [] : [block.cache_control]);
+  if (!sameCacheControls(sourceCacheControls, renderedCacheControls)) {
+    info.reason = 'cache_marker_mismatch';
+    info.collapsedImageBytes = 0;
+    info.collapsedImagePixels = 0;
+    info.collapsedPngs = [];
+    info.collapsedImageDims = [];
+    info.droppedChars = 0;
+    info.droppedCodepoints = new Map();
+    return { messages, info };
   }
   if (imageBlocks.length === 0) {
     info.reason = 'render_empty';

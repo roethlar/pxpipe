@@ -650,7 +650,9 @@ export class DashboardState {
       // lookup; an overlapping request that had not completed could not provide a
       // prior prefix size for this in-flight request.
       const sidNow = info?.firstUserSha8;
-      const prefixShaNow = info?.systemSha8;
+      // Prefer the exact pxpipe-vouched prefix digest. systemSha8 remains only for
+      // live events produced by older/alternate transforms that lack it.
+      const prefixShaNow = info?.cachePrefixSha8 ?? info?.systemSha8;
       const completionSec = Date.now() / 1000;
       const requestStartSec = completionSec - Math.max(0, ev.durationMs || 0) / 1000;
       const warmthPrev =
@@ -681,10 +683,14 @@ export class DashboardState {
       // Record this completed turn's prefix size for future cr>0 split estimates.
       // Carry the prior cacheable when this row has no probe.
       if (typeof sidNow === 'string' && sidNow.length > 0 && haveUsage) {
+        const sameKnownPrefix =
+          prefixShaNow !== undefined &&
+          warmthPrev?.prefixSha !== undefined &&
+          prefixShaNow === warmthPrev.prefixSha;
         this.baselineWarmth.set(sidNow, {
           ts: completionSec,
-          cacheable: cacheable > 0 ? cacheable : (warmthPrev?.cacheable ?? 0),
-          prefixSha: prefixShaNow ?? warmthPrev?.prefixSha,
+          cacheable: cacheable > 0 ? cacheable : (sameKnownPrefix ? warmthPrev.cacheable : 0),
+          prefixSha: prefixShaNow,
         });
         if (this.baselineWarmth.size > DashboardState.SESSION_CAP) {
           const firstKey = this.baselineWarmth.keys().next().value;
@@ -727,7 +733,10 @@ export class DashboardState {
         warm: warmForRow,
         output: out,
         imageCount: info.imageCount ?? 0,
-        buckets: { ...(info.bucketChars ?? {}) },
+        // Current transforms separate gate candidates from source that was
+        // actually imaged. Fall back only for older/alternate TransformInfo
+        // producers that do not expose the applied map.
+        buckets: { ...(info.imagedBucketChars ?? info.bucketChars ?? {}) },
         imageIds: [...imgIds],
         compressed,
       });
@@ -962,7 +971,9 @@ export class DashboardState {
         // completion ts + duration_ms are used only to find a prior prefix size
         // for the reused/grown split after cr>0 has proved warmth.
         const sidR = (t as { first_user_sha8?: string }).first_user_sha8;
-        const prefixShaR = (t as { system_sha8?: string }).system_sha8;
+        // Historical JSONL rows have only system_sha8; new rows carry the
+        // exact digest through pxpipe's vouched cache boundary.
+        const prefixShaR = t.cache_prefix_sha8 ?? t.system_sha8;
         const completionSecR = Date.parse(t.ts) / 1000;
         const requestStartSecR = completionSecR - Math.max(0, t.duration_ms || 0) / 1000;
         const warmthPrevR =
@@ -988,10 +999,14 @@ export class DashboardState {
             )
           : actualInputEff;
         if (typeof sidR === 'string' && sidR.length > 0 && haveUsage) {
+          const sameKnownPrefix =
+            prefixShaR !== undefined &&
+            warmthPrevR?.prefixSha !== undefined &&
+            prefixShaR === warmthPrevR.prefixSha;
           this.baselineWarmth.set(sidR, {
             ts: completionSecR,
-            cacheable: cacheable > 0 ? cacheable : (warmthPrevR?.cacheable ?? 0),
-            prefixSha: prefixShaR ?? warmthPrevR?.prefixSha,
+            cacheable: cacheable > 0 ? cacheable : (sameKnownPrefix ? warmthPrevR.cacheable : 0),
+            prefixSha: prefixShaR,
           });
           if (this.baselineWarmth.size > DashboardState.SESSION_CAP) {
             const firstKey = this.baselineWarmth.keys().next().value;
@@ -1011,7 +1026,10 @@ export class DashboardState {
       // event with the same cache-weighted math as the live update() path.
       const imageCount = (t as { image_count?: number }).image_count ?? 0;
       let imgId: number | undefined;
-      if (compressed && haveUsage && (imageCount > 0 || rawBaseline > 0)) {
+      // A runtime-metadata relocation can change the request with zero images.
+      // It is `compressed` for historical "transform applied" semantics but
+      // must not create a phantom image Context Map after restart.
+      if (compressed && haveUsage && imageCount > 0) {
         imgId = this.nextImageId++;
         this.contextHistory.push({
           id: imgId,
@@ -1024,7 +1042,9 @@ export class DashboardState {
           warm: warmForRow,
           output: out,
           imageCount,
-          buckets: { ...((t as { bucket_chars?: Record<string, number> }).bucket_chars ?? {}) },
+          buckets: {
+            ...(t.imaged_bucket_chars ?? t.bucket_chars ?? {}),
+          },
           imageIds: [], // PNG ring is in-memory; not restorable across restart
           compressed,
           restored: true,

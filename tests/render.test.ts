@@ -841,9 +841,9 @@ describe('transform', () => {
 
   // Snapshot-style tests against real-world Claude Code tool schemas.
   // These exercise the full preservation contract of stripSchemaDescriptions —
-  // now used ONLY by the GPT path (tools[] ships a stripped skeleton while the
-  // imaged docs carry the full schema; the Anthropic path passes schemas
-  // through untouched): type / properties / required / enum / items / oneOf /
+  // used by GPT and Anthropic's explicit experimental tool-reference path
+  // (tools[] ships a stripped skeleton while the imaged docs carry the full
+  // schema): type / properties / required / enum / items / oneOf /
   // anyOf / allOf / $ref / numeric & string constraints / format. Each case
   // asserts the exact post-strip shape so a regression surfaces immediately.
   describe('real-world tool-schema preservation (stripSchemaDescriptions)', () => {
@@ -909,6 +909,67 @@ describe('transform', () => {
         },
         required: ['description', 'prompt'],
         additionalProperties: false,
+      });
+    });
+
+    it('preserves validation maps whose property names collide with annotations', async () => {
+      const got = await rewriteOne({
+        type: 'object',
+        description: 'strip this root annotation',
+        properties: {
+          description: { type: 'string', description: 'strip this property annotation' },
+          mode: { type: 'string' },
+        },
+        dependentRequired: {
+          description: ['mode'],
+          title: ['description'],
+        },
+        dependencies: {
+          description: ['mode'],
+          title: {
+            type: 'object',
+            description: 'strip inside a real dependent schema',
+            properties: { extra: { type: 'boolean', description: 'strip this too' } },
+          },
+        },
+        dependentSchemas: {
+          default: {
+            type: 'object',
+            description: 'strip inside a dependent schema',
+            properties: { flag: { type: 'boolean', description: 'strip flag prose' } },
+          },
+        },
+        'x-validator-map': {
+          description: ['literal semantic map entry'],
+        },
+      });
+
+      expect(got).toEqual({
+        type: 'object',
+        properties: {
+          description: { type: 'string' },
+          mode: { type: 'string' },
+        },
+        dependentRequired: {
+          description: ['mode'],
+          title: ['description'],
+        },
+        dependencies: {
+          description: ['mode'],
+          title: {
+            type: 'object',
+            properties: { extra: { type: 'boolean' } },
+          },
+        },
+        dependentSchemas: {
+          default: {
+            type: 'object',
+            properties: { flag: { type: 'boolean' } },
+          },
+        },
+        'x-validator-map': {
+          description: ['literal semantic map entry'],
+        },
       });
     });
 

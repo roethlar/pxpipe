@@ -118,8 +118,8 @@ describe('toTrackEvent', () => {
         cache_read_input_tokens: 0,
       },
     });
-    expect(out.cache_creation_5m_tokens).toBeUndefined();
-    expect(out.cache_creation_1h_tokens).toBeUndefined();
+    expect(out.cache_create_5m_tokens).toBeUndefined();
+    expect(out.cache_create_1h_tokens).toBeUndefined();
     expect(out.web_search_requests).toBeUndefined();
   });
 
@@ -138,8 +138,11 @@ describe('toTrackEvent', () => {
         compressed: true,
         origChars: 30000,
         bucketChars: {
+          project_guidance: 12000,
           static_slab: 27000,
           reminder: 1500,
+          tool_reference: 1100,
+          tool_result_json: 900,
           tool_result_log: 800,
           tool_result_prose: 400,
           history: 300,
@@ -148,8 +151,11 @@ describe('toTrackEvent', () => {
       },
     });
     expect(out.bucket_chars).toEqual({
+      project_guidance: 12000,
       static_slab: 27000,
       reminder: 1500,
+      tool_reference: 1100,
+      tool_result_json: 900,
       tool_result_log: 800,
       tool_result_prose: 400,
       history: 300,
@@ -181,6 +187,230 @@ describe('toTrackEvent', () => {
       info: { compressed: true, origChars: 100, bucketChars: {} },
     });
     expect(emptyBucketMap.bucket_chars).toBeUndefined();
+  });
+
+  it('persists a kept-sharp-only passthrough reason', () => {
+    const out = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 1,
+      info: {
+        compressed: false,
+        origChars: 0,
+        compressedChars: 0,
+        imageCount: 0,
+        imageBytes: 0,
+        staticChars: 0,
+        dynamicChars: 0,
+        dynamicBlockCount: 0,
+        passthroughReasons: { kept_sharp: 1 },
+      },
+    });
+
+    expect(out.passthrough_reasons).toEqual({ kept_sharp: 1 });
+  });
+
+  it('persists measured zero image chars for a runtime-only transform', () => {
+    const out = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 10,
+      info: {
+        compressed: true,
+        origChars: 20_256,
+        compressedChars: 0,
+        imageCount: 0,
+        imageBytes: 0,
+        staticChars: 0,
+        dynamicChars: 0,
+        dynamicBlockCount: 0,
+        projectDisposition: 'native_disabled',
+        runtimeMetadataChars: 100,
+        runtimeMetadataDisposition: 'moved',
+        bucketChars: { project_guidance: 20_256 },
+      },
+    });
+
+    expect(out.compressed).toBe(true);
+    expect(out.orig_chars).toBe(20_256);
+    expect(out.compressed_chars).toBe(0);
+    expect(out.image_count).toBe(0);
+    expect(out.imaged_bucket_chars).toBeUndefined();
+  });
+
+  it('maps a project rejection caused by the global image budget', () => {
+    const out = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 10,
+      info: {
+        compressed: false,
+        origChars: 8_000,
+        compressedChars: 0,
+        imageCount: 0,
+        imageBytes: 0,
+        staticChars: 0,
+        dynamicChars: 0,
+        dynamicBlockCount: 0,
+        projectDisposition: 'native_too_many_images',
+      },
+    });
+
+    expect(out.project_disposition).toBe('native_too_many_images');
+  });
+
+  it('maps provenance-safe project, runtime, native, uncertain, tool, and cache telemetry', () => {
+    const info = {
+      compressed: true,
+      origChars: 12000,
+      compressedChars: 11500,
+      imageCount: 3,
+      imageBytes: 4096,
+      staticChars: 0,
+      dynamicChars: 0,
+      dynamicBlockCount: 0,
+      contextMode: 'claude_code_2_1_205',
+      projectSourceChars: 7000,
+      projectSourceRole: 'user',
+      projectSourceMessageIndex: 0,
+      projectSourceBlockIndex: 0,
+      projectDisposition: 'imaged',
+      projectImageCount: 2,
+      projectSourceSha8: '0123abcd',
+      projectRef: 'pg_0123456789abcdef0123456789abcdef',
+      runtimeMetadataSourceChars: 240,
+      runtimeMetadataChars: 240,
+      runtimeMetadataDisposition: 'moved',
+      nativeSystemChars: 8300,
+      uncertainContextChars: 17,
+      uncertainContextReasons: ['unsupported_or_missing_claude_md_section'],
+      toolMode: 'experimental_image',
+      toolDisposition: 'imaged',
+      toolSourceChars: 4500,
+      toolImageCount: 1,
+      toolSourceSha8: '89abcdef',
+      toolRef: 'tr_0123456789abcdef0123456789abcdef',
+      toolGateEval: {
+        site: 'tool_reference',
+        imageTokens: 900,
+        textTokens: 1200,
+        burnImageSide: 10,
+        burnTextSide: 20,
+        profitable: true,
+      },
+      cachePrefixSha8: 'feedface',
+      cachePrefixBytes: 22000,
+      cacheBoundaryKind: 'project_guidance',
+      bucketChars: {
+        project_guidance: 7000,
+        tool_reference: 4500,
+      },
+      imagedBucketChars: {
+        project_guidance: 7000,
+        tool_reference: 4500,
+      },
+    } as unknown as NonNullable<ProxyEvent['info']>;
+
+    const out = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 50,
+      info,
+    });
+
+    expect(out).toMatchObject({
+      context_mode: 'claude_code_2_1_205',
+      project_source_chars: 7000,
+      project_source_role: 'user',
+      project_source_message_index: 0,
+      project_source_block_index: 0,
+      project_disposition: 'imaged',
+      project_image_count: 2,
+      project_source_sha8: '0123abcd',
+      project_ref: 'pg_0123456789abcdef0123456789abcdef',
+      runtime_metadata_source_chars: 240,
+      runtime_metadata_chars: 240,
+      runtime_metadata_disposition: 'moved',
+      native_system_chars: 8300,
+      uncertain_context_chars: 17,
+      uncertain_context_reasons: ['unsupported_or_missing_claude_md_section'],
+      tool_mode: 'experimental_image',
+      tool_disposition: 'imaged',
+      tool_source_chars: 4500,
+      tool_image_count: 1,
+      tool_source_sha8: '89abcdef',
+      tool_ref: 'tr_0123456789abcdef0123456789abcdef',
+      tool_gate_eval: {
+        site: 'tool_reference',
+        image_tokens: 900,
+        text_tokens: 1200,
+        burn_image_side: 10,
+        burn_text_side: 20,
+        profitable: true,
+      },
+      cache_prefix_sha8: 'feedface',
+      cache_prefix_bytes: 22000,
+      cache_boundary_kind: 'project_guidance',
+      bucket_chars: {
+        project_guidance: 7000,
+        tool_reference: 4500,
+      },
+      imaged_bucket_chars: {
+        project_guidance: 7000,
+        tool_reference: 4500,
+      },
+    });
+  });
+
+  it('does not project raw transform payloads or unknown bucket properties', () => {
+    const secret = 'RAW-PROJECT-AND-RUNTIME-PAYLOAD';
+    const info = {
+      compressed: true,
+      origChars: secret.length,
+      compressedChars: secret.length,
+      imageCount: 1,
+      imageBytes: 100,
+      staticChars: 0,
+      dynamicChars: 0,
+      dynamicBlockCount: 0,
+      projectSourceChars: secret.length,
+      projectSourceSha8: 'deadbeef',
+      imageSourceText: secret,
+      imagePngs: [new Uint8Array([1, 2, 3])],
+      recoverable: [{ originalText: secret }],
+      runtimeMetadataText: secret,
+      toolSourceText: secret,
+      uncertainContextReasons: [secret],
+      bucketChars: {
+        project_guidance: secret.length,
+        source_text: secret,
+      },
+      imagedBucketChars: {
+        project_guidance: secret.length,
+        source_text: secret,
+      },
+    } as unknown as NonNullable<ProxyEvent['info']>;
+
+    const out = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 50,
+      info,
+    });
+    const json = JSON.stringify(out);
+
+    expect(json).not.toContain(secret);
+    expect(out.bucket_chars).toEqual({ project_guidance: secret.length });
+    expect(out.imaged_bucket_chars).toEqual({ project_guidance: secret.length });
+    expect(out.uncertain_context_reasons).toBeUndefined();
+    expect(out).not.toHaveProperty('imageSourceText');
+    expect(out).not.toHaveProperty('imagePngs');
+    expect(out).not.toHaveProperty('recoverable');
   });
 
   it('handles a minimal ProxyEvent (no info, no usage) without throwing', () => {
@@ -254,6 +484,23 @@ describe('JsonLogTracker', () => {
     expect(() =>
       t.emit({ ts: 'x', method: 'POST', path: '/v1/messages', status: 200, duration_ms: 1 } as TrackEvent),
     ).not.toThrow();
+  });
+
+  it('continues to serialize legacy bucket keys in old event rows', () => {
+    const lines: string[] = [];
+    const t = new JsonLogTracker((s) => lines.push(s));
+    t.emit({
+      ts: '2026-05-18T00:00:00Z',
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      duration_ms: 1,
+      bucket_chars: { tool_result_structured: 123 },
+    });
+
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      bucket_chars: { tool_result_structured: 123 },
+    });
   });
 });
 

@@ -186,21 +186,26 @@ The locked-in test is "renders identical input to byte-identical output
 (determinism = cacheability)" in `tests/render.test.ts:271`. If you change
 anything on the render path, that test must continue to pass.
 
-The transform also emits three SHA-256-prefixed (first 8 hex chars, 32 bits —
-collision-safe for the request volume a single proxy instance sees)
-fingerprints. They live on the `TransformInfo` struct and get persisted to the
-JSONL event log so `pxpipe stats` can analyze them:
+The transform also emits SHA-256-prefixed fingerprints (first 8 hex chars,
+32 bits — collision-safe for the request volume a single proxy instance sees).
+They live on the `TransformInfo` struct and get persisted to the JSONL event log
+so `pxpipe stats` can analyze them:
 
-- **`systemSha8`** — hash of the exact text that goes into the image (static
-  slab + folded tool docs, joined with `\n\n`). If this value repeats across
-  turns, the cache_control breakpoint *should* be hitting upstream.
-  Mismatched `systemSha8` between turns is the signal that prompt drift is
-  killing your cache hit rate; check `pxpipe stats` for the
-  `system_sha8 reuse rate` line.
-- **`claudeMdSha8`** — hash of just the CLAUDE.md section, if detectable by
-  the heuristic in `extractClaudeMdSlab` (`src/core/transform.ts:231`). Lets
-  you bucket requests by project even when `cwd` isn't reported in the env
-  block.
+- **`cachePrefixSha8`** — hash of the exact pxpipe-vouched prefix sent through
+  the project, tool-reference, or collapsed-history boundary, excluding the
+  live tail. This is the primary turn-over-turn cache identity;
+  the dashboard, session summaries, and stats prefer its persisted
+  `cache_prefix_sha8` form.
+- **`systemSha8`** — the older/provider-specific static-system fingerprint.
+  Consumers use its persisted `system_sha8` form only when a historical row
+  lacks `cache_prefix_sha8`.
+- **`historyImageSha`** — hash of collapsed-history image bytes. It diagnoses
+  stability of that one rendered history component; it is not whole-prefix
+  identity and does not by itself prove cache warmth. Warmth comes from the
+  server-observed `cache_read_tokens > 0` signal.
+- **`claudeMdSha8`** — hash of the exact project-guidance segment recognized
+  in Claude Code's versioned opening context. Lets you bucket requests by
+  project even when `cwd` isn't reported in the env block.
 - **`firstUserSha8`** — hash of the first user message text, capped at 4 KiB
   to keep long pastes from dominating. Rough thread/session id, since the
   wire protocol doesn't include one.

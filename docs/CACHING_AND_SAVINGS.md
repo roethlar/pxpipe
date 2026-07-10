@@ -192,14 +192,15 @@ Every row in `~/.pxpipe/events.jsonl` carries the fields needed to reproduce the
 - `cache_create_tokens`
 - `cache_read_tokens`
 - `first_user_sha8`
-- `system_sha8`
+- `cache_prefix_sha8` (new rows)
+- `system_sha8` (historical fallback)
 - `ts`
 - `duration_ms`
 
-Walk rows in completion order. For each session (`first_user_sha8`), keep the latest completed row's `baseline_cacheable_tokens`, `system_sha8`, and completion timestamp. For the current row:
+Walk rows in completion order. Define each row's prefix identity as `cache_prefix_sha8 ?? system_sha8`: the exact pxpipe-vouched prefix digest takes precedence, while old JSONL rows remain readable through the legacy system hash. For each session (`first_user_sha8`), keep the latest completed row's `baseline_cacheable_tokens`, prefix identity, and completion timestamp. For the current row:
 
 1. Set `warm = cache_read_tokens > 0`.
-2. If `warm` and the previous row completed before this request started and has the same `system_sha8`, use its `baseline_cacheable_tokens` as `prevCacheable`.
+2. If `warm` and the previous row completed before this request started and has the same preferred prefix identity, use its `baseline_cacheable_tokens` as `prevCacheable`.
 3. If `warm` but no usable prior exists, use this row's `cacheable` as `prevCacheable`.
 4. If not `warm`, use `prevCacheable = 0`.
 5. Compute `baseline_eff`, `actual_eff`, and `baseline_eff - actual_eff` with the formulas above.

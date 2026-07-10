@@ -362,6 +362,8 @@ export interface ContextMapData {
 }
 
 const CTXMAP_BUCKETS: ReadonlyArray<readonly [string, string]> = [
+  ['project_guidance', 'Project guidance'],
+  ['tool_reference', 'Tool reference'],
   ['static_slab', 'System prompt + tool docs'],
   ['reminder', 'System-reminder blocks'],
   ['tool_result_prose', 'Tool results — prose'],

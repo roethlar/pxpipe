@@ -116,6 +116,17 @@ describe('deriveBaselineWarmth (server-observed: cr>0 only)', () => {
     });
   });
 
+  it('does not treat missing prefix identities as a match', () => {
+    expect(deriveBaselineWarmth(prev(1000, 8000), 1060, 5000, 10)).toEqual({
+      warm: true,
+      prevCacheable: 5000,
+    });
+    expect(deriveBaselineWarmth(prev(1000, 8000, 'known'), 1060, 5000, 10)).toEqual({
+      warm: true,
+      prevCacheable: 5000,
+    });
+  });
+
   it('cold once the prior is older than the TTL (genuine expiry) and no observed read', () => {
     expect(deriveBaselineWarmth(prev(1000, 8000), 1000 + CACHE_TTL_SEC + 1, 5000, 0)).toEqual({
       warm: false,
@@ -125,7 +136,14 @@ describe('deriveBaselineWarmth (server-observed: cr>0 only)', () => {
 
   it('a fresh prior gives the real prior prefix size; cr-only warmth assumes full reuse', () => {
     // observed read + fresh prior → prevCacheable = prev.cacheable (real reused/grown split)
-    expect(deriveBaselineWarmth(prev(1000, 3000), 1100, 5000, 50).prevCacheable).toBe(3000);
+    expect(deriveBaselineWarmth(
+      prev(1000, 3000, 'same'),
+      1100,
+      5000,
+      50,
+      CACHE_TTL_SEC,
+      'same',
+    ).prevCacheable).toBe(3000);
     // warm via cr but stale prior → full-reuse assumption (prevCacheable = cacheable)
     expect(deriveBaselineWarmth(prev(0, 3000), 1_000_000, 5000, 50).prevCacheable).toBe(5000);
   });
@@ -139,7 +157,14 @@ describe('deriveBaselineWarmth (server-observed: cr>0 only)', () => {
     // Whichever way warmth resolves, pricing warm must not claim MORE savings
     // than cold for the same prefix (warm lowers, or holds, the baseline).
     const cacheable = 4000;
-    const { warm, prevCacheable } = deriveBaselineWarmth(prev(1000, 4000), 1100, cacheable, 50);
+    const { warm, prevCacheable } = deriveBaselineWarmth(
+      prev(1000, 4000, 'same'),
+      1100,
+      cacheable,
+      50,
+      CACHE_TTL_SEC,
+      'same',
+    );
     // inp/cc/cr only feed the probe-miss branch (cacheable>0 here ⇒ unused).
     const warmEff = computeBaselineInputEff(5000, cacheable, 0, 0, 0, warm, prevCacheable);
     const coldEff = computeBaselineInputEff(5000, cacheable, 0, 0, 0, false, 0);

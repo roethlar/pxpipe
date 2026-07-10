@@ -38,6 +38,18 @@ function ctx(p: Partial<ContextMapData> = {}): ContextMapData {
 }
 
 describe('renderContextMapFragment — cache-aware headline', () => {
+  it('renders the independent project-guidance and tool-reference image buckets', () => {
+    const html = renderContextMapFragment(ctx({
+      buckets: {
+        project_guidance: 12_000,
+        tool_reference: 4_500,
+      },
+    }), []);
+
+    expect(html).toContain('Project guidance');
+    expect(html).toContain('Tool reference');
+  });
+
   it('says "smaller" only when the cache-weighted baseline actually beats what was sent', () => {
     const html = renderContextMapFragment(ctx({ baselineInputEff: 2000, actualInputEff: 400 }), []);
     expect(html).toContain('<span class="ctx-big">80%</span> smaller');

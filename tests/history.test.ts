@@ -24,6 +24,7 @@ import {
   collapseHistory,
   HISTORY_DEFAULTS,
   HISTORY_SYNTHETIC_INTRO,
+  messageCacheControls,
 } from '../src/core/history.js';
 import { makeProjectGuidanceBoundary } from '../src/core/anthropic-context.js';
 import { transformRequest, isCompressionProfitable } from '../src/core/transform.js';
@@ -501,6 +502,116 @@ describe('collapseHistory', () => {
     expect(out).toBe(msgs);
     expect(info.reason).toBe('context_reminder_in_collapse_range');
     expect(JSON.stringify(out)).toContain(reminder);
+  });
+
+  it('preserves one nested tool_result cache marker on the collapsed history image', async () => {
+    const marker = { type: 'ephemeral' as const, ttl: '1h' as const };
+    const msgs: Message[] = [
+      usr('run the synthetic tool'),
+      asst([{ type: 'tool_use', id: 'nested-marker', name: 'Synthetic', input: {} }]),
+      usr([{
+        type: 'tool_result',
+        tool_use_id: 'nested-marker',
+        content: [{ type: 'text', text: `result ${'x'.repeat(4000)}`, cache_control: marker }],
+      }]),
+    ];
+    for (let index = 0; index < 10; index++) {
+      msgs.push(index % 2 === 0
+        ? asst(`history ${index}: ${'a'.repeat(800)}`)
+        : usr(`history ${index}: ${'u'.repeat(800)}`));
+    }
+    msgs.push(usr('live tail'));
+
+    expect(messageCacheControls(msgs[2]!)).toEqual([marker]);
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+    });
+    const synthetic = syntheticHistoryMessage(out);
+    const marked = (synthetic.content as Array<{ cache_control?: unknown }>)
+      .filter((block) => block.cache_control !== undefined);
+
+    expect(info.collapsedTurns).toBeGreaterThan(0);
+    expect(marked).toHaveLength(1);
+    expect(marked[0]!.cache_control).toEqual(marker);
+  });
+
+  it('fails history closed when one collapsed message owns multiple cache markers', async () => {
+    const marker = { type: 'ephemeral' as const };
+    const ambiguous: Message = usr([{
+      type: 'tool_result',
+      tool_use_id: 'ambiguous-marker',
+      content: [
+        { type: 'text', text: 'first marked part', cache_control: marker },
+        { type: 'text', text: 'second marked part', cache_control: marker },
+      ],
+    }]);
+    const msgs: Message[] = [usr('start'), asst('ack'), ambiguous];
+    for (let index = 0; index < 10; index++) {
+      msgs.push(index % 2 === 0 ? asst(`a${index}`) : usr(`u${index}`));
+    }
+    msgs.push(usr('live tail'));
+
+    expect(messageCacheControls(ambiguous)).toHaveLength(2);
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+    });
+
+    expect(out).toBe(msgs);
+    expect(info.reason).toBe('ambiguous_cache_markers_in_collapse_range');
+    expect(messageCacheControls(out[2]!)).toHaveLength(2);
+  });
+
+  it('preserves one typed cache marker from each of two collapsed messages', async () => {
+    const short = { type: 'ephemeral' as const };
+    const long = { type: 'ephemeral' as const, ttl: '1h' as const };
+    const msgs: Message[] = [
+      usr([{ type: 'text', text: `marked one ${'a'.repeat(1200)}`, cache_control: short }]),
+      asst([{ type: 'text', text: `marked two ${'b'.repeat(1200)}`, cache_control: long }]),
+    ];
+    for (let index = 0; index < 10; index++) {
+      msgs.push(index % 2 === 0 ? usr(`u${index}`) : asst(`a${index}`));
+    }
+    msgs.push(usr('live tail'));
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+    });
+    const synthetic = syntheticHistoryMessage(out);
+    const controls = messageCacheControls(synthetic);
+
+    expect(info.collapsedTurns).toBeGreaterThan(0);
+    expect(controls).toHaveLength(2);
+    expect(controls).toEqual(expect.arrayContaining([short, long]));
+  });
+
+  it('rolls history back if rendering would lose a caller marker', async () => {
+    const marker = { type: 'ephemeral' as const, ttl: '1h' as const };
+    const msgs: Message[] = [
+      usr([{ type: 'text', text: 'marked but empty render', cache_control: marker }]),
+    ];
+    for (let index = 0; index < 10; index++) {
+      msgs.push(index % 2 === 0 ? asst(`a${index}`) : usr(`u${index}`));
+    }
+    msgs.push(usr('live tail'));
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+      renderPages: async () => [],
+    });
+
+    expect(out).toBe(msgs);
+    expect(info.reason).toBe('cache_marker_mismatch');
+    expect(info.collapsedImageBytes).toBe(0);
+    expect(info.collapsedPngs).toEqual([]);
+    expect(messageCacheControls(out[0]!)).toEqual([marker]);
   });
 
   it('restores the original history bucket when rendering throws', async () => {

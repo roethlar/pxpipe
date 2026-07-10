@@ -2,6 +2,14 @@
 
 Status: **APPROVED 2026-07-10 — implementation in progress**.
 
+Checkpoint (2026-07-10): Slices 1–4 are complete on
+`fix/provenance-safe-compression`. Slice 4 closes the independent tool bucket,
+request-wide image/marker transactions, telemetry/host defaults, and exact-prefix
+warmth consumers; its final local verification is 748 tests plus typecheck/build.
+Next after restart is Slice 5 (documentation, migration note, and the offline
+evaluation harness). The live Claude/Fable A/B matrix remains separately gated and
+has not been run or authorized.
+
 Plan base: `b1f5a01` (`origin/main`, 2026-07-09). The plan is intentionally
 isolated from the unrelated `fix/escape-atlas-missing-glyphs` branch.
 
@@ -306,13 +314,14 @@ gate:
 1. partition the current request, including the opening user-context reminder,
    native system blocks, and literal system-role messages;
 2. gate/render project guidance;
-3. optionally gate/render tool reference;
-4. preserve the base system and system-role messages and append the native manifest;
-5. splice vouched-for leading images;
-6. leave unknown first-user reminders native (or process a separately role-bound,
+3. preserve the base system and system-role messages and append the native manifest;
+4. splice vouched-for leading project images;
+5. leave unknown first-user reminders native (or process a separately role-bound,
    explicitly enabled reminder bucket in a future plan);
-7. process tool results;
-8. collapse eligible history;
+6. collapse eligible closed history over the exact original result text;
+7. process tool results that survive in the live tail;
+8. optionally gate/render the independent tool reference, placing it before any
+   marked collapsed-history anchor;
 9. append vouched-for runtime metadata; and
 10. finalize telemetry/cache digest.
 
@@ -494,6 +503,18 @@ Deliverables:
   OpenAI's independent tool compression when Anthropic defaults tools off.
 - Session/dashboard/stats warmth identity prefers the exact cache-prefix digest,
   with `system_sha8` retained only as historical fallback.
+
+Implementation characterization correction: the safe transaction order is
+project guidance → closed history → surviving live-tail tool results → optional
+tool reference → runtime tail. Compressing tool results before history allowed the
+later collapse to remove those generated images while leaving their telemetry
+committed, and could make history encode an image placeholder instead of the exact
+original result text. All image-producing passes now share a recursive 100-image
+budget and final accounting postcondition. History recognizes one caller cache
+marker per collapsed message, including a marker nested in tool-result content;
+multiple same-message markers or any marker-value/count mismatch fail that history
+bucket closed. Tool stubs bind to JSON-escaped, ordinal, per-entry digest framing so
+tool-supplied headings or wrapper text cannot impersonate another entry.
 
 Guard proof: reverting the slice re-combines tool docs with project guidance or
 restores default tool imaging; bucket-isolation/default tests fail. Restore and run

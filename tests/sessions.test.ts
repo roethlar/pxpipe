@@ -251,6 +251,144 @@ describe('aggregateSessions', () => {
     expect(s.tokensSavedEst).toBe(62_500);
   });
 
+  it('prefers cache_prefix_sha8 when system and history hashes change', async () => {
+    writeEvents(tmp, [
+      // Seed only the completed-prefix state. Omitting baseline_tokens keeps
+      // this row out of the savings total so the assertion isolates turn 2.
+      ev({
+        first_user_sha8: 'prefix-precedence',
+        ts: '2026-05-19T00:00:00.000Z',
+        compressed: true,
+        baseline_cacheable_tokens: 20_000,
+        cache_prefix_sha8: 'exact-prefix',
+        system_sha8: 'old-system',
+        history_image_sha8: 'old-history',
+        input_tokens: 100,
+      }),
+      ev({
+        first_user_sha8: 'prefix-precedence',
+        ts: '2026-05-19T00:01:00.000Z',
+        compressed: true,
+        baseline_tokens: 30_000,
+        baseline_cacheable_tokens: 22_000,
+        cache_prefix_sha8: 'exact-prefix',
+        system_sha8: 'new-system',
+        history_image_sha8: 'new-history',
+        input_tokens: 100,
+        cache_create_tokens: 2_000,
+        cache_read_tokens: 20_000,
+      }),
+    ]);
+
+    const { sessions } = await aggregateSessions(tmp);
+    // Exact prefix matches, so the 20k prior refines the warm split:
+    // baseline = 20k*0.1 + 2k*1.25 + 8k = 12,500;
+    // actual = 100 + 2k*1.25 + 20k*0.1 = 4,600; saved = 7,900.
+    expect(sessions.get('prefix-precedence')!.tokensSavedEst).toBe(7_900);
+  });
+
+  it('rejects a prior when cache_prefix_sha8 changes despite stable legacy hashes', async () => {
+    writeEvents(tmp, [
+      ev({
+        first_user_sha8: 'prefix-change',
+        ts: '2026-05-19T00:00:00.000Z',
+        compressed: true,
+        baseline_cacheable_tokens: 20_000,
+        cache_prefix_sha8: 'old-prefix',
+        system_sha8: 'stable-system',
+        history_image_sha8: 'stable-history',
+        input_tokens: 100,
+      }),
+      ev({
+        first_user_sha8: 'prefix-change',
+        ts: '2026-05-19T00:01:00.000Z',
+        compressed: true,
+        baseline_tokens: 30_000,
+        baseline_cacheable_tokens: 22_000,
+        cache_prefix_sha8: 'new-prefix',
+        system_sha8: 'stable-system',
+        history_image_sha8: 'stable-history',
+        input_tokens: 100,
+        cache_create_tokens: 2_000,
+        cache_read_tokens: 20_000,
+      }),
+    ]);
+
+    const { sessions } = await aggregateSessions(tmp);
+    // cr proves warmth, but the changed exact prefix rejects the prior size.
+    // Full reuse baseline = 22k*0.1 + 8k = 10,200; saved = 5,600.
+    expect(sessions.get('prefix-change')!.tokensSavedEst).toBe(5_600);
+  });
+
+  it('falls back to system_sha8 for historical rows without cache_prefix_sha8', async () => {
+    writeEvents(tmp, [
+      ev({
+        first_user_sha8: 'legacy-prefix',
+        ts: '2026-05-19T00:00:00.000Z',
+        compressed: true,
+        baseline_cacheable_tokens: 20_000,
+        system_sha8: 'old-system',
+        history_image_sha8: 'stable-history',
+        input_tokens: 100,
+      }),
+      ev({
+        first_user_sha8: 'legacy-prefix',
+        ts: '2026-05-19T00:01:00.000Z',
+        compressed: true,
+        baseline_tokens: 30_000,
+        baseline_cacheable_tokens: 22_000,
+        system_sha8: 'new-system',
+        history_image_sha8: 'stable-history',
+        input_tokens: 100,
+        cache_create_tokens: 2_000,
+        cache_read_tokens: 20_000,
+      }),
+    ]);
+
+    const { sessions } = await aggregateSessions(tmp);
+    // A cache-prefix-only selector would see two undefined hashes and reuse the
+    // 20k prior. Historical system fallback must reject it instead.
+    expect(sessions.get('legacy-prefix')!.tokensSavedEst).toBe(5_600);
+  });
+
+  it('does not let an identity-less row bridge an exact cache-prefix prior', async () => {
+    writeEvents(tmp, [
+      ev({
+        first_user_sha8: 'unknown-prefix-bridge',
+        ts: '2026-05-19T00:00:00.000Z',
+        compressed: true,
+        baseline_cacheable_tokens: 20_000,
+        cache_prefix_sha8: 'exact-prefix',
+        input_tokens: 100,
+      }),
+      ev({
+        first_user_sha8: 'unknown-prefix-bridge',
+        ts: '2026-05-19T00:00:30.000Z',
+        compressed: true,
+        baseline_cacheable_tokens: 5_000,
+        cache_prefix_sha8: undefined,
+        system_sha8: undefined,
+        input_tokens: 100,
+      }),
+      ev({
+        first_user_sha8: 'unknown-prefix-bridge',
+        ts: '2026-05-19T00:01:00.000Z',
+        compressed: true,
+        baseline_tokens: 30_000,
+        baseline_cacheable_tokens: 22_000,
+        cache_prefix_sha8: 'exact-prefix',
+        input_tokens: 100,
+        cache_create_tokens: 2_000,
+        cache_read_tokens: 20_000,
+      }),
+    ]);
+
+    const { sessions } = await aggregateSessions(tmp);
+    // cr proves warmth, but the identity-less intervening row invalidates the
+    // usable prior split. Fall back to full reuse for a conservative 5,600.
+    expect(sessions.get('unknown-prefix-bridge')!.tokensSavedEst).toBe(5_600);
+  });
+
   it('does not treat an overlapping in-flight request as a completed warm prior', async () => {
     writeEvents(tmp, [
       ev({

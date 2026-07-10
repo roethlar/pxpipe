@@ -892,14 +892,14 @@ async function main(): Promise<void> {
       imageDumpDir = undefined;
     }
   }
-  // Transform options pass through empty — the proxy uses the DEFAULTS
-  // baked into transform.ts. There are no behavior toggles: system slab,
-  // reminders, tool_results, and history compression all run
-  // unconditionally; the per-block break-even gate decides per-call
-  // whether to actually image each piece. The function-form `transform`
+  // Transform options pass through empty so each provider resolves its own
+  // defaults. Anthropic keeps provenance-sensitive tools/reminders native;
+  // OpenAI independently retains its tool-compression default. Project
+  // guidance, tool_results, and eligible history use their own gates. The
+  // function-form `transform`
   // below is ONLY a kill switch (PXPIPE_DISABLE / dashboard toggle →
-  // compress:false); on the active path it returns {}, so the gate always
-  // runs on static DEFAULTS — charsPerToken=4, priorWarm*=0 — which leaves
+  // compress:false); on the active path it returns {}, so provider defaults
+  // apply — charsPerToken=4, priorWarm*=0 — which leaves
   // the warm-baseline and anti-flapping burn terms inert. That is
   // deliberate, NOT an oversight: there is no live-α feedback loop from
   // the dashboard. Telemetry (2026-06, 897 sessions / 21,347 measured
@@ -937,14 +937,14 @@ async function main(): Promise<void> {
     //      is off, force compress=false so /v1/messages forwards
     //      untransformed. Lets the operator instantly disable the proxy
     //      when upstream is unhealthy without restarting.
-    //   2. Otherwise use DEFAULTS in transform.ts for break-even gating.
+    //   2. Otherwise pass no overrides so each provider uses its own defaults.
     transform: () => {
       // A/B harness: PXPIPE_DISABLE=1 forces passthrough (compress=false) for the
       // whole process, so the "normal" arm can be scripted on its own port while
       // still logging real usage + count_tokens baselines to its own PXPIPE_LOG.
       // (The dashboard kill switch does the same thing at runtime.)
       if (forcePassthrough || !dashboard.getCompressionEnabled()) return { compress: false };
-      // Active path: use DEFAULTS in transform.ts for break-even gating.
+      // Active path: provider-specific defaults and break-even gates.
       return {};
     },
     onRequest: async (e) => {

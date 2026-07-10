@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { newSummary, fold, renderTextReport } from '../src/stats.js';
+import { newSummary, fold, renderTextReport, summaryToJson } from '../src/stats.js';
 import type { TrackEvent } from '../src/core/tracker.js';
 
 function ev(partial: Partial<TrackEvent>): TrackEvent {
@@ -44,6 +44,35 @@ describe('stats aggregator', () => {
     expect(s.skipReasons.get('below_min_chars (50 < 2000)')).toBe(1);
     expect(s.skipReasons.get('below_min_chars (60 < 2000)')).toBe(1);
     expect(s.skipReasons.get('compress=false')).toBe(1);
+  });
+
+  it('uses measured imaged chars and falls back to orig_chars only for legacy rows', () => {
+    const s = newSummary();
+    // Current runtime-only row: project was a rejected candidate, so none of
+    // its chars may enter the rendered-char total.
+    fold(s, ev({
+      compressed: true,
+      cwd: '/runtime-only',
+      orig_chars: 20_256,
+      compressed_chars: 0,
+      image_count: 0,
+      runtime_metadata_disposition: 'moved',
+    }));
+    // Current mixed row: only 1,200 of 9,000 candidate chars were imaged.
+    fold(s, ev({
+      compressed: true,
+      cwd: '/mixed',
+      orig_chars: 9_000,
+      compressed_chars: 1_200,
+      image_count: 1,
+    }));
+    // Historical row: compressed_chars did not exist, so retain orig_chars.
+    fold(s, ev({ compressed: true, cwd: '/legacy', orig_chars: 800, image_count: 1 }));
+
+    expect(s.origCharsTotal).toBe(2_000);
+    expect(s.byCwd.get('/runtime-only')?.origChars).toBe(0);
+    expect(s.byCwd.get('/mixed')?.origChars).toBe(1_200);
+    expect(s.byCwd.get('/legacy')?.origChars).toBe(800);
   });
 
   it('aggregates Anthropic token usage and computes cache hit metrics', () => {
@@ -96,6 +125,43 @@ describe('stats aggregator', () => {
     expect(s.systemShaHist.get('bbb')).toBe(1);
   });
 
+  it('prefers cache_prefix_sha8, falls back historically, and ignores history image hashes', () => {
+    const s = newSummary();
+    fold(s, ev({
+      cache_prefix_sha8: 'exact-prefix',
+      system_sha8: 'old-system',
+      history_image_sha8: 'old-history',
+    }));
+    fold(s, ev({
+      cache_prefix_sha8: 'exact-prefix',
+      system_sha8: 'new-system',
+      history_image_sha8: 'new-history',
+    }));
+    fold(s, ev({
+      cache_prefix_sha8: 'other-prefix',
+      system_sha8: 'new-system',
+      history_image_sha8: 'new-history',
+    }));
+    fold(s, ev({ system_sha8: 'legacy-system', history_image_sha8: 'stable-history' }));
+    fold(s, ev({ history_image_sha8: 'history-only' }));
+
+    expect([...s.systemShaHist.entries()]).toEqual([
+      ['exact-prefix', 2],
+      ['other-prefix', 1],
+      ['legacy-system', 1],
+    ]);
+    expect(s.systemShaHist.has('old-system')).toBe(false);
+    expect(s.systemShaHist.has('new-system')).toBe(false);
+    expect(s.systemShaHist.has('history-only')).toBe(false);
+    // Preserve the existing dashboard JSON field name while correcting its
+    // identity semantics.
+    expect(summaryToJson(s).systemShaHist).toEqual([
+      ['exact-prefix', 2],
+      ['other-prefix', 1],
+      ['legacy-system', 1],
+    ]);
+  });
+
   it('collects unknown_static_tags across events', () => {
     const s = newSummary();
     fold(s, ev({ unknown_static_tags: ['recent_files', 'todo_list'] }));
@@ -130,6 +196,10 @@ describe('stats aggregator', () => {
     expect(out).toContain('cache hit rate');
     expect(out).toContain('/Users/x/code/pp');
     expect(out).toContain('stable');
+    expect(out).toContain(
+      'top cache prefixes (cache_prefix_sha8; historical system_sha8 fallback)',
+    );
+    expect(out).toContain('unique prefixes: 1');
     // 50% cache hit rate by event.
     expect(out).toMatch(/cache hit rate \(by events\):\s+50.0%/);
   });

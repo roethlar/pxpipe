@@ -40,6 +40,7 @@ const SCHEMA_NAMED_SUBSCHEMA_KEYS = new Set([
   'patternProperties',
   'definitions',
   '$defs',
+  'dependentSchemas',
 ]);
 
 /** JSON Schema keys whose value is a single subschema. */
@@ -78,6 +79,7 @@ const SCHEMA_VERBATIM_KEYS = new Set([
   'multipleOf',
   'uniqueItems',
   'pattern',
+  'dependentRequired',
 ]);
 
 /** Real `format` tokens (date-time, uri, email…) are short; anything longer is a description. */
@@ -128,6 +130,21 @@ export function stripSchemaDescriptions(node: unknown, depth = 0): unknown {
       continue;
     }
 
+    // Draft-07 `dependencies` is a property-name map whose values are either
+    // required-name arrays or subschemas. Never interpret the property names
+    // themselves (for example a parameter literally named "description") as
+    // schema annotation keywords.
+    if (k === 'dependencies' && v && typeof v === 'object' && !Array.isArray(v)) {
+      const nested: Record<string, unknown> = {};
+      for (const [propertyName, dependency] of Object.entries(v as Record<string, unknown>)) {
+        nested[propertyName] = Array.isArray(dependency)
+          ? dependency
+          : stripSchemaDescriptions(dependency, depth + 1);
+      }
+      out[k] = nested;
+      continue;
+    }
+
     if (SCHEMA_SINGLE_SUBSCHEMA_KEYS.has(k)) {
       // additionalProperties may be a boolean — pass through untouched.
       if (typeof v === 'boolean') {
@@ -138,12 +155,10 @@ export function stripSchemaDescriptions(node: unknown, depth = 0): unknown {
       continue;
     }
 
-    // Unknown key — recurse into nested objects so vendor-extension descriptions get stripped.
-    if (v && typeof v === 'object') {
-      out[k] = stripSchemaDescriptions(v, depth + 1);
-    } else {
-      out[k] = v;
-    }
+    // Unknown keywords/extensions are validator-owned. Preserve them verbatim:
+    // recursively guessing that an arbitrary object is a schema can delete a
+    // semantic map entry whose property name collides with "description".
+    out[k] = v;
   }
   return out;
 }
@@ -158,6 +173,9 @@ export const SCHEMA_STRUCTURAL_KEYS = [
   'anyOf',
   'allOf',
   'items',
+  'dependencies',
+  'dependentRequired',
+  'dependentSchemas',
   '$ref',
   'enum',
   'const',

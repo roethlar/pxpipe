@@ -43,8 +43,9 @@ export interface Summary {
   firstByteMs: number[];
   skipReasons: Map<string, number>;
   byCwd: Map<string, { count: number; origChars: number; imageBytes: number }>;
-  /** system_sha8 → number of times seen. High repeat count = cache should
-   *  be doing its job. */
+  /** Preferred cache-prefix identity → number of times seen. New rows use
+   *  cache_prefix_sha8; historical rows fall back to system_sha8. The public
+   *  property name is retained for dashboard/API compatibility. */
   systemShaHist: Map<string, number>;
   unknownTags: Map<string, number>;
 }
@@ -82,7 +83,8 @@ export function fold(s: Summary, ev: TrackEvent): Summary {
 
   if (ev.compressed === true) {
     s.compressed++;
-    if (typeof ev.orig_chars === 'number') s.origCharsTotal += ev.orig_chars;
+    const imagedChars = ev.compressed_chars ?? ev.orig_chars;
+    if (typeof imagedChars === 'number') s.origCharsTotal += imagedChars;
     if (typeof ev.image_bytes === 'number') s.imageBytesTotal += ev.image_bytes;
   } else if (ev.compressed === false) {
     s.passthrough++;
@@ -110,13 +112,14 @@ export function fold(s: Summary, ev: TrackEvent): Summary {
     const k = ev.cwd;
     const e = s.byCwd.get(k) ?? { count: 0, origChars: 0, imageBytes: 0 };
     e.count++;
-    e.origChars += ev.orig_chars ?? 0;
+    e.origChars += ev.compressed_chars ?? ev.orig_chars ?? 0;
     e.imageBytes += ev.image_bytes ?? 0;
     s.byCwd.set(k, e);
   }
 
-  if (ev.system_sha8) {
-    s.systemShaHist.set(ev.system_sha8, (s.systemShaHist.get(ev.system_sha8) ?? 0) + 1);
+  const prefixSha = ev.cache_prefix_sha8 ?? ev.system_sha8;
+  if (prefixSha) {
+    s.systemShaHist.set(prefixSha, (s.systemShaHist.get(prefixSha) ?? 0) + 1);
   }
 
   if (ev.unknown_static_tags) {
@@ -218,7 +221,9 @@ export function renderTextReport(s: Summary): string {
   }
 
   if (s.systemShaHist.size > 0) {
-    lines.push('top system prompts (system_sha8, high count = cache reuse):');
+    lines.push(
+      'top cache prefixes (cache_prefix_sha8; historical system_sha8 fallback):',
+    );
     const top = [...s.systemShaHist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
     for (const [sha, count] of top) {
       lines.push(`  ${count.toString().padStart(6)}  ${sha}`);
@@ -226,7 +231,7 @@ export function renderTextReport(s: Summary): string {
     const unique = s.systemShaHist.size;
     const reuseRate =
       s.total > 0 ? (((s.total - unique) / s.total) * 100).toFixed(1) : '—';
-    lines.push(`  unique prompts: ${unique}    reuse rate: ${reuseRate}%`);
+    lines.push(`  unique prefixes: ${unique}    reuse rate: ${reuseRate}%`);
     lines.push('');
   }
 

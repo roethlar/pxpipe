@@ -188,7 +188,10 @@ export async function aggregateSessions(
       haveUsage
     ) {
       const cacheable = ev.baseline_cacheable_tokens ?? 0;
-      const prefixSha = ev.system_sha8;
+      // New rows carry the digest of pxpipe's exact vouched prefix. Older JSONL
+      // rows predate that field, so retain system_sha8 strictly as a historical
+      // compatibility fallback.
+      const prefixSha = ev.cache_prefix_sha8 ?? ev.system_sha8;
       const completionSec = Date.parse(ev.ts) / 1000;
       const requestStartSec = completionSec - Math.max(0, ev.duration_ms || 0) / 1000;
       const prev = warmth.get(id);
@@ -221,12 +224,14 @@ export async function aggregateSessions(
     if (haveUsage) {
       const completionSec = Date.parse(ev.ts) / 1000;
       const cacheable = ev.baseline_cacheable_tokens ?? 0;
-      const prefixSha = ev.system_sha8;
+      const prefixSha = ev.cache_prefix_sha8 ?? ev.system_sha8;
       const prev = warmth.get(id);
+      const sameKnownPrefix =
+        prefixSha !== undefined && prev?.prefixSha !== undefined && prefixSha === prev.prefixSha;
       warmth.set(id, {
         ts: completionSec,
-        cacheable: cacheable > 0 ? cacheable : (prev?.cacheable ?? 0),
-        prefixSha: prefixSha ?? prev?.prefixSha,
+        cacheable: cacheable > 0 ? cacheable : (sameKnownPrefix ? prev.cacheable : 0),
+        prefixSha,
       });
     }
     if (typeof ev.cache_read_tokens === 'number') {

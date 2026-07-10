@@ -230,6 +230,100 @@ describe('serveFragment', () => {
     expect(html).toContain('&lt;script&gt;');
   });
 
+  it('live Context Map uses applied buckets instead of rejected candidates', async () => {
+    dash.update({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 10,
+      usage: { input_tokens: 100, output_tokens: 10 },
+      info: {
+        compressed: true,
+        origChars: 9_000,
+        compressedChars: 1_200,
+        imageCount: 1,
+        imageBytes: 4,
+        imagePngs: [new Uint8Array([137, 80, 78, 71])],
+        imageDims: [{ width: 10, height: 10 }],
+        baselineTokens: 1_000,
+        baselineProbeStatus: 'ok',
+        bucketChars: {
+          project_guidance: 1_200,
+          tool_result_log: 7_800,
+        },
+        imagedBucketChars: { project_guidance: 1_200 },
+      },
+    } as never);
+
+    const html = await (await dash.serveFragment('context-map', url, 1)).text();
+    expect(html).toContain('Project guidance');
+    expect(html).not.toContain('Tool results — logs');
+  });
+
+  it('replayed Context Map prefers applied buckets but retains legacy fallback', async () => {
+    writeEvents(tmp, [
+      ev({
+        compressed: true,
+        compressed_chars: 1_200,
+        image_count: 1,
+        baseline_tokens: 1_000,
+        baseline_probe_status: 'ok',
+        input_tokens: 100,
+        output_tokens: 10,
+        bucket_chars: {
+          project_guidance: 1_200,
+          tool_result_log: 7_800,
+        },
+        imaged_bucket_chars: { project_guidance: 1_200 },
+      }),
+    ]);
+    await dash.replay(tmp.eventsFile);
+
+    const current = await (await dash.serveFragment('context-map', url, 1)).text();
+    expect(current).toContain('Project guidance');
+    expect(current).not.toContain('Tool results — logs');
+
+    // A separate old-row replay lacks imaged_bucket_chars and must continue to
+    // read bucket_chars rather than losing its historical breakdown.
+    dash = new DashboardState(tmp, async () => new Map());
+    writeEvents(tmp, [
+      ev({
+        compressed: true,
+        image_count: 1,
+        baseline_tokens: 1_000,
+        baseline_probe_status: 'ok',
+        input_tokens: 100,
+        output_tokens: 10,
+        bucket_chars: { tool_result_log: 800 },
+      }),
+    ]);
+    await dash.replay(tmp.eventsFile);
+    const legacy = await (await dash.serveFragment('context-map', url, 1)).text();
+    expect(legacy).toContain('Tool results — logs');
+  });
+
+  it('does not replay a runtime-only zero-image row as an image Context Map', async () => {
+    writeEvents(tmp, [
+      ev({
+        compressed: true,
+        orig_chars: 20_256,
+        compressed_chars: 0,
+        image_count: 0,
+        runtime_metadata_disposition: 'moved',
+        baseline_tokens: 1_000,
+        baseline_probe_status: 'ok',
+        input_tokens: 100,
+        output_tokens: 10,
+        bucket_chars: { project_guidance: 20_256 },
+      }),
+    ]);
+    await dash.replay(tmp.eventsFile);
+
+    const html = await (await dash.serveFragment('context-map', url, 1)).text();
+    expect(html).toContain('Pick <strong>Details</strong>');
+    expect(html).not.toContain('Project guidance');
+  });
+
   it('404s unknown fragments', async () => {
     const res = await dash.serveFragment('nope', url, 1);
     expect(res.status).toBe(404);
@@ -364,6 +458,8 @@ describe('server-observed warmth: text follows actual cache_read', () => {
     cacheable: number,
     sid = 'warmsess',
     systemSha8 = 'stable-system',
+    cachePrefixSha8?: string,
+    historyImageSha?: string,
   ): unknown {
     return {
       ts: '2026-05-19T00:00:00Z',
@@ -377,6 +473,8 @@ describe('server-observed warmth: text follows actual cache_read', () => {
         compressed: true,
         firstUserSha8: sid,
         systemSha8,
+        cachePrefixSha8,
+        historyImageSha,
         baselineProbeStatus: 'ok',
         baselineTokens: 30000, // text counterfactual: full prefix + tail
         baselineCacheableTokens: cacheable, // prefix up to the cache_control marker
@@ -425,6 +523,199 @@ describe('server-observed warmth: text follows actual cache_read', () => {
     // Cold text baseline: 20000×1.25 + 10000 tail = 35000.
     expect(miss.baseline_input).toBe(35000);
     expect(miss.session_saved_so_far_delta).toBe(9900);
+  });
+
+  it('uses the exact live cache prefix when system and history hashes change', async () => {
+    dash.update(
+      antEvt(
+        {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 20_000,
+          cache_read_input_tokens: 0,
+        },
+        20_000,
+        'live-prefix-precedence',
+        'old-system',
+        'exact-prefix',
+        'old-history',
+      ) as never,
+    );
+    dash.update(
+      antEvt(
+        {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 2_000,
+          cache_read_input_tokens: 20_000,
+        },
+        22_000,
+        'live-prefix-precedence',
+        'new-system',
+        'exact-prefix',
+        'new-history',
+      ) as never,
+    );
+
+    const recent = (await dash.serveRecent().json()) as RecentPayload;
+    // Same exact prefix: reuse the prior 20k, then price 2k of growth.
+    expect(recent.recent.at(-1)!.baseline_input).toBe(12_500);
+  });
+
+  it('rejects the live prior when the exact cache prefix changes', async () => {
+    dash.update(
+      antEvt(
+        {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 20_000,
+          cache_read_input_tokens: 0,
+        },
+        20_000,
+        'live-prefix-change',
+        'stable-system',
+        'old-prefix',
+        'stable-history',
+      ) as never,
+    );
+    dash.update(
+      antEvt(
+        {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 2_000,
+          cache_read_input_tokens: 20_000,
+        },
+        22_000,
+        'live-prefix-change',
+        'stable-system',
+        'new-prefix',
+        'stable-history',
+      ) as never,
+    );
+
+    const recent = (await dash.serveRecent().json()) as RecentPayload;
+    // cr still proves warmth, but without a same-prefix prior the conservative
+    // split assumes this turn's full 22k prefix was reused.
+    expect(recent.recent.at(-1)!.baseline_input).toBe(10_200);
+  });
+
+  it('live updates fall back to systemSha8 when the exact digest is absent', async () => {
+    dash.update(
+      antEvt(
+        {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 20_000,
+          cache_read_input_tokens: 0,
+        },
+        20_000,
+        'legacy-prefix-live',
+        'old-system',
+        undefined,
+        'stable-history',
+      ) as never,
+    );
+    dash.update(
+      antEvt(
+        {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 2_000,
+          cache_read_input_tokens: 20_000,
+        },
+        22_000,
+        'legacy-prefix-live',
+        'new-system',
+        undefined,
+        'stable-history',
+      ) as never,
+    );
+
+    const recent = (await dash.serveRecent().json()) as RecentPayload;
+    expect(recent.recent.at(-1)!.baseline_input).toBe(10_200);
+  });
+
+  it('does not carry an exact live prefix through an identity-less row', async () => {
+    dash.update(antEvt(
+      {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 20_000,
+        cache_read_input_tokens: 0,
+      },
+      20_000,
+      'live-unknown-bridge',
+      'legacy-a',
+      'exact-prefix',
+    ) as never);
+    const bridge = antEvt(
+      {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      5_000,
+      'live-unknown-bridge',
+    ) as { info: { systemSha8?: string; cachePrefixSha8?: string } };
+    delete bridge.info.systemSha8;
+    delete bridge.info.cachePrefixSha8;
+    dash.update(bridge as never);
+    dash.update(antEvt(
+      {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 2_000,
+        cache_read_input_tokens: 20_000,
+      },
+      22_000,
+      'live-unknown-bridge',
+      'legacy-a',
+      'exact-prefix',
+    ) as never);
+
+    const recent = (await dash.serveRecent().json()) as RecentPayload;
+    expect(recent.recent.at(-1)!.baseline_input).toBe(10_200);
+  });
+
+  it('replay falls back to system_sha8 for historical rows', async () => {
+    writeEvents(tmp, [
+      ev({
+        ts: '2026-05-19T00:00:00.000Z',
+        compressed: true,
+        first_user_sha8: 'legacy-prefix-replay',
+        system_sha8: 'old-system',
+        history_image_sha8: 'stable-history',
+        baseline_probe_status: 'ok',
+        baseline_tokens: 30_000,
+        baseline_cacheable_tokens: 20_000,
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_create_tokens: 20_000,
+        cache_read_tokens: 0,
+      }),
+      ev({
+        ts: '2026-05-19T00:01:00.000Z',
+        compressed: true,
+        first_user_sha8: 'legacy-prefix-replay',
+        system_sha8: 'new-system',
+        history_image_sha8: 'stable-history',
+        baseline_probe_status: 'ok',
+        baseline_tokens: 30_000,
+        baseline_cacheable_tokens: 22_000,
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_create_tokens: 2_000,
+        cache_read_tokens: 20_000,
+      }),
+    ]);
+    await dash.replay(tmp.eventsFile);
+
+    const recent = (await dash.serveRecent().json()) as RecentPayload;
+    // The changed legacy system hash rejects the 20k prior. A selector that
+    // ignored system_sha8 would incorrectly produce the 12,500 split.
+    expect(recent.recent.at(-1)!.baseline_input).toBe(10_200);
   });
 
   it('does not let an overlapping request warm the text counterfactual before it completed', async () => {
