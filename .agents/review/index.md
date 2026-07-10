@@ -19,8 +19,8 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 
 | ID      | Commit    | Scope (one line)                                        | Status |
 |---------|-----------|---------------------------------------------------------|--------|
-| slice-1 | `1d25d57` | Lossless Claude context partitioner + fixtures          | `[ ]`  |
-| slice-2 | `fbf9b0c` | Role-bound project-guidance transform, shared boundary  | `[ ]`  |
+| slice-1 | `1d25d57` | Lossless Claude context partitioner + fixtures          | `[~]` reopened; findings resolved by slice 3, closure pends slice-3 verdict |
+| slice-2 | `fbf9b0c` | Role-bound project-guidance transform, shared boundary  | `[~]`  |
 | slice-3 | `2334b98` | Vouched runtime metadata tail (userEmail/currentDate)   | `[ ]`  |
 | slice-4 | `525cb5b` | Independent tool bucket, telemetry, host wiring         | `[ ]`  |
 | slice-5 | —         | Docs, migration note, eval harness (not yet committed)  | `[ ]`  |

@@ -49,4 +49,53 @@ and metadata byte-exact after reassembly.
   recognizers + fail-closed unknowns as the mitigation.
 
 ## Reviewer comments
-(pending)
+- Reviewer: codex-cli 0.144.1 (`codex exec --json --sandbox workspace-write`,
+  prompt via stdin), disposable worktree `/private/tmp/pxpipe-review-slice1`.
+- Reviewed SHA: `1d25d570a30f0e6e61130f99426548047686033e`;
+  base SHA: `9f9a07c86c834cae29e5f263f85bb21248083874`.
+- `guard_confirmed: true` — reviewer independently ran the revert→FAIL→
+  restore→PASS proof (focused suite failed on missing module; full suite
+  passed, 33 files / 665 tests at this SHA).
+- Verdict: **reopened** (2026-07-10, ~05:25 UTC).
+- Comments (verbatim):
+  1. `src/core/anthropic-context.ts:146` — The parser absorbs an unknown
+     sibling such as `# futureSibling\nopaque data` into `projectGuidance`
+     instead of failing closed, so unknown host/runtime data can be treated
+     as governance.
+  2. `src/core/anthropic-context.ts:109` — The date recognizer validates
+     only digit layout; an impossible date such as `2026-02-30` is accepted
+     with `projectGuidance` populated and no uncertainty instead of leaving
+     the malformed carrier native.
+  3. `src/core/anthropic-context.ts:98` — Runtime recognition is explicitly
+     deferred and every successful partition returns `runtimeMetadata: []`;
+     an exact captured runtime tail therefore has no locator, leaving
+     Slice 1's versioned runtime-recognizer deliverable absent.
+
+## Coder adjudication
+All three findings adjudicated **valid at the reviewed slice-1 SHA** and
+**already resolved at the branch head** (`525cb5b`) by slice 3, verified two
+ways on 2026-07-10:
+
+1. Live probe against HEAD (`partitionAnthropicContext` via tsx):
+   - baseline captured shape → `project: true`, runtime fields
+     `[userEmail, currentDate]`;
+   - `# futureSibling` unknown sibling → fail-closed (`project: false`,
+     1 uncertain);
+   - impossible date `2026-02-30` → fail-closed (`project: false`,
+     1 uncertain).
+2. Guarding tests exist at HEAD: `tests/anthropic-context.test.ts:225-250`
+   ("impossible date", "unknown lowerCamel sibling" in the
+   leaves-framing-unpartitioned matrix) and the runtime-recognizer cases.
+   The unknown-sibling guard is `src/core/anthropic-context.ts:233-246`; the
+   semantic date guard is `isExactCapturedDate`
+   (`src/core/anthropic-context.ts:167-173`).
+
+Finding 3 is additionally a **sequencing note**: the plan's Slice 1 bullet
+("versioned exact project/runtime recognizers") overstated slice 1; v1
+runtime recognition deliberately landed in slice 3, whose plan section and
+characterization correction own that scope. No live defect.
+
+Disposition: the `reopened` verdict required no new code — the fix-ups
+already exist on the same branch (slice 3). Closure of this reopen is
+delegated to the slice-3 review, which covers the commits containing the
+guards. Slice-1 status stays "In progress" until the slice-3 verdict lands.
