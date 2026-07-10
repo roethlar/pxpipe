@@ -27,6 +27,8 @@ import { countCacheControlMarkers } from '../src/core/measurement.js';
 import { HISTORY_SYNTHETIC_INTRO } from '../src/core/history.js';
 import {
   PROJECT_GUIDANCE_MANIFEST_TAG,
+  RUNTIME_CONTEXT_LABEL,
+  RUNTIME_CONTEXT_MANIFEST_TAG,
   sha8,
   type TransformInfo,
 } from '../src/core/transform.js';
@@ -489,16 +491,19 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
 
   it('RUNTIME SPLIT: volatile reminder siblings never re-render project pages or prefix', async () => {
     const project = largeProjectGuidance('runtime-stable');
+    const historyTurns = turns(15, 4000);
     const run1 = await driveAnthropicWithInfo(anthropicProjectBody({
       projectGuidance: project,
       email: 'clean@example.invalid',
       date: '2026-07-10',
+      turns: historyTurns,
     }));
     run1.cap.restore();
     const run2 = await driveAnthropicWithInfo(anthropicProjectBody({
       projectGuidance: project,
       email: 'modified@example.invalid',
       date: '2026-07-11',
+      turns: historyTurns,
     }));
     run2.cap.restore();
 
@@ -508,15 +513,73 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
     expect(b.images).toEqual(a.images);
     expect(b.manifest).toBe(a.manifest);
     expect(run2.info.cachePrefixSha8).toBe(run1.info.cachePrefixSha8);
+    expect(run2.info.cachePrefixBytes).toBe(run1.info.cachePrefixBytes);
+    expect(run1.info.historyReason).toBe('collapsed');
+    expect(run2.info.historyReason).toBe('collapsed');
+    expect(run2.info.historyImageSha).toBe(run1.info.historyImageSha);
+    expect(anthropicHistoryImages(run1.cap.main[0]!.body).length).toBeGreaterThan(0);
+    expect(anthropicHistoryImages(run2.cap.main[0]!.body)).toEqual(
+      anthropicHistoryImages(run1.cap.main[0]!.body),
+    );
+
+    const first = JSON.parse(run1.cap.main[0]!.body) as MessagesRequest;
     const forwarded = JSON.parse(run2.cap.main[0]!.body) as MessagesRequest;
-    const reminderText = forwarded.messages
-      .filter((message) => Array.isArray(message.content))
-      .flatMap((message) => message.content as ContentBlock[])
-      .filter((block): block is TextBlock => block.type === 'text')
-      .map((block) => block.text)
-      .find((text) => text.includes('# currentDate'));
-    expect(reminderText).toContain('# userEmail\nmodified@example.invalid');
-    expect(reminderText).toContain("# currentDate\nToday's date is 2026-07-11.");
+    const systemTexts = (req: MessagesRequest) =>
+      (Array.isArray(req.system) ? req.system : [])
+        .filter((block): block is TextBlock => block.type === 'text')
+        .map((block) => block.text);
+    const runtimeManifest = (req: MessagesRequest) => systemTexts(req).find(
+      (text) => text.includes(`<${RUNTIME_CONTEXT_MANIFEST_TAG} version="1">`),
+    );
+    expect(runtimeManifest(first)).toBe(runtimeManifest(forwarded));
+
+    const openingText = ((forwarded.messages[0]!.content as ContentBlock[]).find(
+      (block) => block.type === 'text' && block.text.startsWith('<system-reminder>'),
+    ) as TextBlock).text;
+    expect(openingText).not.toContain('# userEmail');
+    expect(openingText).not.toContain('# currentDate');
+
+    const finalUser = [...forwarded.messages].reverse().find((message) => message.role === 'user')!;
+    const runtimeTail = (finalUser.content as ContentBlock[]).at(-1) as TextBlock;
+    expect(runtimeTail.text).toBe(
+      `${RUNTIME_CONTEXT_LABEL}\n\n` +
+      "# userEmail\nThe user's email address is modified@example.invalid.\n" +
+      "# currentDate\nToday's date is 2026-07-11.",
+    );
+    const firstFinalUser = [...first.messages].reverse().find((message) => message.role === 'user')!;
+    const firstRuntimeTail = (firstFinalUser.content as ContentBlock[]).at(-1) as TextBlock;
+    expect(runtimeTail.text).not.toBe(firstRuntimeTail.text);
+  });
+
+  it('FAIL CLOSED: changed uncaptured native env costs a prefix miss without re-rendering project pages', async () => {
+    const project = largeProjectGuidance('native-env-cache-cost');
+    const body = (cwd: string): string => {
+      const req = makeCapturedRequest({
+        projectGuidance: project,
+        email: 'owner@example.invalid',
+        date: '2026-07-10',
+      });
+      req.model = 'claude-fable-5';
+      const env = `<env>\nWorking directory: ${cwd}\n</env>`;
+      req.system = [...(Array.isArray(req.system) ? req.system : []), { type: 'text', text: env }];
+      return JSON.stringify(req);
+    };
+    const first = await driveAnthropicWithInfo(body('/synthetic/one'));
+    first.cap.restore();
+    const second = await driveAnthropicWithInfo(body('/synthetic/two'));
+    second.cap.restore();
+    const contractA = projectContract(first.cap.main[0]!.body, first.info);
+    const contractB = projectContract(second.cap.main[0]!.body, second.info);
+
+    expect(contractB.ref).toBe(contractA.ref);
+    expect(contractB.images).toEqual(contractA.images);
+    expect(contractB.manifest).toBe(contractA.manifest);
+    expect(second.info.cachePrefixSha8).not.toBe(first.info.cachePrefixSha8);
+    const forwarded = JSON.parse(second.cap.main[0]!.body) as MessagesRequest;
+    expect(forwarded.system).toContainEqual({
+      type: 'text',
+      text: '<env>\nWorking directory: /synthetic/two\n</env>',
+    });
   });
 
   it('FIRST COLLAPSE: protected project contract/prefix stay stable before a frozen history chunk', async () => {

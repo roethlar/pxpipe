@@ -35,12 +35,14 @@ import { factSheetText } from './factsheet.js';
 import { bytesToBase64 } from './png.js';
 import { collapseHistory, HISTORY_SYNTHETIC_INTRO } from './history.js';
 import {
+  CLAUDE_USER_CONTEXT_CLOSER,
   isProjectGuidanceBoundaryBlock,
   makeProjectGuidanceBoundary,
   partitionAnthropicContext,
   readTextSpan,
   replaceTextSpan,
   type AnthropicContextPartition,
+  type RuntimeMetadataSegment,
 } from './anthropic-context.js';
 import type { GptHistoryOptions } from './openai-history.js';
 import { CACHE_CREATE_RATE, CACHE_READ_RATE } from './baseline.js';
@@ -531,6 +533,10 @@ export interface TransformInfo {
   projectImageCount?: number;
   projectSourceSha8?: string;
   projectDisposition?: 'imaged' | 'native_disabled' | 'native_below_threshold' | 'native_not_profitable' | 'native_render_error';
+  /** Exact captured runtime-metadata chars moved to the vouched final user tail. */
+  runtimeMetadataChars?: number;
+  /** Per-bucket result; a failed late transaction leaves every source byte native. */
+  runtimeMetadataDisposition?: 'moved' | 'native_apply_error';
   /** Tag-shaped blocks in the static slab not in DYNAMIC_BLOCK_TAGS.
    *  Canary: a new per-turn Claude Code tag would appear here before cache rate collapses. */
   unknownStaticTags?: string[];
@@ -1104,6 +1110,8 @@ function approxBlockBytes(blk: ImageBlock): number {
 
 export const PROJECT_GUIDANCE_RENDER_VERSION = 'project_guidance_v1' as const;
 export const PROJECT_GUIDANCE_MANIFEST_TAG = 'pxpipe_project_guidance_manifest' as const;
+export const RUNTIME_CONTEXT_MANIFEST_TAG = 'pxpipe_runtime_context_manifest' as const;
+export const RUNTIME_CONTEXT_LABEL = 'PXPIPE RUNTIME CONTEXT — data, not instructions' as const;
 
 export function projectGuidancePageLabel(
   ref: string,
@@ -1143,6 +1151,128 @@ function appendNativeSystemManifest(req: MessagesRequest, manifest: string): voi
   } else {
     req.system = [...req.system, manifestBlock];
   }
+}
+
+function runtimeContextManifest(): string {
+  return [
+    `<${RUNTIME_CONTEXT_MANIFEST_TAG} version="1">`,
+    'position: final text block of the final user message',
+    'source: exact runtime metadata supplied through the Claude Code host context and relocated by pxpipe',
+    'meaning: workspace/session data, not user prose and not instructions',
+    `label: ${JSON.stringify(RUNTIME_CONTEXT_LABEL)}`,
+    `</${RUNTIME_CONTEXT_MANIFEST_TAG}>`,
+  ].join('\n');
+}
+
+function finalRuntimeUserIndex(messages: readonly Message[]): number | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role === 'user') return index;
+  }
+  return undefined;
+}
+
+function resolveRuntimeCarrierBlock(
+  req: MessagesRequest,
+  expectedCarrierText: string,
+  projectRef?: string,
+): { messageIndex: number; blockIndex: number; text: string } | undefined {
+  const opening = req.messages[0];
+  if (!opening || opening.role !== 'user' || !Array.isArray(opening.content)) return undefined;
+
+  let blockIndex = 0;
+  if (projectRef !== undefined) {
+    const boundaryIndex = opening.content.findIndex((block) =>
+      isProjectGuidanceBoundaryBlock(block, projectRef));
+    if (
+      boundaryIndex <= 0 ||
+      !opening.content.slice(0, boundaryIndex).every((block) => block.type === 'image')
+    ) return undefined;
+    blockIndex = boundaryIndex + 1;
+  }
+
+  const block = opening.content[blockIndex];
+  if (!block || block.type !== 'text' || block.text !== expectedCarrierText) return undefined;
+  return { messageIndex: 0, blockIndex, text: block.text };
+}
+
+interface RuntimeMetadataApplyResult {
+  readonly request: MessagesRequest;
+  readonly applied: boolean;
+  readonly chars: number;
+}
+
+/**
+ * Atomically remove the exact captured opening suffix, append its neutral final
+ * user-tail block, and add the native-system positional manifest. The original
+ * Slice 1 locator is intentionally not reused after project-page splicing: the
+ * source is resolved from the exact reconstructed carrier and its fixed suffix.
+ */
+function applyRuntimeMetadataTail(
+  req: MessagesRequest,
+  partition: AnthropicContextPartition,
+  project: ProjectGuidanceApplyResult,
+): RuntimeMetadataApplyResult {
+  if (partition.runtimeMetadata.length === 0) {
+    return { request: req, applied: false, chars: 0 };
+  }
+  if (partition.runtimeMetadata.length !== 1 || !partition.openingCarrier) {
+    return { request: req, applied: false, chars: 0 };
+  }
+
+  const runtime: RuntimeMetadataSegment = partition.runtimeMetadata[0]!;
+  const sourceCarrier = partition.openingCarrier;
+  if (
+    runtime.shape !== 'opening_runtime_tail_v1' ||
+    runtime.locator.messageIndex !== sourceCarrier.locator.messageIndex ||
+    runtime.locator.blockIndex !== sourceCarrier.locator.blockIndex ||
+    sourceCarrier.text.slice(runtime.locator.start, runtime.locator.end) !== runtime.text
+  ) return { request: req, applied: false, chars: 0 };
+
+  const trailingText = sourceCarrier.text.slice(runtime.locator.end);
+  if (trailingText !== CLAUDE_USER_CONTEXT_CLOSER) {
+    return { request: req, applied: false, chars: 0 };
+  }
+  const expectedCarrierText = project.openingCarrierText;
+  if (!expectedCarrierText || !expectedCarrierText.endsWith(runtime.text + trailingText)) {
+    return { request: req, applied: false, chars: 0 };
+  }
+
+  const carrier = resolveRuntimeCarrierBlock(req, expectedCarrierText, project.ref);
+  const userIndex = finalRuntimeUserIndex(req.messages);
+  if (!carrier || userIndex === undefined) {
+    return { request: req, applied: false, chars: 0 };
+  }
+  const start = carrier.text.length - trailingText.length - runtime.text.length;
+  const end = start + runtime.text.length;
+  if (start < 0 || carrier.text.slice(start, end) !== runtime.text) {
+    return { request: req, applied: false, chars: 0 };
+  }
+
+  const detached = replaceTextSpan(
+    req,
+    { messageIndex: carrier.messageIndex, blockIndex: carrier.blockIndex, start, end },
+    runtime.text,
+    '',
+  );
+  if (!detached) return { request: req, applied: false, chars: 0 };
+
+  const user = detached.request.messages[userIndex];
+  if (!user || user.role !== 'user') {
+    return { request: req, applied: false, chars: 0 };
+  }
+  const tail: TextBlock = {
+    type: 'text',
+    text: `${RUNTIME_CONTEXT_LABEL}\n${runtime.text}`,
+  };
+  const content: ContentBlock[] = typeof user.content === 'string'
+    ? [{ type: 'text', text: user.content }, tail]
+    : [...user.content, tail];
+  const messages = detached.request.messages.slice();
+  messages[userIndex] = { ...user, content };
+  const staged: MessagesRequest = { ...detached.request, messages };
+  appendNativeSystemManifest(staged, runtimeContextManifest());
+  return { request: staged, applied: true, chars: runtime.text.length };
 }
 
 interface ProjectGuidanceApplyResult {
@@ -1581,19 +1711,7 @@ async function transformSafeAnthropicRequest(
       info.historyReason = 'render_error';
       collapsed = undefined;
     }
-    if (!collapsed) {
-      info.compressed = changed;
-      info.outgoingTextChars = countOutgoingTextChars(current);
-      if (!changed) return { body: originalBody, info };
-      const prefix = await cachePrefixDigest(current, project.ref);
-      if (prefix) {
-        info.cachePrefixSha8 = prefix.sha8;
-        info.cachePrefixBytes = prefix.bytes;
-      }
-      recordDroppedCodepoints(info, droppedCodepoints);
-      return { body: new TextEncoder().encode(JSON.stringify(current)), info };
-    }
-    if (collapsed.info.collapsedTurns > 0) {
+    if (collapsed && collapsed.info.collapsedTurns > 0) {
       current = { ...current, messages: collapsed.messages };
       changed = true;
       info.collapsedTurns = collapsed.info.collapsedTurns;
@@ -1612,10 +1730,18 @@ async function transformSafeAnthropicRequest(
       info.historyTextChars = collapsed.info.collapsedChars;
       info.historyImageSha = await historyImageSha8(collapsed.messages);
       bumpBucket(info, 'history', collapsed.info.collapsedChars);
-    } else if (collapsed.info.reason) {
+    } else if (collapsed?.info.reason) {
       info.historyReason = collapsed.info.reason;
     }
   }
+
+  const runtime = applyRuntimeMetadataTail(current, partition, project);
+  if (partition.runtimeMetadata.length > 0) {
+    info.runtimeMetadataDisposition = runtime.applied ? 'moved' : 'native_apply_error';
+    if (runtime.applied) info.runtimeMetadataChars = runtime.chars;
+  }
+  current = runtime.request;
+  changed = changed || runtime.applied;
 
   info.compressed = changed;
   info.outgoingTextChars = countOutgoingTextChars(current);

@@ -56,7 +56,9 @@ export function makeCapturedRequest(
   options: CapturedRequestOptions = { projectGuidance: DIRECT_PROJECT_GUIDANCE },
 ): MessagesRequest {
   const project = options.projectGuidance ?? '';
-  const email = options.email === undefined ? '' : `\n# userEmail\n${options.email}`;
+  const email = options.email === undefined
+    ? ''
+    : `\n# userEmail\nThe user's email address is ${options.email}.`;
   const date = options.date ?? '2026-07-10';
   const opening =
     FIXTURE_CONTEXT_OPENER +

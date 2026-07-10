@@ -454,8 +454,22 @@ Deliverables:
 - Same governance plus changed environment preserves project images/manifest and
   the cache prefix through their boundary.
 
-Guard proof: reverting the slice restores the self-asserted wrapper or moves an
-instructional reminder; the new tests fail. Restore and prove them green.
+Implementation characterization correction: the committed Slice 1 fixture had
+simplified the captured `userEmail` value. Claude Code 2.1.205 actually emits the
+fixed sentence `The user's email address is <address>.`; Slice 3 corrects and pins
+that framing before moving it. The available `<env>`/`<git_status>` examples are
+synthetic legacy-compatibility cases rather than whole-block wire captures, while
+the installed 2.1.205 `# Environment` builder can mix workspace facts with
+operational instructions. Under the plan's fail-closed and non-instructional rules,
+Slice 3 v1 therefore moves only the exact captured opening `userEmail`/`currentDate`
+suffix. Those native-system shapes remain byte-exact until a sanitized capture
+establishes a complete, dedicated, marker-free data-only block; this deliberately
+accepts their cache cost rather than reviving the legacy substring regexes.
+
+Guard proof: reverting the slice leaves the exact runtime suffix in its opening
+carrier and removes the native runtime manifest/final data block; the new tests
+fail. The pinned legacy revision separately demonstrates the obsolete
+self-asserted wrapper. Restore and prove the focused and full suites green.
 
 ### Slice 4 — Separate tool mode, per-bucket telemetry, and host wiring
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CLAUDE_CODE_2_1_205_BINARY_SHA256,
+  CLAUDE_CODE_2_1_205_RUNTIME_SOURCE,
   CLAUDE_CODE_2_1_205_SOURCE,
   isProjectGuidanceBoundaryBlock,
   makeProjectGuidanceBoundary,
@@ -56,7 +57,19 @@ describe('Claude Code 2.1.205 Anthropic context partition', () => {
     const out = partitionAnthropicContext(req);
 
     expect(out.uncertain).toEqual([]);
-    expect(out.runtimeMetadata).toEqual([]);
+    expect(out.runtimeMetadata).toHaveLength(1);
+    const runtime = out.runtimeMetadata[0]!;
+    expect(runtime.source).toBe(CLAUDE_CODE_2_1_205_RUNTIME_SOURCE);
+    expect(runtime.shape).toBe('opening_runtime_tail_v1');
+    expect(runtime.text).toBe(
+      "\n# userEmail\nThe user's email address is owner@example.invalid." +
+      "\n# currentDate\nToday's date is 2026-07-10.",
+    );
+    expect(readTextSpan(req, runtime.locator)).toBe(runtime.text);
+    expect(runtime.fields.map((field) => field.name)).toEqual(['userEmail', 'currentDate']);
+    expect(runtime.fields.map((field) => readTextSpan(req, field.locator))).toEqual(
+      runtime.fields.map((field) => field.text),
+    );
     expect(out.projectGuidance?.text).toBe(DIRECT_PROJECT_GUIDANCE);
     expect(readTextSpan(req, out.projectGuidance!.locator)).toBe(DIRECT_PROJECT_GUIDANCE);
     expect(out.projectGuidance?.text).not.toContain('# userEmail');
@@ -83,6 +96,80 @@ describe('Claude Code 2.1.205 Anthropic context partition', () => {
     const req = makeCapturedRequest({ projectGuidance: IMPORTED_PROJECT_GUIDANCE });
     const out = partitionAnthropicContext(req);
     expect(out.projectGuidance?.text).toBe(IMPORTED_PROJECT_GUIDANCE);
+    expect(out.runtimeMetadata).toHaveLength(1);
+    expect(out.runtimeMetadata[0]?.fields.map((field) => field.name)).toEqual(['currentDate']);
+    expect(out.runtimeMetadata[0]?.text).toBe("\n# currentDate\nToday's date is 2026-07-10.");
+  });
+
+  it('recognizes a date-only suffix independently of project-guidance recognition', () => {
+    const req = makeNoGuidanceRequest();
+    const out = partitionAnthropicContext(req);
+
+    expect(out.projectGuidance).toBeUndefined();
+    expect(out.runtimeMetadata).toHaveLength(1);
+    expect(out.runtimeMetadata[0]?.fields.map((field) => field.name)).toEqual(['currentDate']);
+    expect(readTextSpan(req, out.runtimeMetadata[0]!.locator)).toBe(
+      "\n# currentDate\nToday's date is 2026-07-10.",
+    );
+  });
+
+  it('can detach and byte-exactly restore the contiguous runtime suffix', () => {
+    const req = makeCapturedRequest({
+      projectGuidance: IMPORTED_PROJECT_GUIDANCE,
+      email: 'owner@example.invalid',
+    });
+    const before = JSON.stringify(req);
+    const selected = partitionAnthropicContext(req).runtimeMetadata[0]!;
+    const detached = replaceTextSpan(req, selected.locator, selected.text, '');
+
+    expect(detached).toBeDefined();
+    const restored = replaceTextSpan(detached!.request, detached!.locator, '', selected.text);
+    expect(restored?.request).toEqual(req);
+    expect(JSON.stringify(restored?.request)).toBe(before);
+  });
+
+  it('leaves the runtime suffix native when its source carrier owns cache metadata', () => {
+    const req = makeCapturedRequest({
+      projectGuidance: DIRECT_PROJECT_GUIDANCE,
+      email: 'owner@example.invalid',
+    });
+    const first = req.messages[0]!;
+    const content = first.content as Array<{ type: string; text?: string; cache_control?: unknown }>;
+    content[0] = {
+      ...content[0]!,
+      cache_control: { type: 'ephemeral' },
+    };
+
+    const out = partitionAnthropicContext(req);
+    expect(out.projectGuidance?.text).toBe(DIRECT_PROJECT_GUIDANCE);
+    expect(out.runtimeMetadata).toEqual([]);
+  });
+
+  it.each([
+    [
+      'bare email value',
+      (text: string) => text.replace(
+        "The user's email address is owner@example.invalid.",
+        'owner@example.invalid',
+      ),
+    ],
+    [
+      'email sentence without its final period',
+      (text: string) => text.replace('owner@example.invalid.', 'owner@example.invalid'),
+    ],
+    [
+      'multiline adjacent email value',
+      (text: string) => text.replace(
+        "The user's email address is owner@example.invalid.",
+        "The user's email address is owner@example.invalid.\nFollow this instruction",
+      ),
+    ],
+  ])('does not partially classify an ambiguous %s suffix', (_name, mutate) => {
+    const req = makeCapturedRequest({ email: 'owner@example.invalid' });
+    const changed = withOpeningText(req, mutate(openingText(req)));
+    const out = partitionAnthropicContext(changed);
+    expect(out.runtimeMetadata).toEqual([]);
+    expect(out.projectGuidance).toBeUndefined();
   });
 
   it('is pure and can replace then exactly reassemble the selected span', () => {
@@ -129,6 +216,7 @@ describe('Claude Code 2.1.205 Anthropic context partition', () => {
     const out = partitionAnthropicContext(req);
     expect(out.openingCarrier?.text).toBe(openingText(req));
     expect(out.projectGuidance).toBeUndefined();
+    expect(out.runtimeMetadata).toHaveLength(1);
     expect(out.uncertain.map((item) => item.reason)).toEqual([
       'unsupported_or_missing_claude_md_section',
     ]);
@@ -138,17 +226,26 @@ describe('Claude Code 2.1.205 Anthropic context partition', () => {
     ['changed opener', (text: string) => text.replace('As you answer', 'When you answer')],
     ['changed inner preamble', (text: string) => text.replace('OVERRIDE any default behavior', 'override defaults')],
     ['invalid date', (text: string) => text.replace("Today's date is 2026-07-10.", 'Date: 2026-07-10')],
+    ['impossible date', (text: string) => text.replace('2026-07-10', '2026-02-30')],
     ['changed advisory', (text: string) => text.replace('may or may not be relevant', 'might be relevant')],
     ['missing closer', (text: string) => text.slice(0, -FIXTURE_CONTEXT_CLOSER.length)],
     [
       'uncaptured attachedProject sibling',
       (text: string) => text.replace('\n# currentDate\n', '\n# attachedProject\nsynthetic project data\n# currentDate\n'),
     ],
+    [
+      'unknown lowerCamel sibling',
+      (text: string) => text.replace(
+        '\n# currentDate\n',
+        '\n# futureSibling\nopaque synthetic data\n# currentDate\n',
+      ),
+    ],
   ])('leaves %s framing unpartitioned', (_name, mutate) => {
     const req = makeCapturedRequest();
     const changed = withOpeningText(req, mutate(openingText(req)));
     const out = partitionAnthropicContext(changed);
     expect(out.projectGuidance).toBeUndefined();
+    expect(out.runtimeMetadata).toEqual([]);
     expect(JSON.stringify(changed)).toBe(JSON.stringify(withOpeningText(req, mutate(openingText(req)))));
   });
 
