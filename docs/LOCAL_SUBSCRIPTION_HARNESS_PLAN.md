@@ -1,7 +1,8 @@
 # Local subscription-harness routing and smoke tests
 
-Status: **IMPLEMENTED, INDEPENDENTLY ACCEPTED, AND LOCALLY INSTALLED
-2026-07-10 — live calls and push await separate owner approval**.
+Status: **OWNER CORRECTION APPROVED 2026-07-10 — persistent installed model
+selection and truthful dashboard status are in progress; live calls and push
+remain separately owner-gated**.
 
 Plan base: `102b983` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was still `8d7ba3e` when this plan was drafted. Recheck upstream before
@@ -28,8 +29,9 @@ Every smoke proxy explicitly uses:
 PXPIPE_MODELS=claude-fable-5,gpt-5.6-sol,grok-4.5
 ```
 
-The installed login service keeps its Fable-only default. Sol and Grok are
-enabled only inside bounded smoke processes.
+The installed login service must persist this exact three-model compression
+scope. The separate smoke processes still set it explicitly because they start
+from deliberately empty environments.
 
 ## Evidence and current gap
 
@@ -218,7 +220,9 @@ provenance plan's larger Fable/Sonnet A/B matrix.
 - No Cloudflare.
 - No WebSocket proxy.
 - No simultaneous multi-provider routing on one port.
-- No persistent harness config or login-service allowlist change.
+- No persistent harness client config. The local installer persists only the
+  exact three-model compression scope; it does not persist login data or
+  provider routing.
 - No public release, upstream contribution, pull request, merge, or main change.
 - No full live A/B matrix.
 - Pushing the fork requires a fresh explicit owner go.
@@ -267,3 +271,31 @@ authorize code, live calls, installation, or push.
   launch-at-login service, dashboard success, and an IPv4 loopback-only
   listener on port `47821`.
 - No live subscription smoke or push has occurred.
+
+### Owner correction — installed model scope
+
+After the first reviewed installation, the owner reported that only Fable was
+selected and the dashboard still told them to set `PXPIPE_MODELS`. The prior
+Fable-only installed-service choice was a misunderstanding and is superseded.
+The approved correction is:
+
+- `deploy/macos-local/install.sh` writes the exact value
+  `claude-fable-5,gpt-5.6-sol,grok-4.5` into the LaunchAgent's
+  `PXPIPE_MODELS` environment field.
+- The installer test proves the generated service file contains that exact
+  value; removing it must make the test fail.
+- The model fragment compares its active scope with the configured
+  environment scope. When they match it says the selection is saved for
+  restart and does not tell the owner to set an environment variable. A
+  dashboard-only runtime change still gets the persistence warning.
+- README installation text states that the local service persists the three
+  models. Standalone source runs keep the product's Fable-only built-in
+  default.
+- Rebuild directly into `~/Dev/pxpipe-deploy`, reinstall, then verify the
+  service file and launch service carry the exact value and the local model
+  fragment shows Fable, Sol, and Grok selected with no persistence warning.
+
+This correction changes compression eligibility and dashboard truthfulness
+only. Codex and Grok still use separate temporary proxy processes because
+their subscription traffic has different upstream services. No live model
+call is part of this correction.
