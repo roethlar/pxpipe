@@ -9,14 +9,18 @@ here points back at them.
 ## 1. Why this proxy exists
 
 Claude Code sends a large, mostly-static prefix on every single turn: the
-CLAUDE.md project rules, accumulated tool results, and older conversation
-history. The model never *needs* to re-read that text in token form —
-Anthropic prompt-caches it, and image blocks OCR cleanly at small font sizes.
-So pxpipe rewrites the bulky, provenance-verified parts of each request into
-grayscale PNG image blocks. Anthropic charges roughly `ceil(W*H/750)` tokens
-per image; a dense page holds tens of thousands of characters for a few
-thousand image tokens. The trade is real text tokens for a few image tokens
-that cache across turns.
+CLAUDE.md project rules, the agent / subagent definitions, the tool catalogue
+with full input schemas, and a long list of internal "skill" reminders. On
+Opus-class models that prefix runs ~68K input tokens. The model never *needs*
+to re-read that text in token form — Anthropic prompt-caches it, and image
+blocks OCR cleanly at small font sizes. So pxpipe pulls the static prefix
+out of the JSON body, renders it as one or more grayscale PNG image blocks,
+and pins a single `cache_control` breakpoint on the last image. Anthropic
+charges roughly `ceil(W*H/750)` tokens per image; the current Anthropic profile
+caps pages at 1568×728 so rasterized pixels survive the provider's resize. A
+large static slab becomes a small set of image pages on the first turn and a
+cache-read (billed at 0.10×) on subsequent turns. The trade is real text tokens
+for image tokens cached under the same stable prefix.
 
 ## 2. Provenance partition (replaces the old static/dynamic split)
 
@@ -236,9 +240,46 @@ and `docs/CACHING_AND_SAVINGS.md` (measured `/count_tokens` counterfactual,
 same observed cache state on both sides, cache discount cancels). The
 dashboard and `pxpipe stats` surface those numbers.
 
-**Important framing**: do not quote the headline steady-state percentage as a
-benchmark. The first turn pays cache-creation; amortization starts at turn 2.
-Cite the per-session number that `pxpipe stats` reports.
+**Per-call effective input cost** — what the call actually billed for:
+
+```
+effective = input_tokens
+          + cache_creation_input_tokens * 1.25
+          + cache_read_input_tokens     * 0.10
+```
+
+The `1.25` and `0.10` multipliers match Anthropic's published cache pricing
+for Opus: writing to the cache costs 1.25× the per-token input rate; reading
+from the cache costs 0.10×.
+
+**Per-call baseline cost** — what the same call would have billed if it had not
+been compressed. The implementation uses the actual baseline probe and observed
+cache state; it does not multiply image count by a fixed historical canvas:
+
+```
+baseline_raw = count_tokens(original_request)
+baseline_eff = price(baseline_raw, observed_cache_state)
+actual_eff   = price(actual_usage, observed_cache_state)
+saved        = baseline_eff - actual_eff
+```
+
+On OpenAI-shaped rows, response usage supplies `cached_tokens`; pxpipe records
+actual image tokens from real dimensions and the o200k text value of the
+replaced content. Rates and render geometry are selected by exact model id.
+
+The dashboard's "tokens saved" and "$ saved" cards (and
+`pxpipe stats` for the offline aggregate) both surface these numbers.
+The $ figure in `src/dashboard.ts` uses a fixed per-Mtok input rate — note
+Fable 5 (the current supported model) bills $10/M input, so re-check the
+constant if you care about the dollar card.
+
+**Important framing**: do not quote 65–73% as a benchmark. That number is
+the architectural ceiling — the steady-state savings on a long session over
+the same codebase where the image cache is warm and the cumulative
+tool_result history is large. A short session with no warm cache may save
+much less. The first turn always pays cache-creation cost; cache-read
+amortization kicks in from turn 2 onwards. Cite the per-session number that
+`pxpipe stats` reports, not the headline.
 
 ## 9. What deliberately did NOT get built
 

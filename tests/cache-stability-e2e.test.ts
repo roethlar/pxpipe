@@ -17,7 +17,7 @@
  *
  * Run just this file:  pnpm vitest run tests/cache-stability-e2e.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   makeProjectGuidanceBoundary,
   projectGuidanceBoundaryRef,
@@ -37,6 +37,19 @@ import {
   DIRECT_PROJECT_GUIDANCE,
   makeCapturedRequest,
 } from './fixtures/anthropic-context.js';
+
+// These proxy-contract tests deliberately exercise the opt-in Sol transform.
+// Snapshot the developer shell so the suite is deterministic now that Sol is
+// intentionally absent from the built-in default scope.
+let ambientPxpipeModels: string | undefined;
+beforeAll(() => {
+  ambientPxpipeModels = process.env.PXPIPE_MODELS;
+  process.env.PXPIPE_MODELS = 'claude-fable-5,gpt-5.6-sol';
+});
+afterAll(() => {
+  if (ambientPxpipeModels === undefined) delete process.env.PXPIPE_MODELS;
+  else process.env.PXPIPE_MODELS = ambientPxpipeModels;
+});
 
 // ---------------------------------------------------------------------------
 // Fake upstream — records every outbound MAIN request body and answers with a
@@ -661,7 +674,7 @@ describe('e2e cache alignment — GPT (OpenAI) through the real proxy', () => {
     turns: { role: 'user' | 'assistant'; text: string }[];
   }): string {
     return JSON.stringify({
-      model: opts.model ?? 'gpt-5.6',
+      model: opts.model ?? 'gpt-5.6-sol',
       messages: [
         { role: 'system', content: slab(opts.systemChars) },
         ...opts.turns.map((t) => ({ role: t.role, content: t.text })),
@@ -674,7 +687,7 @@ describe('e2e cache alignment — GPT (OpenAI) through the real proxy', () => {
     turns: { role: 'user' | 'assistant'; text: string }[];
   }): string {
     return JSON.stringify({
-      model: 'gpt-5.6',
+      model: 'gpt-5.6-sol',
       instructions: slab(opts.systemChars),
       input: opts.turns.map((t) => ({ role: t.role, content: t.text })),
     });

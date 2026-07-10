@@ -47,6 +47,7 @@ describe('Worker provider-sensitive transform options', () => {
     expect(Object.prototype.hasOwnProperty.call(options, 'compressProjectGuidance')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(options, 'compressTools')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(options, 'compressReminders')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(options, 'cols')).toBe(false);
     expect(options.compress).toBe(true);
     expect(options.compressToolResults).toBe(true);
   });
@@ -56,10 +57,12 @@ describe('Worker provider-sensitive transform options', () => {
       COMPRESS_PROJECT_GUIDANCE: '0',
       COMPRESS_TOOLS: 'true',
       COMPRESS_REMINDERS: 'false',
+      COLS: '144',
     })).toMatchObject({
       compressProjectGuidance: false,
       compressTools: true,
       compressReminders: false,
+      cols: 144,
     });
   });
 

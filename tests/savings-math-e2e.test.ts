@@ -19,13 +19,28 @@
  *
  * Run just this file:  pnpm vitest run tests/savings-math-e2e.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createProxy, type ProxyEvent } from '../src/core/proxy.js';
 import { countTokens as o200k } from 'gpt-tokenizer/encoding/o200k_base';
 import {
   DIRECT_PROJECT_GUIDANCE,
   makeCapturedRequest,
 } from './fixtures/anthropic-context.js';
+
+// The GPT tests below drive 'gpt-5.6-sol', which is intentionally absent from
+// the built-in default scope (Fable 5 only). Pin PXPIPE_MODELS so the suite is
+// deterministic regardless of the developer's shell (same convention as
+// proxy-usage.test.ts) — without this, the file passes or fails depending on
+// ambient env, which is exactly what broke CI.
+let ambientPxpipeModels: string | undefined;
+beforeAll(() => {
+  ambientPxpipeModels = process.env.PXPIPE_MODELS;
+  process.env.PXPIPE_MODELS = 'claude-fable-5,gpt-5.6-sol';
+});
+afterAll(() => {
+  if (ambientPxpipeModels === undefined) delete process.env.PXPIPE_MODELS;
+  else process.env.PXPIPE_MODELS = ambientPxpipeModels;
+});
 
 const PROBE_TOKENS = 9999; // canned count_tokens result from the fake upstream
 
@@ -100,7 +115,7 @@ const slab = (n: number) =>
 
 const gptBody = (sysChars: number) =>
   JSON.stringify({
-    model: 'gpt-5.6',
+    model: 'gpt-5.6-sol',
     messages: [
       { role: 'system', content: slab(sysChars) },
       { role: 'user', content: 'hello' },

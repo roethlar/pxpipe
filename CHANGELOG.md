@@ -4,69 +4,29 @@ All notable changes to pxpipe are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor = features /
 behavioral changes, patch = fixes).
 
-## Unreleased — provenance-safe compression
+## Unreleased
 
-Release is gated on the live A/B matrix in
-`docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` §7 (separately owner-authorized);
-the structural change is complete and fully unit-tested.
+### Changed
+- `gpt-5.6-sol` is now opt-in rather than silently enabled. Its exact profile
+  remains available when selected, and sibling 5.6 variants do not inherit it.
+- Complete per-model render profiles now drive font atlas, cell spacing,
+  geometry, style, history pages, and profitability math. Sol uses a 6×11
+  JetBrains Mono atlas; opt-in Grok uses the measured effective 9×12 arm plus
+  the factsheet.
+- Dashboard exposes the GPT model row and `?` controls now show accessible
+  hover/focus tooltips.
 
-### Changed — the trust boundary (#97, #37)
-- **The monolithic system/tool image slab is gone.** The transform no longer
-  flattens `req.system`, no longer bakes tool docs into rendered pages, and
-  no longer re-asserts provenance from inside user-role content. Content is
-  imaged only when an exact, versioned recognizer identified it
-  (Claude Code 2.1.205 opening-context shapes in v1); unknown or malformed
-  shapes fail closed to byte-exact native text.
-- **Native manifests vouch for rendered pages.** Recognized repository
-  project guidance (`# claudeMd`: CLAUDE.md + imported AGENTS.md) renders to
-  inert `PROJECT GUIDANCE · ref <id>` pages prepended to the opening user
-  message before an exact boundary marker; a
-  `<pxpipe_project_guidance_manifest>` appended to native `system` declares
-  their origin, position, page count, and project-guidance priority. No
-  user-role text claims system-prompt authority anymore.
-- **The self-asserted relocation wrapper is gone** (supersedes 0.7.1's
-  "Context relocated by pxpipe from the system prompt" header, identified in
-  #97 as indistinguishable from prompt injection). The exact captured
-  `userEmail`/`currentDate` opening suffix now relocates to a final
-  `PXPIPE RUNTIME CONTEXT — data, not instructions` block vouched for by its
-  own native manifest; other native-system shapes stay byte-exact.
-- **Tool definitions stay native JSON by default.** Historical evidence
-  implicates tool-doc vocabulary in `cyber` classifier trips (#37), so
-  `compressTools` is now an explicit experimental opt-in with its own
-  manifest, reference, gate, and digest-bound stubs — never enabled
-  silently. Generic `compressReminders` also defaults off; the recognized
-  project carrier can never fall through into whole-reminder imaging.
-- **Cache markers are never added, moved across owners, or multiplied.**
-  Project pages ride before the caller's own live-prompt marker; a marker
-  nested in compressed tool_result content moves onto the last image of that
-  same content; history collapse re-plants the one unambiguous caller marker
-  per collapsed message and fails closed on ambiguity.
-- **Literal `role: "system"` attachments** (a supported Claude beta shape)
-  are modeled, protected byte-exact behind the opening carrier, and can
-  never be serialized into user-role history images.
-
-### Added
-- `compressProjectGuidance` option (default on for Anthropic requests).
-- Per-bucket telemetry: `context_mode`, project/tool/runtime source chars,
-  refs, dispositions, and fallback reasons; `cache_prefix_sha8` +
-  `cache_boundary_kind` as the exact prefix identity. All new fields are
-  optional — old event rows stay readable.
-- `eval/provenance-ab/`: the owner-gated live A/B matrix harness (plan §7) —
-  variant proxy, run driver, and a redacted matrix collector that records
-  outcomes, hashes, and aggregate tokens but never raw prompts or
-  transcripts.
-
-### Migration notes
-- Operators: no config change needed. Rollback remains `PXPIPE_DISABLE=1`
-  (or the dashboard kill switch), which forwards the original request.
-- Worker deployments: `COMPRESS_PROJECT_GUIDANCE`, `COMPRESS_TOOLS`, and
-  `COMPRESS_REMINDERS` env vars exist; when unset the option is omitted so
-  each provider keeps its own default (Anthropic tools native; OpenAI's
-  independent tool compression unchanged).
-- Dashboards/scripts reading `events.jsonl`: prefer
-  `cache_prefix_sha8 ?? system_sha8` as the warmth identity (the bundled
-  dashboard, sessions, and stats already do).
-- OpenAI-path behavior and configuration are unchanged.
+### Known limitations / evidence
+- A direct `gpt-5.6-sol` raw-image pilot tested **both** the new JetBrains
+  6×11/126-column profile and the old Spleen 5×8/152-column profile. Each scored
+  0/4 exact identifiers with four unsupported invented values; 6×11 passed
+  gist/guard, while 5×8 failed gist and passed the guard. One earlier paid setup
+  attempt exhausted 512 output tokens as hidden reasoning and is recorded but
+  excluded from scoring. The production fact-sheet still carries extracted
+  identifiers verbatim. Sol is therefore removed from the built-in default
+  scope while its exact profile remains available for explicit opt-in. A
+  Sol-only effective 9×12/84-column candidate is locally rendered but has no
+  model result yet. See `eval/sol-profile/RESULTS.md`.
 
 ## 0.8.0 — 2026-07-03
 
@@ -278,7 +238,8 @@ it were the live request).
 
 ## 0.5.0 — 2026-06-20
 
-Cache-stable history-collapse imaging for both providers, with GPT-5.6 promoted
+Cache-stable history-collapse imaging for both providers, with the then-named
+GPT-5.6 model promoted
 to the default imaged scope. Old conversation history collapses into rendered
 PNG sections so the model reads a compact image instead of re-billed text, while
 prompt caching and tool-call behavior are preserved.
@@ -292,7 +253,13 @@ prompt caching and tool-call behavior are preserved.
   metrics, thumbnail-expired session UI, and reflow/newline handling.
 
 ### Changed
-- **Default imaged scope is now `claude-fable-5` + `gpt-5.6`.** GPT-5.6 is
+> Historical state for 0.5.0: the Sol promotion below was reversed in the
+> current Unreleased changes after the 2026-07-09 raw-recall failures; the
+> built-in default is now Fable-only.
+
+- **Default imaged scope is now `claude-fable-5` + `gpt-5.6-sol`.** The model
+  was originally recorded here as GPT-5.6; production traffic identifies the
+  exact variant as `gpt-5.6-sol`. GPT-5.6 Sol is
   promoted from opt-in (0.4.0) to on by default. `gpt-5.5` and `claude-opus-4-8`
   stay opt-in: they degrade reading dense imaged history (gist drift), so
   silently imaging them by default is wrong. Promotion is gated on an OCR/recall

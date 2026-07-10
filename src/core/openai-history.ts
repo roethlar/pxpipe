@@ -21,8 +21,14 @@
  * HistoryTurn list and the planner/renderer are shared.
  */
 
-import { renderTextToPngs, reflow, neutralizeSentinel, type RenderedImage } from './render.js';
-import { GPT_MAX_HEIGHT_PX } from './gpt-model-profiles.js';
+import {
+  renderTextToPngs,
+  reflow,
+  neutralizeSentinel,
+  type RenderedImage,
+  type RenderStyle,
+} from './render.js';
+import { DEFAULT_GPT_PROFILE, GPT_MAX_HEIGHT_PX } from './gpt-model-profiles.js';
 import { countTokens as o200kCountTokens } from 'gpt-tokenizer/encoding/o200k_base';
 
 /** Portrait-strip width for GPT history images. Mirrors GPT_STRIP_COLS in
@@ -80,6 +86,8 @@ export interface GptHistoryOptions {
   /** Max rendered image height in px (per-model; from the GPT profile). Threaded
    *  into renderTextToPngs so history pages split at the same height the gate prices. */
   maxHeightPx: number;
+  /** Glyph density from the model profile. Empty = production 5x8. */
+  style: RenderStyle;
   /** Hard cap on GPT history image count. This is a TRUE cap, not a threshold:
    *  collapse the oldest completed sections until the next section would exceed
    *  the cap, then leave the remaining history as ordinary text. Prevents 80+
@@ -105,6 +113,7 @@ export const GPT_HISTORY_DEFAULTS: GptHistoryOptions = {
   // GPT path: OpenAI's resize bounds (2048-bbox / 768 short side) permit the tall
   // strip — do NOT re-link to render.ts MAX_HEIGHT_PX (Anthropic's 1568/1.15 MP clamp).
   maxHeightPx: GPT_MAX_HEIGHT_PX,
+  style: DEFAULT_GPT_PROFILE.style,
   maxImages: GPT_HISTORY_MAX_IMAGES,
   reflow: true,
 };
@@ -380,7 +389,7 @@ export async function planGptCollapse(
     // Readable portrait strips (≤768px wide) — legible to OpenAI vision, same as
     // the static slab. renderTextToPngs caps each PNG at MAX_HEIGHT_PX so a tall
     // section pages into N images, all still well under the 10,000-patch budget.
-    const sectionImgs = await renderTextToPngs(sectionRender, o.cols, {}, o.maxHeightPx);
+    const sectionImgs = await renderTextToPngs(sectionRender, o.cols, o.style ?? {}, o.maxHeightPx);
     if (imgCount + sectionImgs.length > maxImages) {
       // TRUE cap: keep the sections already selected, leave this and every later
       // section (and the pin, if not yet reached) as normal text in the remainder.

@@ -10,13 +10,15 @@ import {
   renderTextToPngs,
   reflow,
   shrinkColsToContent,
+  renderCellWidth,
+  renderCellHeight,
   PAD_X,
-  CELL_W,
+  PAD_Y,
+  READABLE_CHARS_PER_IMAGE,
   type RenderedImage,
 } from './render.js';
 import {
   resolveGptProfile,
-  DEFAULT_GPT_STRIP_COLS,
   type GptVisionCost,
 } from './gpt-model-profiles.js';
 import { bytesToBase64 } from './png.js';
@@ -24,6 +26,8 @@ import {
   compactSlabWhitespace,
   estimateImageCount,
   sha8,
+  ANTHROPIC_PIXELS_PER_TOKEN,
+  IMAGE_COST_SAFETY_MARGIN,
   type TransformInfo,
   type TransformOptions,
 } from './transform.js';
@@ -100,6 +104,36 @@ export function openAIVisionTokens(model: string, w: number, h: number): number 
   if (Math.max(W, H) > 2048) { const r = 2048 / Math.max(W, H); W = Math.floor(W * r); H = Math.floor(H * r); }
   if (Math.min(W, H) > 768) { const r = 768 / Math.min(W, H); W = Math.floor(W * r); H = Math.floor(H * r); }
   return c.base + c.perTile * (Math.ceil(W / 512) * Math.ceil(H / 512));
+}
+
+/** True when this Responses/Chat request is actually served by a Claude model.
+ *  Codex-style clients speak OpenAI Responses while some models are Anthropic.
+ *  Cost math must then price images and cache the Anthropic way, not the GPT way. */
+export function isClaudeModel(model: string | null | undefined): boolean {
+  const m = (model ?? '').toLowerCase();
+  return m.startsWith('claude') || m.includes('anthropic');
+}
+
+export function isGrokModel(model: string | null | undefined): boolean {
+  return (model ?? '').toLowerCase().startsWith('grok-');
+}
+
+/** Measured 2026-07-09 on grok-4.5: image-token delta ≈ 1000 per megapixel
+ *  across several page sizes (768x336 → 268, 764x980 → 748, etc.). */
+export const GROK_TOKENS_PER_MEGAPIXEL = 1000;
+
+/** Per-image vision-token cost for the model actually serving the request.
+ *  Claude: Anthropic pixel formula. Grok: measured tok/MPix. GPT/o-series:
+ *  OpenAI tile/patch formula. Model-based, not endpoint-based. */
+export function visionTokensForModel(model: string, w: number, h: number): number {
+  if (isClaudeModel(model)) {
+    return Math.ceil((w * h / ANTHROPIC_PIXELS_PER_TOKEN) * IMAGE_COST_SAFETY_MARGIN);
+  }
+  if (isGrokModel(model)) {
+    const pixels = Math.max(0, w) * Math.max(0, h);
+    return Math.max(1, Math.ceil((pixels / 1_000_000) * GROK_TOKENS_PER_MEGAPIXEL));
+  }
+  return openAIVisionTokens(model, w, h);
 }
 
 type OpenAIRole = 'system' | 'developer' | 'user' | 'assistant' | 'tool' | string;
@@ -186,7 +220,7 @@ interface OpenAIResolvedOptions {
   compress: boolean;
   compressTools: boolean;
   minCompressChars: number;
-  cols: number;
+  cols?: number;
   multiCol: number;
   charsPerToken: number;
   reflow: boolean;
@@ -198,7 +232,7 @@ const DEFAULTS: OpenAIResolvedOptions = {
   compress: true,
   compressTools: true,
   minCompressChars: 2000,
-  cols: DEFAULT_GPT_STRIP_COLS,
+  cols: undefined,
   multiCol: 1,
   charsPerToken: 4, // conservative OpenAI default; override after telemetry
   reflow: true,
@@ -210,7 +244,7 @@ function resolveOptions(opts: TransformOptions): OpenAIResolvedOptions {
     compress: opts.compress ?? DEFAULTS.compress,
     compressTools: opts.compressTools ?? DEFAULTS.compressTools,
     minCompressChars: opts.minCompressChars ?? DEFAULTS.minCompressChars,
-    cols: opts.cols ?? DEFAULTS.cols,
+    cols: opts.cols,
     multiCol: opts.multiCol ?? DEFAULTS.multiCol,
     charsPerToken: opts.charsPerToken ?? DEFAULTS.charsPerToken,
     reflow: opts.reflow ?? DEFAULTS.reflow,
@@ -470,10 +504,25 @@ function evalOpenAIGate(
   cols: number,
   charsPerToken: number,
 ): { imageTokens: number; textTokens: number; profitable: boolean } {
-  const stripW = 2 * PAD_X + cols * CELL_W;
-  const estImages = estimateImageCount(renderedText, cols, 1);
-  const perStrip = openAIVisionTokens(model, stripW, resolveGptProfile(model).maxHeightPx);
-  const imageTokens = estImages * perStrip;
+  const profile = resolveGptProfile(model);
+  const style = profile.style;
+  const cellW = renderCellWidth(style);
+  const cellH = renderCellHeight(style);
+  const stripW = 2 * PAD_X + cols * cellW;
+  const maxLines = Math.max(1, Math.floor((profile.maxHeightPx - 2 * PAD_Y) / cellH));
+  const maxCharsPerImage = Math.min(
+    READABLE_CHARS_PER_IMAGE,
+    Math.max(1, cols) * maxLines,
+  );
+  const estImages = estimateImageCount(
+    renderedText,
+    cols,
+    1,
+    maxCharsPerImage,
+    maxLines,
+  );
+  const perFullStrip = visionTokensForModel(model, stripW, profile.maxHeightPx);
+  const imageTokens = estImages * perFullStrip;
   const textTokens = renderedText.length / charsPerToken;
   return { imageTokens, textTokens, profitable: imageTokens < textTokens };
 }
@@ -511,7 +560,7 @@ function gptTextTokens(text: string): number {
  *  what GPT actually bills as input for the slab pxpipe imaged. */
 function gptImageTokens(model: string, images: RenderedImage[]): number {
   let n = 0;
-  for (const img of images) n += openAIVisionTokens(model, img.width, img.height);
+  for (const img of images) n += visionTokensForModel(model, img.width, img.height);
   return n;
 }
 
@@ -658,7 +707,12 @@ export async function transformOpenAIChatCompletions(
     : '';
   const header = CHAT_HEADER.replace('\n====', reflowNote + '\n====');
   const renderedText = header + combined;
-  const cols = Math.min(shrinkColsToContent(renderedText, o.cols), resolveGptProfile(req.model).stripCols);
+  const profile = resolveGptProfile(req.model);
+  const maxCols = o.cols ?? profile.stripCols;
+  const cols = Math.min(
+    shrinkColsToContent(renderedText, maxCols, profile.style.markerScale, profile.style.font),
+    profile.stripCols,
+  );
 
   const gate = evalOpenAIGate(req.model, renderedText, cols, o.charsPerToken);
   info.gateEval = {
@@ -675,7 +729,7 @@ export async function transformOpenAIChatCompletions(
     return { body, info };
   }
 
-  const images = await renderTextToPngs(renderedText, cols, {}, resolveGptProfile(req.model).maxHeightPx);
+  const images = await renderTextToPngs(renderedText, cols, profile.style, profile.maxHeightPx);
   if (images.length === 0) {
     info.reason = 'render_empty';
     return { body, info };
@@ -735,8 +789,9 @@ export async function transformOpenAIChatCompletions(
     const plan = await planGptCollapse(turns, firstUserIdx + 1, profitable, {
       ...o.gptHistory,
       reflow: o.reflow,
-      cols: o.gptHistory?.cols ?? resolveGptProfile(req.model).stripCols,
-      maxHeightPx: o.gptHistory?.maxHeightPx ?? resolveGptProfile(req.model).maxHeightPx,
+      cols: o.gptHistory?.cols ?? profile.stripCols,
+      maxHeightPx: o.gptHistory?.maxHeightPx ?? profile.maxHeightPx,
+      style: o.gptHistory?.style ?? profile.style,
     });
     foldGptHistory(info, req.model, plan);
     const allImages = [...plan.images, ...plan.imagesAfter];
@@ -865,7 +920,12 @@ export async function transformOpenAIResponses(
     : '';
   const header = RESPONSES_HEADER.replace('\n====', reflowNote + '\n====');
   const renderedText = header + combined;
-  const cols = Math.min(shrinkColsToContent(renderedText, o.cols), resolveGptProfile(req.model).stripCols);
+  const profile = resolveGptProfile(req.model);
+  const maxCols = o.cols ?? profile.stripCols;
+  const cols = Math.min(
+    shrinkColsToContent(renderedText, maxCols, profile.style.markerScale, profile.style.font),
+    profile.stripCols,
+  );
 
   const gate = evalOpenAIGate(req.model, renderedText, cols, o.charsPerToken);
   info.gateEval = {
@@ -882,7 +942,7 @@ export async function transformOpenAIResponses(
     return { body, info };
   }
 
-  const images = await renderTextToPngs(renderedText, cols, {}, resolveGptProfile(req.model).maxHeightPx);
+  const images = await renderTextToPngs(renderedText, cols, profile.style, profile.maxHeightPx);
   if (images.length === 0) {
     info.reason = 'render_empty';
     return { body, info };
@@ -973,8 +1033,9 @@ export async function transformOpenAIResponses(
     const plan = await planGptCollapse(turns, firstUserIdx + 1, profitable, {
       ...o.gptHistory,
       reflow: o.reflow,
-      cols: o.gptHistory?.cols ?? resolveGptProfile(req.model).stripCols,
-      maxHeightPx: o.gptHistory?.maxHeightPx ?? resolveGptProfile(req.model).maxHeightPx,
+      cols: o.gptHistory?.cols ?? profile.stripCols,
+      maxHeightPx: o.gptHistory?.maxHeightPx ?? profile.maxHeightPx,
+      style: o.gptHistory?.style ?? profile.style,
     });
     foldGptHistory(info, req.model, plan);
     const allImages = [...plan.images, ...plan.imagesAfter];
