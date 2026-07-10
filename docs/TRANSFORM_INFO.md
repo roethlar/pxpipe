@@ -132,10 +132,13 @@ count** (`src/core/transform.ts:900`). What it does instead:
 
 The turn-over-turn cache identity is `cachePrefixSha8` — a digest that stops
 at the exact vouched-for boundary (project boundary, tool-reference boundary,
-or collapsed-history anchor), not at whole-message granularity. Same
-governance plus a changed live prompt or environment must produce identical
-manifest bytes, image bytes, and prefix digest through the project boundary;
-changed governance must change all three.
+or collapsed-history anchor), not at whole-message granularity. With unchanged
+native-system prefix bytes, changes confined to the live prompt or the exactly
+recognized `userEmail` / `currentDate` tail leave the project manifest, project
+images, and digest stable. Native or uncaptured `<env>` data stays in `system`;
+changing those bytes changes the digest and costs a provider cache miss even
+though the project pages do not re-render. Changed governance changes the
+project manifest, images, and digest.
 
 ## 5. The compression buckets
 

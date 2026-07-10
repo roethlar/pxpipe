@@ -349,4 +349,11 @@ separate eligible buckets, the native defaults, the preserved live request,
 the role-bound project placement, and the rule that only an existing marker
 can move within guarded history or tool-result content.
 
-Findings 3–9 remain pending individual adjudication against the reviewed head.
+### Finding 3 — adopted and fixed
+
+The cache-identity description now distinguishes volatile data that is moved
+behind the project boundary from native or uncaptured `<env>` bytes that remain
+in `system`. It promises a stable project digest only when native-system prefix
+bytes are unchanged and explicitly records the cache miss when those bytes vary.
+
+Findings 4–9 remain pending individual adjudication against the reviewed head.
