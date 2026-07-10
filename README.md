@@ -115,10 +115,14 @@ mkdir -p "$PXPIPE_SMOKE_ROOT/tmp"
 rm -f "$PXPIPE_SMOKE_ROOT/no-config.json"
 
 pxpipe_clean_env() {
+  [ "${TERM+x}" = x ] && set -- "TERM=$TERM" "$@"
+  [ "${LC_ALL+x}" = x ] && set -- "LC_ALL=$LC_ALL" "$@"
+  [ "${LANG+x}" = x ] && set -- "LANG=$LANG" "$@"
+  [ "${SHELL+x}" = x ] && set -- "SHELL=$SHELL" "$@"
+  [ "${LOGNAME+x}" = x ] && set -- "LOGNAME=$LOGNAME" "$@"
+  [ "${USER+x}" = x ] && set -- "USER=$USER" "$@"
   /usr/bin/env -i \
-    HOME="$HOME" PATH="$PATH" USER="${USER-}" LOGNAME="${LOGNAME-}" \
-    SHELL="${SHELL-}" LANG="${LANG-}" LC_ALL="${LC_ALL-}" TERM="${TERM-}" \
-    TMPDIR="$PXPIPE_SMOKE_ROOT/tmp" "$@"
+    HOME="$HOME" PATH="$PATH" TMPDIR="$PXPIPE_SMOKE_ROOT/tmp" "$@"
 }
 ```
 
