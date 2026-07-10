@@ -1,6 +1,6 @@
 # Provenance-safe Anthropic compaction without losing project governance
 
-Status: **PROPOSED — Claude review accepted at r2; awaiting owner approval; not implemented**.
+Status: **AMENDED PROPOSAL — prior r2 approval paused by post-approval wire evidence; amendment under review; not implemented**.
 
 Plan base: `b1f5a01` (`origin/main`, 2026-07-09). The plan is intentionally
 isolated from the unrelated `fix/escape-atlas-missing-glyphs` branch.
@@ -17,15 +17,18 @@ Keep pxpipe's high-value compression of repository-owned project guidance
 while making the transformed request unambiguous about who supplied each block
 and what authority it has.
 
-The fix is not a wording substitution and not a blanket ban on compressing the
-Anthropic `system` field. It replaces the monolithic system/tool slab with
-independently gated provenance buckets and a small native-system manifest.
+The fix is not a wording substitution and not a blanket ban on compacting content
+that Claude Code supplies as system-adjacent context. It replaces the monolithic
+system/tool slab and blanket reminder imaging with independently gated provenance
+buckets and a small native-system manifest. Current Claude Code sends project
+governance in a first-user context reminder, not in `req.system`; the design retains
+that same-role compaction while leaving the native base system untouched.
 Unknown or malformed provenance fails closed to native text. Tool documentation
 starts native because historical evidence identifies its shell/permission/
 credential vocabulary as the likely `cyber` classifier trigger; it can be
 re-enabled only as an independently tested bucket.
 
-Implementation remains owner-gated after this plan is reviewed. Live model
+Implementation remains owner-gated after this amended plan is reviewed. Live model
 testing is separately credentialed and cost-bearing; obtain an explicit owner go
 before running that matrix.
 
@@ -42,26 +45,49 @@ before running that matrix.
 5. Rebuilds `req.system` without the static text.
 6. Prepends the PNGs to the first `role: "user"` message because Anthropic
    rejects images in `system`.
-7. Appends removed environment/context text to the last user message inside a
+7. Separately images any profitable long `<system-reminder>` in the first user
+   message as one undifferentiated reminder, including project guidance and its
+   volatile sibling fields.
+8. Appends removed environment/context text to the last user message inside a
    self-asserted `<system-reminder>` saying it came from the system prompt.
 
 The governing paths are `src/core/transform.ts:620-739`, `1485-1769`,
-`1849-1855`, and `2078-2107`. Tool descriptions are separately stubbed at
+`1774-1855`, and `2078-2107`. Tool descriptions are separately stubbed at
 `1532-1583`, but their full prose is added back to the same image slab at
 `1587-1604`.
 
 ### 2.2 Why repository governance is still a valid compression target
 
-Repository governance is owner-supplied project content at rest, but Claude Code
-promotes it into the Anthropic `system` field. pxpipe's own design document says
-that compacting `CLAUDE.md` project rules is a primary purpose
-(`docs/TRANSFORM_INFO.md:10-22`), and `extractClaudeMdSlab` explicitly searches
-system text for a CLAUDE.md-shaped section (`src/core/transform.ts:933-953`).
+Repository governance is owner-supplied project content, and current Claude Code
+keeps that provenance visible on the wire. A local loopback capture of Claude Code
+2.1.205 (synthetic files, no Anthropic/model call, no hidden prompt persisted)
+showed:
 
-Therefore API role alone is not provenance. Preserving every inbound system byte
-would discard the exact compaction opportunity this fix must retain. Conversely,
-moving every inbound system byte to a user image erases distinctions between
-host policy, repository guidance, tool protocol, and volatile workspace facts.
+- `req.system` contained three native text blocks, including the base runtime
+  instructions; it did not contain the synthetic CLAUDE/AGENTS sentinel.
+- `messages[0]` was `role: "user"`. Its first text block was one
+  `<system-reminder>` with an exact `# claudeMd` section, sequential `Contents of
+  .../CLAUDE.md` and imported `.../AGENTS.md` records, then sibling `# userEmail`
+  and `# currentDate` sections. Its second text block was the owner's actual prompt.
+- The context-reminder block had no `cache_control`; the following prompt block had
+  the caller's `ephemeral` marker, which already follows and can cache prepended
+  project pages without moving marker ownership.
+- `messages[1]` was a literal `role: "system"` runtime/reminder message, a supported
+  Claude beta shape that pxpipe's current `Message` type does not represent.
+
+Inspection of the installed 2.1.205 binary corroborates the capture: Claude Code
+builds `claudeMd` as user context, recursively emits each `@` import as its own
+`Contents of ... (project instructions, checked into the codebase)` record, and
+prepends the user-context reminder to the first user carrier. The current
+`extractClaudeMdSlab` heuristic searches `req.system` only and therefore does not
+identify current project governance; the relevant live path is generic reminder
+compression at `src/core/transform.ts:1774-1847`. `docs/TRANSFORM_INFO.md` is stale
+on this point.
+
+Therefore the owner was correct: project governance is not current base-system
+content and already is converted by pxpipe. The fix must preserve and authenticate
+that first-user reminder compaction while stopping unrelated native system and tool
+content from riding in the same user-role slab.
 
 ### 2.3 Observed harm
 
@@ -85,11 +111,11 @@ host policy, repository guidance, tool protocol, and volatile workspace facts.
 1. **Authority is vouched for only in native system text.** No user-role image or
    wrapper may establish its own privileged provenance.
 2. **Project ownership and API role are separate facts.** Recognized project
-   guidance remains image-eligible even though Claude Code transported it in
-   `system`.
-3. **Partition before flattening.** Preserve source block order, non-text blocks,
-   and caller `cache_control`; never infer an authority boundary from arbitrary
-   Markdown headings after concatenation.
+   guidance remains image-eligible in its captured first-user host-context role;
+   native base-system instructions do not inherit that eligibility.
+3. **Partition before flattening.** Preserve system blocks, message roles, first-user
+   block order, non-text blocks, and caller `cache_control`; never infer an authority
+   boundary from arbitrary Markdown headings after concatenation.
 4. **Fail closed by bucket.** An unknown boundary, malformed wrapper, render error,
    or failed profitability gate leaves that source region byte-for-byte native.
    One bucket's failure must not disable independent history or tool-result paths.
@@ -105,50 +131,73 @@ host policy, repository guidance, tool protocol, and volatile workspace facts.
 
 ### 4.1 Structured Anthropic context partitioner
 
-Add `src/core/anthropic-context.ts` with pure helpers that consume the original
-`SystemField` and return ordered, lossless segments rather than one flattened
-string:
+Add `src/core/anthropic-context.ts` as a leaf over `types.ts`, with pure helpers
+that inspect the original request before any system/reminder flattening and locate
+ordered text spans inside their source blocks:
 
 ```ts
-type AnthropicContextSegment =
-  | { kind: 'native'; blocks: SystemBlock[]; reason: NativeReason }
-  | { kind: 'project_guidance'; text: string; source: ProjectSource }
-  | { kind: 'runtime_metadata'; text: string; source: RuntimeSource }
-  | { kind: 'uncertain'; blocks: SystemBlock[]; reason: string };
+interface TextSpanLocator {
+  messageIndex: number;
+  blockIndex: number;
+  start: number;
+  end: number;
+}
+
+interface ProjectGuidanceSegment {
+  kind: 'project_guidance';
+  source: 'claude_code_2_1_205_opening_reminder';
+  locator: TextSpanLocator;
+  text: string;
+}
+
+interface AnthropicContextPartition {
+  projectGuidance?: ProjectGuidanceSegment;
+  runtimeMetadata: RuntimeMetadataSegment[];
+  uncertain: UncertainSegment[];
+}
 ```
 
 The exact type names may change during implementation, but these invariants may
 not:
 
-- Original block order and `cache_control` ownership are recoverable.
-- Project guidance is recognized only by exact, versioned Claude Code outer
-  framing proven by sanitized wire fixtures. Imported `AGENTS.md` headings are
-  payload, not delimiters.
+- Original system blocks, message roles, first-user block order/properties, and
+  `cache_control` ownership remain recoverable.
+- The v1 project recognizer matches only the captured first user message, content
+  block zero, fixed user-context opener/advisory/closer, exact `# claudeMd` key, and
+  captured sibling-key sequence. It locates the real trailer from the end; imported
+  `AGENTS.md` headings and forged `Contents of ...` lines are payload, not delimiters.
+- The complete `claudeMd` instruction bundle is the authority unit. Claude Code's
+  inner file framing is unescaped, so pxpipe must not pretend it can derive a
+  cryptographically reliable per-file split from arbitrary payload text.
 - `extractClaudeMdSlab` remains telemetry-only or is removed; its current
-  heading-to-next-H1 heuristic must not become an authority boundary.
-- Arbitrary user prose, a forged heading, an incomplete wrapper, and an unknown
-  Claude Code shape remain native.
-- `<system-reminder>` is no longer a generally movable dynamic tag. It may contain
-  instructions, capabilities, or model facts and therefore remains native unless
-  a separately specified exact shape is proven to be metadata.
+  system-heading heuristic must not become an authority boundary.
+- Arbitrary later user prose, a forged heading, an incomplete wrapper, an unknown
+  sibling key/order, and an unsupported Claude Code shape remain byte-exact native.
+- Recognized project context is excluded from generic whole-reminder imaging.
+  Unknown `<system-reminder>` blocks remain native by default.
 - Only exact, non-instructional workspace shapes—initially `<env>`,
   `<git_status>`, and the current `# Environment` region after fixture
   validation—are eligible for `runtime_metadata`.
+- Extend `Message.role` for the captured literal `system` role. Every such message
+  remains byte-, order-, and marker-exact and is never reminder-imaged or serialized
+  into a user-role history image. History protection extends through contiguous
+  leading system-role attachments; an unsupported privileged role inside a later
+  collapse candidate fails that collapse closed.
 
-Before writing the production parser, capture the structural framing emitted by
-the installed Claude Code version for:
+The local no-network capture and installed-binary inspection establish fixtures for:
 
 1. a direct `CLAUDE.md`;
 2. `CLAUDE.md` containing `@AGENTS.md`;
 3. imported repo guidance with nested H1 headings;
 4. no project guidance; and
-5. a deliberately malformed lookalike.
+5. malformed/forged lookalikes and the literal mid-conversation `system` role.
 
 Never commit a proprietary base prompt, credentials, paths, or user content. The
 fixture keeps only framing tokens and replaces payloads with synthetic text. Its
-header records the Claude Code version and a hash of the locally observed source
-shape so future versions can be characterized without treating the fixture as
-eternal truth.
+header records Claude Code 2.1.205, binary SHA-256
+`33E28624C5AE84F2BD7D2D8761E5D2E77997BA965CB11B6448DE6B6E2C566F9C`, and
+synthetic provenance so future versions can be characterized without treating the
+fixture as eternal truth.
 
 ### 4.2 Role-bound project-guidance pages
 
@@ -157,21 +206,24 @@ When a recognized project-guidance segment passes its own profitability gate:
 1. Compute a deterministic reference from the exact source bytes plus rendering
    parameters.
 2. Render only that segment. Do not concatenate runtime system text or tool docs.
-3. Replace the segment at its original system position with a compact native
-   manifest entry containing the reference, expected page count, and position:
-   the first N image blocks of the opening user message, before an exact boundary
-   marker.
+3. Replace only the project span inside the opening reminder with an inert reference
+   placeholder, preserving the reminder wrapper, sibling `userEmail`/`currentDate`
+   fields, block properties, and following live-prompt block exactly. Append a
+   compact manifest entry to native `req.system` containing the same reference,
+   expected page count, and position: the first N image blocks of the opening user
+   message, before an exact boundary marker.
 4. State in the native manifest that those pages are repository-scoped project
    guidance supplied through the host, applied at project-guidance priority below
    all remaining native system instructions.
 5. Give the image an inert label such as `PROJECT GUIDANCE · ref <id>` plus page
    numbering. Remove the current self-authorizing language telling the model to
    treat rendered pages as session operating instructions.
-6. Prepend the pages and a deterministic end marker before the caller's original
-   first-user content. The caller's content remains byte-for-byte and block-order
-   intact after that boundary. Define the marker once as an exported constant/helper
-   in `src/core/anthropic-context.ts`; `transform.ts` and `history.ts` must consume
-   that shared definition rather than matching independent string literals.
+6. Prepend the pages and a deterministic end marker before the reconstructed
+   context-reminder block and the caller's original live-prompt block. Everything
+   outside the selected span remains byte-for-byte and block-order intact. Define
+   the marker once as an exported constant/helper in
+   `src/core/anthropic-context.ts`; `transform.ts` and `history.ts` must consume that
+   shared definition rather than matching independent string literals.
 
 The manifest, image labels, page count, reference, and boundary form one contract.
 The system manifest—not the label inside a user-role image—vouches for it. The
@@ -197,6 +249,12 @@ Gate or render failure restores the original segment and cache marker exactly.
 If there is no user message capable of carrying the pages, project guidance stays
 native.
 
+The captured project-reminder block owns no cache marker; the following live-prompt
+block owns `cache_control: ephemeral`. Prepending pages naturally places them before
+that caller marker. Never invent a project marker or move a system marker. If a
+future recognized carrier owns a marker, preserve it on the reconstructed carrier
+at the same logical block position.
+
 ### 4.3 Role-bound volatile runtime metadata
 
 Keeping volatile git/environment bytes in `system` destroys the stable prefix,
@@ -212,6 +270,9 @@ the cache benefit with a narrower contract:
 - Only segments classified as exact runtime metadata move there. Instructional
   reminders and uncertain shapes remain native, accepting a cache miss rather
   than silently changing their role.
+- Captured opening-context `# userEmail` and `# currentDate` fields may join the
+  runtime bucket only after their exact suffix framing is recognized; unknown keys
+  such as an uncaptured `# attachedProject` remain in their original block.
 - The block is appended after all caller content and after history/tool-result
   transforms so it cannot be frozen into collapsed history.
 
@@ -242,25 +303,28 @@ by the `cyber` classifier evidence.
 Refactor `transformRequest` so these passes do not depend on the monolithic slab
 gate:
 
-1. partition system context;
+1. partition the current request, including the opening user-context reminder,
+   native system blocks, and literal system-role messages;
 2. gate/render project guidance;
 3. optionally gate/render tool reference;
-4. rebuild ordered native system + manifest;
+4. preserve the base system and system-role messages and append the native manifest;
 5. splice vouched-for leading images;
-6. process existing first-user reminders;
+6. leave unknown first-user reminders native (or process a separately role-bound,
+   explicitly enabled reminder bucket in a future plan);
 7. process tool results;
 8. collapse eligible history;
 9. append vouched-for runtime metadata; and
 10. finalize telemetry/cache digest.
 
-A below-threshold project block must not prevent profitable reminder, tool-result,
-or history compression.
+A below-threshold project block must not prevent profitable tool-result or history
+compression. Generic reminder imaging is no longer a default independent path.
 
 Extend `TransformInfo`/tracker output with enough data to diagnose behavior without
 logging source text:
 
 - context mode/version;
 - project source chars, image count, and source/reference hash;
+- project source role/message/block location and recognition/fallback reason;
 - native-system chars and uncertain/fallback reason;
 - runtime-metadata chars and moved/native disposition;
 - tool mode, source chars, and image count; and
@@ -271,13 +335,28 @@ the rest of the first user message. Same governance plus changed runtime metadat
 must produce identical manifest bytes, image bytes, and prefix digest through the
 project boundary; changed governance must change all three.
 
+`firstUserSha8` must identify the first live user text after the host-context/
+project boundary, not hash the leading reminder. Existing dashboard/session warmth
+consumers must use `cache_prefix_sha8 ?? system_sha8` (or a documented compatibility
+alias); emitting the new exact digest without making those consumers use it is not
+complete. `historyImageSha8` must locate `HISTORY_SYNTHETIC_INTRO` instead of
+assuming the synthetic history message is at index zero once a protected prefix
+exists.
+
 ### 4.6 Configuration and rollback
 
 - Add `compressProjectGuidance?: boolean` to the public transform options; default
   `true` for Anthropic.
-- Change `compressTools` default to `false`. Preserve its existing library/Worker
-  override, document that image-tool mode is experimental, and make Node behavior
-  explicit rather than adding a broad collection of permanent tuning flags.
+- Change Anthropic `compressTools` and generic `compressReminders` defaults to
+  `false`. Project guidance is controlled independently by
+  `compressProjectGuidance`; setting `compressReminders` must never send recognized
+  project context back through the legacy whole-reminder path.
+- Extend the public library's deliberately narrow `PxpipeOptions` pick with the
+  chosen project/tool/reminder controls. Node continues to rely on core defaults.
+  Worker must omit provider-specific option properties when their environment
+  variables are unset, so Anthropic can default tools off while OpenAI's independent
+  tool-compression default remains on; an explicit shared `false` would regress
+  OpenAI.
 - Keep runtime-metadata relocation enabled only for exact recognized shapes. An
   internal option may support the live native-vs-tail experiment, but it is not a
   public promise unless the experiment demonstrates operator value.
@@ -297,16 +376,21 @@ before each commit. Do not build on `fix/escape-atlas-missing-glyphs`.
 Files:
 
 - Create `src/core/anthropic-context.ts`.
-- Create sanitized structural fixtures under `tests/fixtures/`.
+- Create whole-request sanitized structural fixtures under `tests/fixtures/` for
+  direct/imported/no-guidance/malformed opening context and literal system-role
+  attachment shapes.
 - Create `tests/anthropic-context.test.ts`.
 
 Deliverables:
 
-- Structured ordered segments with exact reassembly.
+- A locator for the exact `# claudeMd` span inside the first-user context reminder,
+  with exact original-block reassembly.
 - Versioned exact project/runtime recognizers.
 - Fail-closed unknown and malformed cases.
 - Nested imported `AGENTS.md` headings retained as payload.
-- `<system-reminder>` retained natively.
+- Unknown/later `<system-reminder>` blocks retained natively.
+- `Message.role` represents the captured `system` role; fixtures establish that it
+  is privileged host context, not a user/assistant turn.
 - No request behavior change yet.
 
 Guard proof: parser tests fail before the module exists; after implementation they
@@ -316,7 +400,7 @@ pass, and round-trip tests prove non-selected content and metadata are byte-exac
 
 Files:
 
-- Modify `src/core/transform.ts` and `src/core/history.ts`.
+- Modify `src/core/transform.ts`, `src/core/history.ts`, and `src/core/types.ts`.
 - Add `tests/anthropic-role-integrity.test.ts`.
 - Update relevant assertions in `tests/render.test.ts`,
   `tests/design-behavior-e2e.test.ts`, `tests/history.test.ts`, and
@@ -329,16 +413,28 @@ Deliverables:
 - One exported boundary constant/helper used by every emitter and detector in
   `transform.ts` and `history.ts`; no duplicated marker literal remains.
 - Project-only profitability gate including manifest overhead.
-- Original first-user content remains verbatim after the exact boundary.
-- Base/unknown system content stays native.
+- Only the selected `claudeMd` span becomes an inert ref placeholder; the reminder
+  wrapper/siblings and live user block remain verbatim after the exact boundary.
+- All base/unknown system content and tools stay native; the legacy monolithic
+  system/tool slab and stubs do not run on the safe default path.
+- Generic/unknown reminders stay native and the recognized project carrier cannot
+  enter generic reminder compression.
 - History collapse cannot absorb or detach the vouched-for leading range.
+- History protection extends through contiguous leading `role: "system"`
+  attachments; a privileged role inside a later collapse range fails closed rather
+  than being serialized as `<user>`.
+- `cachePrefixDigest`, `historyImageSha8`, and `firstUserSha8` use the actual shared
+  boundary/synthetic marker/live-user position rather than whole-message or index-0
+  assumptions.
 - Gate/render failure restores the original request region.
 
 Guard proof: against the legacy transform, the role-integrity tests must fail
-because static runtime text leaves `system`, no native manifest exists, project
-pages are mixed with tool docs, and boundary consumers are independently coupled to
-the old literal. Restore the implementation and prove focused plus full suites
-green, including a history-collapse case using the new shared marker.
+because native runtime system text leaves `system`, no native manifest exists, the
+project reminder is imaged wholesale with volatile siblings, tool docs are mixed
+into the system slab, a literal system-role attachment can be serialized as user
+history, and boundary consumers are independently coupled to the old literal.
+Restore the implementation and prove focused plus full suites green, including a
+history-collapse case using the new shared marker and system-role protection.
 
 ### Slice 3 — Narrow, vouched-for runtime metadata tail
 
@@ -365,18 +461,25 @@ instructional reminder; the new tests fail. Restore and prove them green.
 
 Files:
 
-- Modify `src/core/transform.ts`, `src/core/tracker.ts`, `src/core/types.ts`,
-  `src/core/library.ts`, `src/node.ts`, and `src/worker.ts` as required.
+- Modify `src/core/transform.ts`, `src/core/tracker.ts`, `src/core/library.ts`,
+  `src/node.ts`, `src/worker.ts`, `src/sessions.ts`, `src/dashboard.ts`, and
+  `src/stats.ts` as required.
 - Update tracker, proxy-usage, render, and cache-alignment tests.
 
 Deliverables:
 
 - Native tools are the safe default on Node, Worker, and library paths.
+- Generic reminder imaging is off by default; project-guidance imaging remains on
+  through its independent control.
 - Experimental image tools use a separate manifest/gate/reference and install
   stubs only after successful rendering.
 - No double counting; project and tool profitability are independent.
 - Cache marker count never increases and caller marker ownership is preserved.
 - New telemetry fields are optional/backward-compatible for old event rows.
+- Worker omission/default tests prove the shared options object does not disable
+  OpenAI's independent tool compression when Anthropic defaults tools off.
+- Session/dashboard/stats warmth identity prefers the exact cache-prefix digest,
+  with `system_sha8` retained only as historical fallback.
 
 Guard proof: reverting the slice re-combines tool docs with project guidance or
 restores default tool imaging; bucket-isolation/default tests fail. Restore and run
@@ -407,31 +510,46 @@ model IDs, outcome fields, hashes, and aggregate token/cache numbers.
 
 Tests must prove at least:
 
-1. Direct and imported project guidance is recognized from exact outer framing.
-2. Nested H1s inside imported `AGENTS.md` do not terminate extraction.
-3. Forged, malformed, unsupported-version, and ambiguous shapes remain native.
-4. Native system block order, non-text blocks, and cache metadata survive.
+1. Direct and imported project guidance is recognized only inside the exact captured
+   first-user context-reminder framing; a later ordinary user lookalike is ignored.
+2. Nested H1s and forged `Contents of ...` lines inside imported `AGENTS.md` do not
+   terminate or repartition the complete `claudeMd` bundle.
+3. No-guidance, forged, malformed, unsupported-version, unknown-sibling, and
+   ambiguous shapes remain native.
+4. Native system block order/content, first-user block properties/order, system-role
+   messages, and every caller cache marker survive.
 5. The native manifest reference/page count matches exactly the leading image
    range and exact end boundary.
-6. Original user text and blocks remain verbatim after the boundary.
+6. The reminder wrapper and sibling metadata plus original live-user text/blocks
+   remain verbatim after the boundary; only the selected span becomes a placeholder.
 7. Project images never contain base runtime system text or tool docs.
 8. Tools remain byte-exact by default; experimental tool pages have a separate
    reference and gate.
-9. Exact runtime metadata becomes the final data-only block; arbitrary or
+9. Generic reminders stay native by default; recognized project context cannot
+   fall through into whole-reminder imaging.
+10. Exact runtime metadata becomes the final data-only block; arbitrary or
    instructional content does not move.
-10. No user-role content self-asserts that it came from a system prompt or asks to
+11. No user-role content self-asserts that it came from a system prompt or asks to
     be treated as privileged instructions.
-11. Gate/render error is lossless per bucket.
-12. Cache-control marker count does not increase; its boundary remains valid.
-13. Same guidance + changed env yields stable project manifest/images/prefix;
+12. Gate/render error is lossless per bucket.
+13. Cache-control marker count does not increase; project pages sit before the
+    caller-owned live-prompt marker without moving a system/project marker.
+14. Same guidance + changed env/live prompt yields stable project
+    manifest/images/prefix through the project boundary;
     changed guidance changes their reference and images.
-14. Project gate math includes manifest overhead and is unaffected by tool size.
-15. A project gate miss does not suppress reminder, tool-result, or history
+15. Project gate math includes manifest overhead and is unaffected by tool size.
+16. A project gate miss does not suppress tool-result or history
     compression.
-16. History collapse cannot absorb or detach the role-bound leading blocks, and all
+17. History collapse cannot absorb or detach the role-bound leading blocks; literal
+    system-role attachments remain native and can never appear as `<user>` in a
+    history image; all
     boundary emitters/detectors use the one shared marker definition.
-17. Existing OpenAI behavior is unchanged.
-18. Telemetry omits source text and remains compatible with older rows.
+18. `firstUserSha8` hashes the live user text, `historyImageSha8` finds the synthetic
+    history marker at nonzero indices, and warmth consumers prefer the exact prefix
+    digest.
+19. Existing OpenAI behavior, including default tool compression through a Worker
+    options object with no explicit tool override, is unchanged.
+20. Telemetry omits source text and remains compatible with older rows.
 
 ### 6.2 Commands
 
@@ -520,6 +638,7 @@ design choice to the owner.
 | Risk | Mitigation |
 |---|---|
 | Claude Code framing is undocumented and changes | Exact versioned recognizers; sanitized fixtures; unknown shapes remain native; fallback telemetry |
+| Claude's unescaped file payload imitates metadata headings | Treat the whole `claudeMd` bundle as one unit; locate the real fixed trailer from the end; ambiguous/unknown sibling shapes remain native |
 | Native manifest still does not satisfy Anthropic's classifier | Live bucket-isolation matrix; project-only must pass against OFF before defaulting on |
 | A forged user block copies a project reference | Native system vouches for an exact leading block range, count, and boundary inserted before caller content |
 | Tool docs remain classifier-toxic | Native default; independent experimental bucket and acceptance gate |
@@ -527,18 +646,20 @@ design choice to the owner.
 | Moving only project guidance yields less savings | Measure honestly; retain history/tool-result compression; enable tool pages only with independent safety evidence |
 | Cache marker changes cause cost regressions | Per-bucket marker ownership tests and stable-prefix A/B; account for manifest overhead and warm-cache burn |
 | Parser accidentally drops or reorders instructions | Lossless round-trip tests; per-bucket rollback; unknown/malformed stays native |
+| Literal mid-conversation system messages enter history images | Model the `system` role, protect the leading attachment prefix byte-exact, and fail a later collapse closed rather than defaulting unknown roles to user |
 | Retry duplicates side effects | No automatic refusal retry |
 | New config modes become permanent complexity | No shipped legacy mode; use pinned worktrees/internal eval options; keep the existing global kill switch |
 
 ## 9. Out of scope
 
 - Rewording the current banner without changing the trust boundary.
-- Treating all system-field text as repository guidance.
+- Treating base system-field text or every reminder as repository guidance.
 - Compressing unknown or higher-priority host/runtime instructions.
 - General OCR fidelity work, font/glyph changes, or the unrelated
   `fix/escape-atlas-missing-glyphs` branch.
-- Redesigning old-history role flattening; this plan only ensures history cannot
-  detach the new manifest/pages contract.
+- A general redesign of old-history role flattening. The narrower current-shape
+  requirement is in scope: literal `role: "system"` attachments never enter images
+  or get relabeled as user content.
 - Automatic retry/fallback routing after a safety response.
 - Publishing an upstream PR, issue comment, release, or package without a separate
   owner go.
@@ -578,3 +699,11 @@ does not authorize implementation.
   Claude verified that all five functional rendered-boundary consumers are covered
   by Slice 2 and that the round-1 history-detachment risk is closed. Consensus
   reached; acceptance makes the plan ready for owner judgment, not implementation.
+- Post-r2 characterization (2026-07-10, after owner approval): the plan-required
+  local no-network wire capture falsified §2.2/§4.1's placement assumption. Claude
+  Code 2.1.205 sends the complete `claudeMd` bundle in the first user-context
+  reminder and emits a separate literal system-role attachment; it does not place
+  project governance in `req.system`. No product code had changed. Implementation
+  paused, the lower-authority plan was amended to the captured request shape, and
+  prior approval is not treated as approval of the amendment. Fresh Claude review
+  pending.
