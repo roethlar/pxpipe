@@ -1,7 +1,7 @@
 # Local subscription-harness routing and smoke tests
 
-Status: **IMPLEMENTED AND INDEPENDENTLY ACCEPTED 2026-07-10 — bundle
-regeneration/install, live calls, and push await separate owner approval**.
+Status: **IMPLEMENTED, INDEPENDENTLY ACCEPTED, AND LOCALLY INSTALLED
+2026-07-10 — live calls and push await separate owner approval**.
 
 Plan base: `102b983` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was still `8d7ba3e` when this plan was drafted. Recheck upstream before
@@ -260,5 +260,10 @@ authorize code, live calls, installation, or push.
 - The canonical verification, adjudication, and verdict record is
   `.agents/review/findings/subscription-harness-routing.md`. Its index row is
   `.agents/review/index.md`.
-- No reviewed bundle has been regenerated or installed, and no live
-  subscription smoke or push has occurred.
+- The owner separately approved bundle regeneration and installation. The
+  durable `~/Dev/pxpipe-deploy` manifest and installed receipt both record
+  source `8dd128ab233d665954659f7e1e8c19cea10b1dd1`. Packaging reran the
+  complete gate; installation verified the archive digest, CLI version,
+  launch-at-login service, dashboard success, and an IPv4 loopback-only
+  listener on port `47821`.
+- No live subscription smoke or push has occurred.
