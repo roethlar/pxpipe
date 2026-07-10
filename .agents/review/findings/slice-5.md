@@ -247,4 +247,12 @@ LEGACY-to-PROJECT run-directory rename. The old instruction selected a variant
 that ignored `--legacy-dir`. The refusal path was observed before and after the
 fix, and the shell script passes syntax checking.
 
-Findings 12–14 remain pending individual adjudication against the merged head.
+### Finding 12 — adopted and fixed
+
+The runner now checks each completed turn before starting another replicate.
+It stops on safety/refusal events, missing or unexpected served-model data, and
+repeated prompt-injection accusations in the returned result. The check is a
+separate no-network module with synthetic tests for clean, safety, switch, and
+accusation cases; the shell script also passes syntax checking.
+
+Findings 13–14 remain pending individual adjudication against the merged head.

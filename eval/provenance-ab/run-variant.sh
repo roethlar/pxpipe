@@ -101,10 +101,16 @@ for r in $(seq 1 "$REPLICATES"); do
     || echo "[$VARIANT r$r] session failed; see $RUN_DIR/turns/turn-1.err" >&2
 
   cleanup; trap - EXIT
-  # Stage-A early stop: refusal / safety category in this replicate ends the cell.
-  if grep -q '"safety_flagged":true\|"stop_reason":"refusal"' "$RUN_ABS/events.jsonl" 2>/dev/null; then
-    echo "[$VARIANT r$r] SAFETY STOP — do not spend further replicates on this cell (plan §7.1)" >&2
-    exit 3
+  # Stage-A early stop: do not spend the next call after a safety result,
+  # unexpected served model, unreadable turn, or repeated injection accusation.
+  node eval/provenance-ab/check-stop.mjs \
+    --requested-model "$MODEL" \
+    --turn "$RUN_ABS/turns/turn-1.json" \
+    --events "$RUN_ABS/events.jsonl"
+  STOP_STATUS=$?
+  if [ "$STOP_STATUS" -ne 0 ]; then
+    echo "[$VARIANT r$r] EARLY STOP — do not spend further replicates on this cell (plan §7.1)" >&2
+    exit "$STOP_STATUS"
   fi
 done
 echo "cell done → collect with: node eval/provenance-ab/collect.mjs eval/provenance-ab/runs/<dirs>"
