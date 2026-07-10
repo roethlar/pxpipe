@@ -4,6 +4,7 @@
 #   bash eval/provenance-ab/run-variant.sh --variant PROJECT_RUNTIME \
 #        --workspace empty --replicates 3 [--model claude-fable-5] \
 #        [--prompt "..."] [--workspace-dir /path/to/repo] [--legacy-dir /path]
+#        [--record-variant PROJECT] [--prepare-only]
 #
 # Each replicate is a COLD single-shot `claude -p` session through a fresh
 # proxy with its own events.jsonl under eval/provenance-ab/runs/. Afterwards:
@@ -21,6 +22,8 @@ REPLICATES=3
 MODEL="claude-fable-5"
 PROMPT="Inspect this repository and report in plain prose: what it contains, what governance or instructions apply, and one observation. Make no changes."
 LEGACY_DIR=""               # pinned worktree for --variant LEGACY (plan base b1f5a01)
+RECORD_VARIANT=""            # label written to metadata; defaults to VARIANT
+PREPARE_ONLY=0                # build and validate the source, then make no calls
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 
 while [ $# -gt 0 ]; do
@@ -32,6 +35,8 @@ while [ $# -gt 0 ]; do
     --model)          MODEL="$2"; shift 2 ;;
     --prompt)         PROMPT="$2"; shift 2 ;;
     --legacy-dir)     LEGACY_DIR="$2"; shift 2 ;;
+    --record-variant) RECORD_VARIANT="$2"; shift 2 ;;
+    --prepare-only)   PREPARE_ONLY=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -43,19 +48,40 @@ case "$VARIANT" in
   PROJECT)
     echo "PROJECT (runtime native) is not config-expressible on this build; run it" >&2
     echo "from a disposable worktree with the one-line neutralization in README.md," >&2
-    echo "then use --variant LEGACY --legacy-dir <that worktree> and rename the" >&2
-    echo "resulting run directory from LEGACY to PROJECT before collection." >&2
+    echo "then use --variant LEGACY --record-variant PROJECT" >&2
+    echo "--legacy-dir <that worktree>." >&2
     exit 2 ;;
   *) echo "unknown variant: $VARIANT" >&2; exit 2 ;;
 esac
 
-[ "$VARIANT" = LEGACY ] || npm run build >/dev/null || exit 1
+RECORD_VARIANT="${RECORD_VARIANT:-$VARIANT}"
+case "$RECORD_VARIANT" in
+  OFF|LEGACY|PROJECT|PROJECT_RUNTIME|TOOLS|BOTH) ;;
+  *) echo "unknown recorded variant: $RECORD_VARIANT" >&2; exit 2 ;;
+esac
+if [ "$RECORD_VARIANT" != "$VARIANT" ] &&
+   { [ "$VARIANT" != LEGACY ] || [ "$RECORD_VARIANT" != PROJECT ]; }; then
+  echo "--record-variant may only relabel a patched LEGACY run as PROJECT" >&2
+  exit 2
+fi
+
+SOURCE_DIR="$(pwd)"
+[ "$VARIANT" = LEGACY ] && SOURCE_DIR="$LEGACY_DIR"
+( cd "$SOURCE_DIR" && npm run build >/dev/null ) || exit 1
+[ "$PREPARE_ONLY" -eq 0 ] || exit 0
 
 for r in $(seq 1 "$REPLICATES"); do
   STAMP="$(date +%Y%m%d-%H%M%S)"
-  RUN_DIR="eval/provenance-ab/runs/${STAMP}-${VARIANT}-${WORKSPACE}-r${r}"
+  RUN_DIR="eval/provenance-ab/runs/${STAMP}-${RECORD_VARIANT}-${WORKSPACE}-r${r}"
   mkdir -p "$RUN_DIR/turns"
   RUN_ABS="$(cd "$RUN_DIR" && pwd)"
+  node eval/provenance-ab/run-metadata.mjs \
+    --output "$RUN_ABS/metadata.json" \
+    --variant "$RECORD_VARIANT" \
+    --workspace "$WORKSPACE" \
+    --replicate "$r" \
+    --requested-model "$MODEL" \
+    --source-dir "$SOURCE_DIR" || exit 1
 
   # Fresh free port per replicate.
   PORT=47911

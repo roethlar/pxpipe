@@ -255,4 +255,24 @@ repeated prompt-injection accusations in the returned result. The check is a
 separate no-network module with synthetic tests for clean, safety, switch, and
 accusation cases; the shell script also passes syntax checking.
 
-Findings 13–14 remain pending individual adjudication against the merged head.
+### Finding 13 — partly adopted and fixed
+
+The reviewer was right that `is_error: false` cannot prove task completion and
+that the matrix lacked source/build identity, human trust-boundary judgments,
+and tool disposition. The runner now rebuilds the selected tree and each run
+carries redacted source, patch, and built-proxy fingerprints plus four required
+operator judgments. Collection rejects untracked source, incomplete judgments,
+and missing or inconsistent model evidence. It emits those fields and tool
+disposition. The prior fallback subclaim was overstated: unexpected-model
+detection already existed, so it is retained and exposed as
+`fallback_occurred`. Synthetic checks cover the source/build choice, label
+constraints, incomplete evidence, and non-error blocked/injection outcomes.
+Guard proof deliberately removed the build fingerprint, selected-source build,
+label constraint, and model-evidence checks: five of seven focused tests failed,
+then all seven passed after restoration. A second reversal bypassed judgments,
+outcome use, and untracked-source refusal: three tests failed, then all seven
+passed after restoration. A final reversal fingerprinted only the CLI entry
+instead of the complete built tree; the focused build-identity test failed,
+then passed after restoration.
+
+Finding 14 remains pending individual adjudication against the merged head.
