@@ -1,6 +1,6 @@
 # Provenance-safe Anthropic compaction without losing project governance
 
-Status: **AMENDED PROPOSAL — Claude review accepted at r3; awaiting owner approval; not implemented**.
+Status: **APPROVED 2026-07-10 — implementation in progress**.
 
 Plan base: `b1f5a01` (`origin/main`, 2026-07-09). The plan is intentionally
 isolated from the unrelated `fix/escape-atlas-missing-glyphs` branch.
@@ -711,4 +711,4 @@ does not authorize implementation.
   Claude corroborated the amended request-shape, cache/history, Worker/OpenAI, and
   self-attestation claims against current source and found the revised slices and
   guard proofs coherent and falsifiable. Amendment consensus reached; implementation
-  awaits owner approval of this corrected plan.
+  was approved by the owner on 2026-07-10.
