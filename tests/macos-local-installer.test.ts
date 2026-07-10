@@ -338,7 +338,7 @@ describe.skipIf(process.platform === 'win32')('local macOS package installer', (
     expect(fs.readFileSync(log, 'utf8')).toBe('kept\n');
   });
 
-  it('refuses to package an uncommitted source tree', () => {
+  it('refuses dirty source and unstable package destinations', () => {
     const root = tempRoot('pxpipe-macos-pack-');
     fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
     fs.mkdirSync(path.join(root, 'deploy', 'macos-local'), { recursive: true });
@@ -365,5 +365,27 @@ describe.skipIf(process.platform === 'win32')('local macOS package installer', (
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('refusing to package a dirty source tree');
     expect(fs.existsSync(path.join(root, 'build'))).toBe(false);
+
+    fs.rmSync(path.join(root, 'dirty.txt'));
+    const packager = path.join(root, 'scripts', 'package-macos-local.mjs');
+    const missingOutput = spawnSync(process.execPath, [packager], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    expect(missingOutput.status).not.toBe(0);
+    expect(missingOutput.stderr).toContain('--output <stable-directory>');
+
+    const privateOutput = path.join(
+      '/private/tmp',
+      'pxpipe-forbidden-bundle-' + path.basename(root),
+    );
+    const privateResult = spawnSync(
+      process.execPath,
+      [packager, '--output', privateOutput],
+      { cwd: root, encoding: 'utf8' },
+    );
+    expect(privateResult.status).not.toBe(0);
+    expect(privateResult.stderr).toContain('refusing to write local bundle under /private');
+    expect(fs.existsSync(privateOutput)).toBe(false);
   });
 });

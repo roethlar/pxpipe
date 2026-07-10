@@ -76,8 +76,8 @@ fork. Build a private, loopback-only macOS service bundle instead:
 git clone --branch fix/provenance-safe-compression --single-branch https://github.com/roethlar/pxpipe.git
 cd pxpipe
 npx -y pnpm@10.21.0 install --frozen-lockfile
-npx -y pnpm@10.21.0 run package:macos-local
-./build/macos-local/install.sh
+npx -y pnpm@10.21.0 run package:macos-local -- --output "$HOME/Dev/pxpipe-deploy"
+"$HOME/Dev/pxpipe-deploy/install.sh"
 ```
 
 The installer verifies the adjacent package and checksum, installs under the
@@ -92,7 +92,7 @@ Rebuild the bundle and rerun its installer to update. Remove the service and
 installed program (while preserving logs and events) with:
 
 ```bash
-./build/macos-local/install.sh --uninstall
+"$HOME/Dev/pxpipe-deploy/install.sh" --uninstall
 ```
 
 ## The honest part
