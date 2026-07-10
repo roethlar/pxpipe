@@ -284,3 +284,53 @@ identifiers correctly. Guard proof restored the old directory parser: that
 focused test failed, then passed after the metadata fields were restored.
 
 All r1 findings have now been adjudicated individually against the merged head.
+
+## Reviewer comments — r2
+
+- Reviewer: codex-cli 0.144.1 (`codex exec --json --sandbox workspace-write`,
+  structured final response), disposable worktree
+  `/private/tmp/pxpipe-review-slice5-r2`.
+- Reviewed SHA: `06b4b2e76d376a841a61163650d8d4054d677224`;
+  base SHA: `8d7ba3ee871c3b1053b188d0f68938229748051a`.
+- `guard_confirmed: true` (the reviewer independently reversed the safety-stop
+  and matrix-evidence fixes, observed focused failures, restored them, observed
+  focused passes, and returned its worktree clean at the reviewed SHA).
+- Verdict: **reopened** (2026-07-10 15:48 UTC), 9 comments (verbatim):
+  1. "CHANGELOG.md:7 — The upstream merge dropped the provenance-safe
+     Unreleased entry entirely, removing Slice 5’s required trust-boundary,
+     defaults, telemetry, migration, rollback, and live-matrix release notes."
+  2. "docs/TRANSFORM_INFO.md:11 — The overview again describes the removed
+     monolithic system/tool/reminder slab and says pxpipe pins a cache-control
+     marker; current defaults keep tools/reminders native and the transform
+     never adds markers."
+  3. "docs/TRANSFORM_INFO.md:134 — It promises a stable cache-prefix digest
+     when the environment changes, but native system `<env>` bytes are included
+     in that digest; tests/cache-stability-e2e.test.ts:567 explicitly proves
+     such a change alters `cachePrefixSha8`."
+  4. "docs/CACHING_AND_SAVINGS.md:48 — The final-wire diagram includes a
+     runtime tail but omits its required native runtime manifest and calls
+     opening siblings verbatim even though `userEmail`/`currentDate` are
+     removed from that carrier."
+  5. "src/core/transform.ts:81 — Public `TransformOptions` documentation still
+     says tool docs share one image and generic reminders are compressed; tool
+     reference is now independent, while `compressReminders` has no active
+     imaging pass."
+  6. "eval/provenance-ab/run-variant.sh:71 — `--prepare-only` exits immediately
+     after building, before the git, untracked-source, and build-identity
+     validation it promises; even a non-git source reports success."
+  7. "eval/provenance-ab/run-variant.sh:129 — The runner kills the proxy before
+     its detached TrackEvent finalization is guaranteed complete. A delayed
+     count-token probe can lose the terminal refusal event, and the subsequent
+     early-stop check treats an empty event set as clear."
+  8. "eval/provenance-ab/check-stop.mjs:7 — Model comparison always strips dated
+     suffixes, so an explicitly requested `claude-fable-5-20260701` served as
+     `claude-fable-5-20260708` is incorrectly accepted as no switch; the
+     collector repeats this behavior."
+  9. "eval/provenance-ab/collect.mjs:8 — Malformed JSONL rows are silently
+     discarded. With an earlier valid event, collection succeeds despite
+     incomplete terminal safety/usage evidence, allowing a corrupted refusal
+     row to appear clean."
+
+## Coder adjudication — r2
+
+Findings 1–9 remain pending individual adjudication against the reviewed head.
