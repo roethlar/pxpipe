@@ -1,7 +1,7 @@
 # subscription-harness-plan: No-key local harness routing and smoke plan
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: Pending r2 after adopted should-fix
+**Status**: Pending r3 after resolving r2 open question
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `e8be447b3aefe2da565847131d58b2b58f6b4b11`
 
@@ -51,6 +51,27 @@ fork using existing subscription logins and no API keys.
   preceding response that one diagnostic Codex prompt bypassed pxpipe through
   the normal subscription and that route was stopped.
 
-The accepted should-fix is implemented in the plan by requiring a constructed
-allowlisted environment for every child process; fresh r2 review is pending.
-No source code or live smoke call has been authorized.
+The accepted should-fix was implemented in the plan by requiring a constructed
+allowlisted environment for every child process.
+
+## Reviewer comments — r2
+
+- Reviewer: Claude Code 2.1.206 / Sonnet 5 (`claude -p`, structured output),
+  run with pxpipe bypassed in a fresh disposable worktree under `~/Dev`.
+- Reviewed SHA: `62a19f2164ee4b683cc9ca3ae188019b778facd0`.
+- Verdict: **accepted** (2026-07-10), no comments and one non-blocking open
+  question.
+- Open question (verbatim):
+  1. "The allowlist names 'user/locale fields' without enumerating them (e.g.
+     LANG/LC_ALL/USER/LOGNAME/SHELL); this doesn't reopen the ambient-key risk
+     since it's additive to a positive allowlist, but the implementation slice
+     should pin the exact field list so the allowlist is reproducible in
+     code/tests."
+
+## Coder adjudication — r2
+
+- **ADOPTED** — pin the complete inherited-field list in the plan and use a
+  known-missing smoke-local config path instead of `/dev/null`. This removes
+  implementation discretion and avoids an irrelevant invalid-JSON warning.
+- Fresh r3 review will grade only that precision change. No code or live call
+  is authorized.
