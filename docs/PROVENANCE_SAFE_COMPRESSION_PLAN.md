@@ -1,6 +1,6 @@
 # Provenance-safe Anthropic compaction without losing project governance
 
-Status: **AMENDED PROPOSAL — prior r2 approval paused by post-approval wire evidence; amendment under review; not implemented**.
+Status: **AMENDED PROPOSAL — Claude review accepted at r3; awaiting owner approval; not implemented**.
 
 Plan base: `b1f5a01` (`origin/main`, 2026-07-09). The plan is intentionally
 isolated from the unrelated `fix/escape-atlas-missing-glyphs` branch.
@@ -705,5 +705,10 @@ does not authorize implementation.
   reminder and emits a separate literal system-role attachment; it does not place
   project governance in `req.system`. No product code had changed. Implementation
   paused, the lower-authority plan was amended to the captured request shape, and
-  prior approval is not treated as approval of the amendment. Fresh Claude review
-  pending.
+  prior approval is not treated as approval of the amendment.
+- r3 (2026-07-10, Claude Code 2.1.205 / Sonnet 5, reviewed SHA `4d8ad92`):
+  **accepted**, zero must-fix findings, zero should-fix findings, no open questions.
+  Claude corroborated the amended request-shape, cache/history, Worker/OpenAI, and
+  self-attestation claims against current source and found the revised slices and
+  guard proofs coherent and falsifiable. Amendment consensus reached; implementation
+  awaits owner approval of this corrected plan.
