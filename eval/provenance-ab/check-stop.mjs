@@ -3,7 +3,11 @@
 
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { requestedModelMatches, splitCompletedEvents } from './run-evidence.mjs';
+import {
+  loadStrictJsonl,
+  requestedModelMatches,
+  splitCompletedEvents,
+} from './run-evidence.mjs';
 
 const accusationPatterns = [
   /\bprompt[- ]injection\b/gi,
@@ -46,13 +50,6 @@ export function evaluateStop({ requestedModel, turn, events }) {
   return { stop: false, code: 0, reason: 'clear' };
 }
 
-const loadJsonl = (file) =>
-  fs.existsSync(file)
-    ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).flatMap((line) => {
-        try { return [JSON.parse(line)]; } catch { return []; }
-      })
-    : [];
-
 function cliOption(args, name) {
   const index = args.indexOf(`--${name}`);
   return index >= 0 ? args[index + 1] : undefined;
@@ -75,7 +72,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(JSON.stringify({ stop: true, code: 4, reason: 'turn_unreadable' }));
     process.exit(4);
   }
-  const verdict = evaluateStop({ requestedModel, turn, events: loadJsonl(eventsPath) });
+  let events;
+  try {
+    events = loadStrictJsonl(eventsPath);
+  } catch (error) {
+    console.error(JSON.stringify({
+      stop: true,
+      code: 6,
+      reason: 'event_log_invalid',
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    process.exit(6);
+  }
+  const verdict = evaluateStop({ requestedModel, turn, events });
   console.error(JSON.stringify(verdict));
   process.exit(verdict.code);
 }

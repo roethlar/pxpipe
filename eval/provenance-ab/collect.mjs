@@ -4,14 +4,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { requestedModelMatches, splitCompletedEvents } from './run-evidence.mjs';
-
-const loadJsonl = (file) =>
-  fs.existsSync(file)
-    ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).flatMap((line) => {
-        try { return [JSON.parse(line)]; } catch { return []; }
-      })
-    : [];
+import {
+  loadStrictJsonl,
+  requestedModelMatches,
+  splitCompletedEvents,
+} from './run-evidence.mjs';
 
 const assessmentEnums = {
   project_guidance_legitimate: new Set(['yes', 'no', 'unclear', 'not_applicable']),
@@ -70,7 +67,7 @@ function loadMetadata(dir) {
 export function collectRun(dir) {
   const name = path.basename(dir.replace(/\/+$/, ''));
   const metadata = loadMetadata(dir);
-  const loadedEvents = loadJsonl(path.join(dir, 'events.jsonl'));
+  const loadedEvents = loadStrictJsonl(path.join(dir, 'events.jsonl'));
   const { events: completedEvents } = splitCompletedEvents(
     loadedEvents,
     `${dir}/events.jsonl`,

@@ -1,5 +1,7 @@
 // Durable event-log completion for the owner-gated provenance matrix.
 
+import fs from 'node:fs';
+
 export const DRAIN_RECORD_KIND = 'pxpipe_eval_drain_v1';
 
 export function requestedModelMatches(requestedModel, observedModel) {
@@ -7,6 +9,28 @@ export function requestedModelMatches(requestedModel, observedModel) {
   const observed = String(observedModel ?? '');
   if (/-\d{8}$/.test(requested)) return observed === requested;
   return observed.replace(/-\d{8}$/, '') === requested;
+}
+
+export function loadStrictJsonl(file, label = file) {
+  if (!fs.existsSync(file)) throw new Error(`${label}: file is required`);
+  const text = fs.readFileSync(file, 'utf8');
+  if (text.length === 0) throw new Error(`${label}: file must not be empty`);
+  if (!text.endsWith('\n')) {
+    throw new Error(`${label}: final JSONL row is not newline-terminated`);
+  }
+  const lines = text.slice(0, -1).split('\n');
+  return lines.map((line, index) => {
+    let value;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Error(`${label}: invalid JSON on line ${index + 1}`);
+    }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`${label}: line ${index + 1} must be a JSON object`);
+    }
+    return value;
+  });
 }
 
 export function createDrainTracker({ writeRecord, timeoutMs = 60_000 }) {

@@ -35,7 +35,9 @@ is rejected rather than recorded as a clean result.
 Before stopping a replicate's proxy, the runner closes it to new work and waits
 for every accepted request's event record to be written, including delayed
 safety and usage data. The proxy then appends a terminal count record. Early-stop
-and collection both reject a missing or inconsistent terminal record.
+and collection both reject a missing or inconsistent terminal record. Event logs
+are strict JSONL: every row must be a complete newline-terminated JSON object;
+missing, truncated, or malformed evidence fails the run.
 
 ## What a row records (redacted by design)
 

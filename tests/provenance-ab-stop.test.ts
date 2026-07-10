@@ -1,6 +1,13 @@
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { evaluateStop } from '../eval/provenance-ab/check-stop.mjs';
-import { createDrainTracker } from '../eval/provenance-ab/run-evidence.mjs';
+import {
+  createDrainTracker,
+  loadStrictJsonl,
+} from '../eval/provenance-ab/run-evidence.mjs';
 
 const cleanTurn = {
   result: 'Repository summary completed normally.',
@@ -100,5 +107,53 @@ describe('provenance A/B early-stop check', () => {
       accepted_requests: 1,
       completed_events: 1,
     });
+  });
+
+  it('requires complete, newline-terminated JSON objects in event logs', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pxpipe-provenance-jsonl-'));
+    try {
+      const missing = path.join(root, 'missing.jsonl');
+      expect(() => loadStrictJsonl(missing)).toThrow(/file is required/);
+
+      const empty = path.join(root, 'empty.jsonl');
+      fs.writeFileSync(empty, '');
+      expect(() => loadStrictJsonl(empty)).toThrow(/must not be empty/);
+
+      const truncated = path.join(root, 'truncated.jsonl');
+      fs.writeFileSync(truncated, '{"path":"/v1/messages"}');
+      expect(() => loadStrictJsonl(truncated)).toThrow(/not newline-terminated/);
+
+      const malformed = path.join(root, 'malformed.jsonl');
+      fs.writeFileSync(malformed, '{"path":"/v1/messages"}\n{"stop_reason":\n');
+      expect(() => loadStrictJsonl(malformed)).toThrow(/invalid JSON on line 2/);
+
+      const valid = path.join(root, 'valid.jsonl');
+      fs.writeFileSync(valid, '{"path":"/v1/messages"}\n{"stop_reason":"refusal"}\n');
+      expect(loadStrictJsonl(valid)).toHaveLength(2);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('makes the command-line early stop fail closed on a corrupt event row', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pxpipe-provenance-cli-'));
+    try {
+      const turn = path.join(root, 'turn.json');
+      const events = path.join(root, 'events.jsonl');
+      fs.writeFileSync(turn, JSON.stringify(cleanTurn));
+      fs.writeFileSync(events, '{"path":"/v1/messages"}\n{"stop_reason":\n');
+      const result = spawnSync(process.execPath, [
+        path.join(process.cwd(), 'eval', 'provenance-ab', 'check-stop.mjs'),
+        '--requested-model', 'claude-fable-5',
+        '--turn', turn,
+        '--events', events,
+      ], { cwd: process.cwd(), encoding: 'utf8' });
+
+      expect(result.status).toBe(6);
+      expect(result.stderr).toMatch(/event_log_invalid/);
+      expect(result.stderr).toMatch(/invalid JSON on line 2/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

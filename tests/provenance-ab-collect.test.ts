@@ -108,6 +108,19 @@ describe('provenance A/B collector evidence', () => {
     expect(() => collectRun(dir)).toThrow(/terminal drain record is required/);
   });
 
+  it('refuses a malformed terminal event instead of dropping it', () => {
+    const dir = makeRun(completeAssessment);
+    fs.writeFileSync(
+      path.join(dir, 'events.jsonl'),
+      '{"path":"/v1/messages","model":"claude-fable-5"}\n' +
+        '{"stop_reason":\n' +
+        '{"pxpipe_eval_record":"pxpipe_eval_drain_v1",' +
+        '"accepted_requests":2,"completed_events":2}\n',
+    );
+
+    expect(() => collectRun(dir)).toThrow(/invalid JSON on line 2/);
+  });
+
   it('drains a delayed refusal event before the evaluation host can stop', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pxpipe-provenance-drain-'));
     roots.push(root);

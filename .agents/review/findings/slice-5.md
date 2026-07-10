@@ -402,4 +402,14 @@ different event dates.
 Guard proof restored symmetric date stripping: all three dated-model tests
 failed, then passed after the asymmetric matcher was restored.
 
-Finding 9 remains pending individual adjudication against the reviewed head.
+### Finding 9 — adopted and fixed
+
+The evaluation harness now shares one strict JSONL reader. It requires an
+existing, non-empty file, complete newline-terminated rows, and a JSON object on
+every line. The early-stop command exits fail-closed on a read error, and the
+collector throws before appending a matrix row. Tests cover missing, empty,
+truncated, malformed-after-valid, and valid multirow logs.
+Guard proof restored best-effort parsing: all three strict-reader/consumer tests
+failed, then passed after strict parsing was restored.
+
+All r2 findings have now been adjudicated individually against the reviewed head.

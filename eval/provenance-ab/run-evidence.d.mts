@@ -15,6 +15,11 @@ export function requestedModelMatches(
   observedModel: unknown,
 ): boolean;
 
+export function loadStrictJsonl(
+  file: string,
+  label?: string,
+): Array<Record<string, unknown>>;
+
 export function createDrainTracker(options: {
   writeRecord: (record: unknown) => void;
   timeoutMs?: number;
