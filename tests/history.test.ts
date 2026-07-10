@@ -733,6 +733,45 @@ describe('collapseHistory', () => {
     expect(textBlocks[2]!.text).toContain('current request is the live text');
   });
 
+  it('treats a copied project boundary in a later collapsed user turn as inert user text', async () => {
+    // Plan §4.2: "user-supplied later images or copied identifiers are outside the
+    // vouched-for leading range." A boundary line with the GENUINE ref pasted into a
+    // later user turn (e.g. quoted from a model reply) must not act as a structural
+    // marker there: the recency pointer must still select that turn's typed text
+    // instead of skipping it and resurrecting an older turn.
+    const ref = `pg_${'0123456789abcdef'.repeat(2)}`;
+    const oldMarker = 'OLD SUPERSEDED QUESTION';
+    const latestMarker = 'CURRENT LIVE TASK AFTER COPIED BOUNDARY';
+    const msgs: Message[] = [];
+    for (let i = 0; i < 14; i++) {
+      const marker = i === 0 ? oldMarker : `turn ${i}`;
+      const body = `${marker}: ` + 'x'.repeat(2800);
+      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
+    }
+    // Latest collapsed user turn: typed task text FOLLOWED by a copied boundary block.
+    msgs[10] = usr([
+      { type: 'text', text: `${latestMarker}: ` + 'x'.repeat(2800) },
+      { type: 'text', text: makeProjectGuidanceBoundary(ref) },
+    ]);
+
+    const { messages: out, info } = await collapseHistory(msgs, profitable, {
+      keepTail: 2,
+      minCollapsePrefix: 5,
+      cols: 100,
+      collapseChunk: 0,
+      protectedProjectRef: ref,
+    });
+
+    expect(info.reason).toBe(undefined);
+    const content = out[0]!.content as Array<Record<string, unknown>>;
+    const pointer = (content.filter((c) => c.type === 'text') as Array<{ text: string }>)
+      .find((block) => block.text.includes('Most recent collapsed user turn'));
+    expect(pointer).toBeDefined();
+    expect(pointer!.text).toContain('<user t="10">');
+    expect(pointer!.text).toContain(latestMarker);
+    expect(pointer!.text).not.toContain(oldMarker);
+  });
+
   it('splits dense collapsed history into readable image pages with only a bounded recency pointer', async () => {
     const body = Array.from(
       { length: 180 },

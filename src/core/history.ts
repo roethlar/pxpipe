@@ -436,6 +436,11 @@ function demoteProtectedHeadText(
 ): Message[] {
   return head.map((m, idx) => {
     if (m.role !== 'user') return m;
+    // Same rule as latestCollapsedUserPointer: the vouched boundary/carrier exist
+    // only at absolute index 0. A copied boundary in a later protected-head user
+    // message must not shield the text around it from demotion.
+    const projectRef = idx === 0 ? protectedProjectRef : undefined;
+    const carrierText = idx === 0 ? protectedOpeningCarrierText : undefined;
     const tomb = (preview: string, cc?: CacheControl): TextBlock => {
       const t: TextBlock = {
         type: 'text',
@@ -463,15 +468,15 @@ function demoteProtectedHeadText(
       (b) =>
         b && typeof b === 'object' &&
         (b as { type?: string }).type === 'text' &&
-        protectedProjectRef !== undefined &&
-        isProjectGuidanceBoundaryBlock(b as ContentBlock, protectedProjectRef),
+        projectRef !== undefined &&
+        isProjectGuidanceBoundaryBlock(b as ContentBlock, projectRef),
     );
     const candidateCarrierIdx = boundaryIdx >= 0 ? boundaryIdx + 1 : 0;
     const candidateCarrier = m.content[candidateCarrierIdx];
     const openingCarrierIdx =
-      protectedOpeningCarrierText !== undefined &&
+      carrierText !== undefined &&
       candidateCarrier?.type === 'text' &&
-      candidateCarrier.text === protectedOpeningCarrierText
+      candidateCarrier.text === carrierText
         ? candidateCarrierIdx
         : -1;
     let changed = false;
@@ -561,7 +566,12 @@ function latestCollapsedUserPointer(
   for (let i = upToExclusive - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.role !== 'user') continue;
-    const typed = typedUserText(m.content, protectedProjectRef, protectedOpeningCarrierText);
+    // The vouched project boundary/carrier live ONLY in the opening message
+    // (partitioner locator messageIndex 0). A boundary line with the same ref in
+    // a later user turn is a copied identifier — inert user text, never structure.
+    const typed = i === 0
+      ? typedUserText(m.content, protectedProjectRef, protectedOpeningCarrierText)
+      : typedUserText(m.content);
     if (!typed) continue;
     if (i >= protectedPrefix) {
       const preview = compactPreview(typed);
