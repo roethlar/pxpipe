@@ -113,3 +113,9 @@ the reviewed slice-2 SHA; dispositions differ:
 Disposition: findings 1 and 3 closed by existing slice-4 code+guards;
 finding 2 closed by fix commit `371322d`. Focused re-review of the fix-up
 dispatched per the playbook's reopened flow.
+
+Re-review dispatch log:
+- r2 attempt 1 (2026-07-10 ~05:38 UTC): failed before any review work —
+  codex returned `turn.failed: usage limit` (resets ~06:52 UTC). Recorded
+  fail-closed as a harness failure, NOT a verdict. Re-dispatch queued for
+  after the reset.
