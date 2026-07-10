@@ -44,7 +44,10 @@ export interface CacheControl {
 }
 
 export interface Message {
-  role: 'user' | 'assistant';
+  /** Claude Code 2.1.205 can emit literal mid-conversation system messages under
+   *  the `tengu_mid_conv_system` beta. Unknown strings still pass through at
+   *  runtime, but these three roles are the observed/supported wire shape. */
+  role: 'user' | 'assistant' | 'system';
   content: string | ContentBlock[];
 }
 
