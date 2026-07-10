@@ -1,8 +1,16 @@
 # Local macOS package and installer
 
-Status: **APPROVED 2026-07-10**. The owner selected the Node-based macOS
-service-package shape described in chat, required loopback-only operation, and
-said to continue. This plan records that decision before implementation.
+Status: **IMPLEMENTED AND ACCEPTED 2026-07-10**. The owner selected the
+Node-based macOS service-package shape described in chat, required
+loopback-only operation, and said to continue.
+
+Checkpoint: implementation commit `eab46e6`; independent Claude Code 2.1.206 /
+Sonnet 5 review accepted `aff8bf1` after reconfirming the localhost and
+checksum guards, attacking archive traversal/link inputs, reproducing the full
+803-test gate, and smoke-running the packed proxy on loopback. The verdict is
+recorded at `c0af68d`. Generated bundles remain ignored local outputs. No real
+LaunchAgent, model call, Cloudflare deployment, public release, merge, or push
+was performed by this slice.
 
 ## Outcome
 
