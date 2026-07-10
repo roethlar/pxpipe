@@ -1,7 +1,7 @@
 # local-macos-package: Loopback-only macOS package and installer
 
 **Severity**: N/A — owner-approved implementation slice, not a defect finding
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `eab46e6aec752530f01dbbcc0ad8488854315f0a`
 
@@ -131,4 +131,24 @@ complete bundle in `~/Dev/pxpipe-deploy`. The first accepted implementation's
 
 ### Reviewer comments — output correction r2
 
-Pending independent Claude review.
+- Reviewer: Claude Code 2.1.206 / Sonnet 5 (`claude -p`, structured output),
+  run with pxpipe bypassed in a stable disposable worktree.
+- Reviewed SHA: `2d683da7f5477b886836e116b88692a86d8208b7`;
+  base SHA: `5c26d446346a2ee9009eaf7798ec736052da7f28`.
+- `guard_confirmed: true`.
+- Verdict: **accepted** (2026-07-10 21:42 UTC), no material findings.
+- The reviewer reproduced the full 803-test/typecheck/build gate, removed the
+  `/private` rejection and observed the focused failure, restored it, and
+  observed all 10 focused tests pass.
+- A real package run to a disposable stable directory emitted a commit-bound
+  archive, matching digest, manifest, and installer. Staging stayed beside the
+  destination rather than under `/private`.
+- Direct checks confirmed that a prior generated archive is removed, unrelated
+  deploy files survive, source-worktree destinations are rejected, symlinks
+  into `/private` are rejected after canonicalization, and both pnpm argument
+  shapes work.
+- Minor non-blocking observation: an interrupted three-file publish can leave
+  an unreferenced archive, but the manifest always references a complete
+  archive, so installer correctness and safety are unaffected.
+- No real LaunchAgent, owner deploy directory, model call, push, or source
+  worktree was touched during review; reviewer scratch was removed.
