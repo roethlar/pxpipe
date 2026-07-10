@@ -182,4 +182,13 @@ image, the final data-only block, and the native system note, while preserving
 the fail-closed statement for unknown opening shapes. The focused
 project-disabled runtime-tail test and documentation checks cover this claim.
 
-Findings 4–14 remain pending individual adjudication against the merged head.
+### Finding 4 — adopted and fixed
+
+The global recognizer claim is gone from the README and changelog after the
+main-branch merge. `docs/TRANSFORM_INFO.md` now limits exact recognition to
+host-context buckets and explicitly separates history and tool-result imaging,
+which retain their own checks even when an unknown opening stays native. The
+existing unknown-opening/history test and documentation checks cover the
+described behavior.
+
+Findings 5–14 remain pending individual adjudication against the merged head.

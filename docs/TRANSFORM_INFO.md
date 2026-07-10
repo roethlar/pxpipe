@@ -223,13 +223,15 @@ tool mode fields) without logging source text.
 ## 7. Unknown shapes fail closed (replaces the unknown-tag canary)
 
 The old design scanned the flattened static slab for unrecognized tag shapes
-and warned (`unknownStaticTags`). The provenance design inverts the burden:
-nothing is imaged unless an exact versioned recognizer claimed it, so a new
-Claude Code shape degrades to *native text and a telemetry reason*, never to
-silently churning image bytes. Watch `contextMode` and the per-bucket
-fallback reasons in the event log; a spike of `safe_native` rows after a
-Claude Code upgrade means the recognizers need a new version, and cache
-behavior in the meantime is only as bad as uncompressed text. (The
+and warned (`unknownStaticTags`). The provenance design inverts the burden for
+host context: project guidance, runtime metadata, and optional tool-reference
+pages require their own exact recognition and binding. A new Claude Code
+opening shape therefore stays native with a telemetry reason. History and
+tool-result compression are independent paths with their own structural and
+profitability checks; they do not require the opening-context recognizer.
+Watch `contextMode` and the per-bucket fallback reasons in the event log; a
+spike of `safe_native` rows after a Claude Code upgrade means the host-context
+recognizers need a new version. (The
 `unknownStaticTags` TransformInfo field and its host log lines remain for
 old-row compatibility but have no emitter on the current path.)
 
