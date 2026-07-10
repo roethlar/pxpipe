@@ -1,7 +1,7 @@
 # slice-1: Lossless Claude context partitioner
 
 **Severity**: N/A — implementation slice under review, not a defect finding
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `1d25d570a30f0e6e61130f99426548047686033e` (base: parent `9f9a07c`)
 
@@ -99,3 +99,14 @@ Disposition: the `reopened` verdict required no new code — the fix-ups
 already exist on the same branch (slice 3). Closure of this reopen is
 delegated to the slice-3 review, which covers the commits containing the
 guards. Slice-1 status stays "In progress" until the slice-3 verdict lands.
+
+## Closure
+Delivered by the slice-3 review chain (see
+`.agents/review/findings/slice-3.md`): its r2 pass explicitly confirmed both
+delegated guards at head — "Slice-1's impossible-date rejection is guarded
+and passes at head" and the unknown-sibling rejection likewise (the CRLF gap
+it found there was fixed in `c3e8744`) — and slice-3 closed **accepted** at
+r3 on 2026-07-10. Finding 3 (runtime recognizer) was confirmed present by
+the same review's guard proof (reverting src at the slice-3 SHA failed 15
+runtime-partition assertions). **Slice-1 review closed.** Merge remains
+owner-gated.

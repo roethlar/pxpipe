@@ -1,7 +1,7 @@
 # slice-3: Vouched runtime metadata tail
 
 **Severity**: N/A — implementation slice under review, not a defect finding
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `2334b9840b961c2a031ecbb2131da3e08315da15` (base: parent `fbf9b0c`)
 
@@ -98,3 +98,16 @@ same verdict (its findings were fixed by this slice's code).
   identically. Fixed in commit `c3e8744` (strip trailing `\r` from the H1
   capture before the lowerCamel test). Guard red before/green after;
   752 tests, typecheck, build all clean. r3 dispatched.
+- r3 attempt 1 (2026-07-10 ~09:55 UTC): guard proof succeeded (parent
+  negative failed as claimed; restored 30/30), then the run died on codex's
+  own content filter (`turn.failed: flagged for possible cybersecurity`)
+  before a verdict. Recorded fail-closed as a harness failure, NOT a
+  verdict; one retry per the playbook, narrowed to the closure itself (the
+  broad adversarial sweep already ran in r2).
+- r3 retry (2026-07-10 ~10:05 UTC, codex-cli 0.144.1, reviewed SHA
+  `c3e87446252b4a1da749a7003a577a183d78dde4`, base `def7fb9`):
+  **accepted**, `guard_confirmed: true`, zero comments. Reviewer judged the
+  normalization minimal (LF headings byte-unchanged), proved the CRLF guard
+  red on parent / 30-30 restored, and ran the full suite + typecheck.
+
+**Slice-3 review closed: accepted at r3.** Merge remains owner-gated.
