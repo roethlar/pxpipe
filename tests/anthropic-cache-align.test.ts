@@ -63,7 +63,7 @@ describe('Anthropic cache contract — invariants that should already hold', () 
     expect(outMarks).toBeLessThanOrEqual(inMarks);
   });
 
-  it('relocates the single slab marker onto an IMAGE block (not lost, not duplicated)', async () => {
+  it('preserves the single native-system marker in place (not lost, moved, or duplicated)', async () => {
     const msgs = convo(15);
     const body = enc({
       model: 'claude-3-5-sonnet',
@@ -71,7 +71,12 @@ describe('Anthropic cache contract — invariants that should already hold', () 
       messages: msgs,
     });
     const { body: out } = await transformRequest(body);
-    expect(countCacheControlMarkers(out)).toBe(1); // exactly one, conserved
+    expect(countCacheControlMarkers(out)).toBe(1);
+    const parsed = dec(out);
+    expect(parsed.system).toEqual([
+      { type: 'text', text: big(80_000), cache_control: { type: 'ephemeral' } },
+    ]);
+    expect(imagesOf(parsed.messages).every((image) => image.cache_control === undefined)).toBe(true);
   });
 
   it('keeps the last 4 turns as live text (keepTail)', async () => {
@@ -126,7 +131,7 @@ describe('Anthropic cache contract — our agreed model (EXPECTED FAIL today)', 
       system: [{ type: 'text', text: big(80_000), cache_control: { type: 'ephemeral' } }],
       messages: msgs,
     });
-    const inMarks = countCacheControlMarkers(body); // 2: slab + mid-history
+    const inMarks = countCacheControlMarkers(body); // 2: native system + mid-history
     const { body: out } = await transformRequest(body);
     // Contract: the mid-history mark is not silently dropped — both segments
     // remain independently cacheable, so the count is conserved (== 2), and the

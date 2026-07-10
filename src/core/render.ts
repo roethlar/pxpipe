@@ -692,6 +692,8 @@ export async function renderTextToPngsWithCharLimit(
   style: RenderStyle = {},
   maxHeightPx: number = MAX_HEIGHT_PX,
   slotText?: string,
+  /** Optional inert label rendered at the top of every page. */
+  pageLabel?: (pageIndex: number, pageCount: number) => string,
 ): Promise<RenderedImage[]> {
   const markerScale = Math.max(1, Math.floor(style.markerScale ?? 1));
   const cellH = ATLAS_CELL_H + Math.max(0, Math.floor(style.cellHBonus ?? DEFAULT_CELL_H_BONUS));
@@ -705,12 +707,24 @@ export async function renderTextToPngsWithCharLimit(
   const hardLinesPerImg = Math.max(1, Math.floor((maxHeightPx - 2 * PAD_Y) / cellH));
   // Dense pages (DENSE_CONTENT_CHARS_PER_IMAGE) fill the full 1932 px height;
   // the slab budget (READABLE_CHARS_PER_IMAGE) keeps its shorter row cap.
-  const linesPerImg = Math.min(hardLinesPerImg, Math.max(1, Math.floor(maxCharsPerImage / cols)));
+  const labelRows = pageLabel === undefined ? 0 : 1;
+  const linesPerImg = Math.max(
+    1,
+    Math.min(hardLinesPerImg - labelRows, Math.max(1, Math.floor(maxCharsPerImage / cols) - labelRows)),
+  );
 
   const images: RenderedImage[] = [];
   let slotCursor = 0;
-  for (const page of splitWrappedLinesIntoReadablePages(lines, linesPerImg, maxCharsPerImage)) {
-    const chunk = page.join('\n');
+  const labelBudget = pageLabel === undefined ? 0 : cols + 1;
+  const pages = splitWrappedLinesIntoReadablePages(
+    lines,
+    linesPerImg,
+    Math.max(1, maxCharsPerImage - labelBudget),
+  );
+  for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+    const page = pages[pageIndex]!;
+    const label = pageLabel?.(pageIndex, pages.length);
+    const chunk = label ? `${label}\n${page.join('\n')}` : page.join('\n');
     const slotChunk = slotLines
       ? slotLines.slice(slotCursor, slotCursor + page.length).join('\n')
       : undefined;

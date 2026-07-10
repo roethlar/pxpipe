@@ -31,7 +31,7 @@ const dec = new TextDecoder();
 
 /**
  * Build a request whose first user message carries `content` blocks and a
- * large static system slab (so compression machinery is definitely active).
+ * large tool-result block (so compression machinery is definitely active).
  * `model` defaults to a sonnet alias (the proxy path transforms any model);
  * the library wrapper gates on supported models, so its test passes Fable.
  */
@@ -179,7 +179,10 @@ describe('keepSharp fidelity hint', () => {
     // `input.model`, so set it to a Fable alias to run the real transform.
     const result = await transformAnthropicMessages({
       body: makeReq(
-        [{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }],
+        [
+          { type: 'tool_result', tool_use_id: 'keep_me', content: BIG },
+          { type: 'tool_result', tool_use_id: 'image_me', content: BIG },
+        ],
         'claude-fable-5',
       ),
       model: 'claude-fable-5',
@@ -187,17 +190,19 @@ describe('keepSharp fidelity hint', () => {
         // multiCol defaults to 1; PxpipeOptions intentionally narrows the
         // library surface to charsPerToken / historyAmortizationHorizon / keepSharp.
         charsPerToken: 2,
-        keepSharp: (blk) => blk.kind === 'tool_result',
+        keepSharp: (blk) => blk.toolUseId === 'keep_me',
       },
     });
 
     // The model gate let the transform run, and the sharp block stayed text.
     expect(result.applied).toBe(true);
-    const tr = userBlocks(result.body).find((b) => b.type === 'tool_result');
+    const tr = userBlocks(result.body).find((b) => b.tool_use_id === 'keep_me');
     const text =
       typeof tr?.content === 'string'
         ? tr.content
         : (tr?.content ?? []).find((b: any) => b.type === 'text')?.text;
     expect(text).toBe(BIG);
+    const imaged = userBlocks(result.body).find((b) => b.tool_use_id === 'image_me');
+    expect(Array.isArray(imaged?.content) && imaged.content.some((b: any) => b.type === 'image')).toBe(true);
   });
 });

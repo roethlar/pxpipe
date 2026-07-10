@@ -22,6 +22,10 @@
 import { describe, expect, it } from 'vitest';
 import { createProxy, type ProxyEvent } from '../src/core/proxy.js';
 import { countTokens as o200k } from 'gpt-tokenizer/encoding/o200k_base';
+import {
+  DIRECT_PROJECT_GUIDANCE,
+  makeCapturedRequest,
+} from './fixtures/anthropic-context.js';
 
 const PROBE_TOKENS = 9999; // canned count_tokens result from the fake upstream
 
@@ -103,15 +107,23 @@ const gptBody = (sysChars: number) =>
     ],
   });
 
-const antBody = (opts: { model?: string; slabChars?: number }) =>
-  JSON.stringify({
+const antBody = (opts: { model?: string; slabChars?: number }) => {
+  if (opts.slabChars) {
+    const project =
+      DIRECT_PROJECT_GUIDANCE + '\n' +
+      'Role-bound project guidance row. '.repeat(Math.ceil(opts.slabChars / 33));
+    const req = makeCapturedRequest({ projectGuidance: project });
+    req.model = opts.model ?? 'claude-fable-5';
+    req.max_tokens = 16;
+    return JSON.stringify(req);
+  }
+  return JSON.stringify({
     model: opts.model ?? 'claude-fable-5',
     max_tokens: 16,
-    system: opts.slabChars
-      ? [{ type: 'text', text: slab(opts.slabChars), cache_control: { type: 'ephemeral' } }]
-      : 'short',
+    system: 'short',
     messages: [{ role: 'user', content: 'hello' }],
   });
+};
 
 // ===========================================================================
 describe('savings math — GPT, cross-checked against the real o200k tokenizer', () => {
@@ -177,7 +189,7 @@ describe('savings math — Anthropic (gate sign + count_tokens ground-truth wiri
     expect(g!.profitable).toBe(imgSide < txtSide);
   });
 
-  it('DECISION: compresses a large slab, leaves a tiny system untouched', async () => {
+  it('DECISION: compresses large project guidance, leaves a tiny system untouched', async () => {
     const big = await driveAndCapture('/v1/messages', antBody({ slabChars: 80_000 }));
     expect(big.event.info?.compressed).toBe(true);
     expect(big.event.info?.gateEval?.profitable).toBe(true);

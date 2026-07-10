@@ -12,6 +12,7 @@
  */
 
 import type { CacheControl, ContentBlock, ImageBlock, Message, TextBlock, ToolUseBlock, ToolResultBlock } from './types.js';
+import { isProjectGuidanceBoundaryBlock } from './anthropic-context.js';
 import { DENSE_CONTENT_CHARS_PER_IMAGE, DENSE_CONTENT_COLS, DENSE_RENDER_STYLE, neutralizeSentinel, reflow, renderTextToPngsWithCharLimit, roleSlotSegment, SLOT_MARK_ASSISTANT, SLOT_MARK_USER } from './render.js';
 import { factSheetText } from './factsheet.js';
 import { bytesToBase64 } from './png.js';
@@ -59,10 +60,18 @@ export interface HistoryCollapseOptions {
    *  aligned, independently-cacheable image boundary. Set to 0 to render the whole
    *  range as one paginated blob (legacy, non-append-only). Default 10. */
   freezeChunk: number;
-  /** Leading messages to never collapse. Protects the slab-bearing first user message
-   *  (system-prompt + tool-docs images) so its cache_control anchor stays at the front
-   *  and isn't swept into the history image as [image] placeholders. Default 0. */
+  /** Leading messages to never collapse. The history pass also protects a leading
+   *  role-bound project carrier identified by the shared project boundary and any
+   *  contiguous literal system-role attachments that immediately follow it. Default 0. */
   protectedPrefix: number;
+  /** Exact project reference vouched for by the native manifest. Boundary-shaped
+   *  user text is not trusted when this binding is absent or does not match. */
+  protectedProjectRef?: string;
+  /** Exact opening host-context carrier bytes vouched for by the partitioner.
+   *  Available even when project rendering is disabled or fails its gate. */
+  protectedOpeningCarrierText?: string;
+  /** Internal fault-injection seam for lossless render-failure tests. */
+  renderPages?: typeof renderTextToPngsWithCharLimit;
   /** Reflow the transcript before RENDERING: pack soft-wrapped lines and mark
    *  every hard newline with the ↵ sentinel — same treatment as the static slab.
    *  History text is newline-heavy (role headers, JSON args), so without this
@@ -112,8 +121,11 @@ export interface HistoryCollapseInfo {
     | 'no_history'
     | 'prefix_too_short'
     | 'no_closed_prefix'
+    | 'privileged_role_in_collapse_range'
+    | 'context_reminder_in_collapse_range'
     | 'not_profitable'
-    | 'render_empty';
+    | 'render_empty'
+    | 'render_error';
   /** Dropped codepoints from the history render, merged into the
    *  transform-wide map by the caller. */
   droppedChars: number;
@@ -284,6 +296,12 @@ export function messagesToHistorySegments(
   const slotOut: string[] = [];
   for (let i = fromInclusive; i < upToExclusive; i++) {
     const m = messages[i]!;
+    if (m.role === 'system') {
+      // collapseHistory detects this before serialization and returns the original
+      // request. Keep this lower-level guard too: an exported helper must never
+      // silently relabel a privileged role as user when called directly.
+      throw new Error('Cannot serialize a system-role message into user-role history');
+    }
     const body = blocksToText(m.content);
     if (!body.trim()) continue;
     const isAssistant = m.role === 'assistant';
@@ -327,20 +345,36 @@ function verbatimTaskText(text: string): string {
   );
 }
 
+function isSystemReminderLike(text: string): boolean {
+  return text.trimStart().startsWith('<system-reminder>');
+}
+
+function messageContainsSystemReminder(message: Message): boolean {
+  if (typeof message.content === 'string') return isSystemReminderLike(message.content);
+  return message.content.some(
+    (block) => block.type === 'text' && isSystemReminderLike(block.text),
+  );
+}
+
 /**
  * The user's typed words in a user message: text blocks only, excluding
- * <system-reminder> wrappers and (in the opening slab message) everything at or
- * before the '[End of rendered context.]' boundary — same rule as
+ * <system-reminder> wrappers and (in the opening project carrier) everything at or
+ * before the shared project-guidance boundary — same rule as
  * demoteProtectedHeadText, so pxpipe scaffolding is never mistaken for the task.
  */
-function typedUserText(content: string | ContentBlock[]): string {
+function typedUserText(
+  content: string | ContentBlock[],
+  protectedProjectRef?: string,
+  protectedOpeningCarrierText?: string,
+): string {
   if (typeof content === 'string') return content.trim();
   if (!Array.isArray(content)) return '';
   const boundaryIdx = content.findIndex(
     (b) =>
       b && typeof b === 'object' &&
       (b as { type?: string }).type === 'text' &&
-      (b as TextBlock).text === '[End of rendered context.]',
+      protectedProjectRef !== undefined &&
+      isProjectGuidanceBoundaryBlock(b as ContentBlock, protectedProjectRef),
   );
   const parts: string[] = [];
   for (let i = 0; i < content.length; i++) {
@@ -350,6 +384,7 @@ function typedUserText(content: string | ContentBlock[]): string {
     if ((blk as { type?: string }).type !== 'text') continue;
     const text = (blk as TextBlock).text.trim();
     if (!text) continue;
+    if (protectedOpeningCarrierText !== undefined && (blk as TextBlock).text === protectedOpeningCarrierText) continue;
     if (text.startsWith('<system-reminder>')) continue;
     parts.push(text);
   }
@@ -357,20 +392,24 @@ function typedUserText(content: string | ContentBlock[]): string {
 }
 
 /**
- * Demote request TEXT in the protected head (slab anchor) to a marked PRIOR-CONTEXT
- * tombstone. The session's OPENING user turn rides in the SAME message as the slab
- * images (transform.ts sets protectedPrefix = firstUserIdx + 1 to keep that message
+ * Demote request TEXT in the protected head (project-page anchor) to a marked
+ * PRIOR-CONTEXT tombstone. The session's OPENING user turn rides in the SAME message
+ * as the project pages (the shared boundary keeps that message
  * from collapsing into [image] placeholders). Protecting it for the cache anchor also
  * passed its request text through as clean native text at the very TOP — ahead of the
  * synthetic history block — where the model reads it as the LIVE request. It never is:
  * the live request is always in the tail (tail = messages.slice(collapseLen),
  * keepTail >= 1), so any text in the protected head is, by construction, stale.
  *
- * Image/tool blocks (the slab) pass through byte-identical so the cache anchor and any
+ * Image/tool blocks pass through byte-identical so the cache anchor and any
  * cache_control breakpoint survive; the demotion is a pure function of the message, so
  * the protected prefix stays byte-stable across turns (one-time re-cache on deploy).
  */
-function demoteProtectedHeadText(head: Message[]): Message[] {
+function demoteProtectedHeadText(
+  head: Message[],
+  protectedProjectRef?: string,
+  protectedOpeningCarrierText?: string,
+): Message[] {
   return head.map((m, idx) => {
     if (m.role !== 'user') return m;
     const tomb = (preview: string, cc?: CacheControl): TextBlock => {
@@ -391,28 +430,45 @@ function demoteProtectedHeadText(head: Message[]): Message[] {
       return preview ? { ...m, content: [tomb(preview)] } : m;
     }
     if (!Array.isArray(m.content)) return m;
-    // pxpipe's own slab scaffolding (the rendered images, the fact-sheet, and the
-    // '[End of rendered context.]' boundary) is NOT the user's request and must
-    // survive byte-identical: relocateAnchorToHistoryImage keys on that boundary
-    // text to locate the slab cache anchor. Only the user's stale opening turn —
-    // the blocks AFTER the boundary — gets demoted. With no boundary (the slab did
-    // not image) boundaryIdx is -1 and the whole message demotes, exactly as before.
+    // pxpipe's role-bound project pages and their shared boundary are NOT the user's
+    // request and must survive byte-identical. The reconstructed host reminder after
+    // the boundary is also native host context, so preserve it; only stale user text
+    // after that reminder gets demoted. With no boundary, the whole message demotes,
+    // exactly as before.
     const boundaryIdx = m.content.findIndex(
       (b) =>
         b && typeof b === 'object' &&
         (b as { type?: string }).type === 'text' &&
-        (b as TextBlock).text === '[End of rendered context.]',
+        protectedProjectRef !== undefined &&
+        isProjectGuidanceBoundaryBlock(b as ContentBlock, protectedProjectRef),
     );
+    const candidateCarrierIdx = boundaryIdx >= 0 ? boundaryIdx + 1 : 0;
+    const candidateCarrier = m.content[candidateCarrierIdx];
+    const openingCarrierIdx =
+      protectedOpeningCarrierText !== undefined &&
+      candidateCarrier?.type === 'text' &&
+      candidateCarrier.text === protectedOpeningCarrierText
+        ? candidateCarrierIdx
+        : -1;
     let changed = false;
     const out: ContentBlock[] = [];
     for (let i = 0; i < m.content.length; i++) {
       const blk = m.content[i]!;
       if (boundaryIdx >= 0 && i <= boundaryIdx) {
-        out.push(blk); // slab images + fact-sheet + boundary: proxy scaffolding, kept verbatim
+        out.push(blk); // project pages + boundary: role-bound scaffolding, kept verbatim
         continue;
       }
       if (blk && typeof blk === 'object' && (blk as { type?: string }).type === 'text') {
-        const preview = compactPreview((blk as TextBlock).text);
+        const originalText = (blk as TextBlock).text;
+        if (i === openingCarrierIdx) {
+          out.push(blk); // exact partitioner-bound host context stays byte- and marker-exact
+          continue;
+        }
+        if (isSystemReminderLike(originalText)) {
+          out.push(blk); // unknown reminder stays native user-role text; it gains no authority
+          continue;
+        }
+        const preview = compactPreview(originalText);
         if (preview) {
           out.push(tomb(preview, (blk as { cache_control?: CacheControl }).cache_control));
           changed = true;
@@ -425,10 +481,49 @@ function demoteProtectedHeadText(head: Message[]): Message[] {
   });
 }
 
+/**
+ * Protect the vouched-for leading project carrier and the captured sequence of
+ * literal mid-conversation system attachments that immediately follows it.
+ * A marker elsewhere is not authority-bearing and cannot expand the head.
+ */
+function roleBoundProtectedPrefix(
+  messages: Message[],
+  requestedPrefix: number,
+  protectedProjectRef?: string,
+  protectedOpeningCarrierText?: string,
+): number {
+  const first = messages[0];
+  let hasBoundCarrier = false;
+  if (
+    protectedOpeningCarrierText !== undefined &&
+    first?.role === 'user' &&
+    Array.isArray(first.content)
+  ) {
+    const boundaryIdx = protectedProjectRef === undefined
+      ? -1
+      : first.content.findIndex((block) =>
+          isProjectGuidanceBoundaryBlock(block, protectedProjectRef));
+    const expectedCarrierIdx = boundaryIdx >= 0 ? boundaryIdx + 1 : 0;
+    const carrier = first.content[expectedCarrierIdx];
+    hasBoundCarrier = carrier?.type === 'text' && carrier.text === protectedOpeningCarrierText;
+  }
+  if (!hasBoundCarrier) return requestedPrefix;
+
+  // System attachments extend only the exact opening carrier, never an arbitrary
+  // caller-supplied prefix or a boundary-shaped marker with a different ref.
+  let roleBoundEnd = 1;
+  while (roleBoundEnd < messages.length && messages[roleBoundEnd]!.role === 'system') {
+    roleBoundEnd++;
+  }
+  return Math.max(requestedPrefix, roleBoundEnd);
+}
+
 function latestCollapsedUserPointer(
   messages: Message[],
   upToExclusive: number,
   protectedPrefix: number,
+  protectedProjectRef?: string,
+  protectedOpeningCarrierText?: string,
 ): TextBlock | undefined {
   // Scan the WHOLE demoted/collapsed range, INCLUDING the protected head (#7):
   // in single-task sessions the opening turn is the only user-typed text there is.
@@ -442,7 +537,7 @@ function latestCollapsedUserPointer(
   for (let i = upToExclusive - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.role !== 'user') continue;
-    const typed = typedUserText(m.content);
+    const typed = typedUserText(m.content, protectedProjectRef, protectedOpeningCarrierText);
     if (!typed) continue;
     if (i >= protectedPrefix) {
       const preview = compactPreview(typed);
@@ -486,10 +581,18 @@ export async function collapseHistory(
     info.reason = 'no_history';
     return { messages: messages ?? [], info };
   }
-  // Protected leading messages (slab) pass through untouched; collapse starts after them.
-  const protectedPrefix = Math.max(
+  // The caller's explicit head remains protected. A leading shared project marker
+  // independently protects its carrier, and literal system attachments contiguous
+  // with that carrier stay native and in-order as part of the protected head.
+  const requestedPrefix = Math.max(
     0,
     Math.min(o.protectedPrefix ?? 0, messages.length),
+  );
+  const protectedPrefix = roleBoundProtectedPrefix(
+    messages,
+    requestedPrefix,
+    o.protectedProjectRef,
+    o.protectedOpeningCarrierText,
   );
   // Snap the cutoff to a collapseChunk grid so the rendered PNG stays byte-identical
   // across turns and keeps hitting Anthropic's prompt cache. See docs/HISTORY_CACHE_MODEL.md.
@@ -517,7 +620,18 @@ export async function collapseHistory(
     info.reason = 'prefix_too_short';
     return { messages, info };
   }
-  // Exclude slab messages (protectedPrefix) from serialization.
+  // A system role outside the contiguous protected head is an unsupported
+  // privileged attachment. Fail this collapse closed rather than mapping it to
+  // `<user>` in the rendered transcript and changing its API authority.
+  if (messages.slice(protectedPrefix, collapseLen).some((message) => message.role === 'system')) {
+    info.reason = 'privileged_role_in_collapse_range';
+    return { messages, info };
+  }
+  if (messages.slice(protectedPrefix, collapseLen).some(messageContainsSystemReminder)) {
+    info.reason = 'context_reminder_in_collapse_range';
+    return { messages, info };
+  }
+  // Exclude the role-bound protected head from serialization.
   const text = messagesToHistoryText(messages, collapseLen, protectedPrefix);
   if (!text || text.length === 0) {
     info.reason = 'render_empty';
@@ -600,14 +714,26 @@ export async function collapseHistory(
     // colorByRole tints the structural <role> tags so turn boundaries are scannable
     // in the history image; it's token-free (vision cost is by pixel dims, not PNG
     // byte depth) and carries the serialize-time slot string instead of re-parsing.
-    const imgs = await renderTextToPngsWithCharLimit(
-      chunkRender,
-      DENSE_CONTENT_COLS,
-      DENSE_CONTENT_CHARS_PER_IMAGE,
-      { ...DENSE_RENDER_STYLE, colorByRole: true },
-      undefined,
-      chunkSlot,
-    );
+    let imgs;
+    try {
+      imgs = await (o.renderPages ?? renderTextToPngsWithCharLimit)(
+        chunkRender,
+        DENSE_CONTENT_COLS,
+        DENSE_CONTENT_CHARS_PER_IMAGE,
+        { ...DENSE_RENDER_STYLE, colorByRole: true },
+        undefined,
+        chunkSlot,
+      );
+    } catch {
+      info.reason = 'render_error';
+      info.collapsedImageBytes = 0;
+      info.collapsedImagePixels = 0;
+      info.collapsedPngs = [];
+      info.collapsedImageDims = [];
+      info.droppedChars = 0;
+      info.droppedCodepoints = new Map();
+      return { messages, info };
+    }
     const markerCC = markerByEnd.get(chunkEnd);
     for (let k = 0; k < imgs.length; k++) {
       const img = imgs[k]!;
@@ -640,7 +766,13 @@ export async function collapseHistory(
     info.reason = 'render_empty';
     return { messages, info };
   }
-  const latestUserPointer = latestCollapsedUserPointer(messages, collapseLen, protectedPrefix);
+  const latestUserPointer = latestCollapsedUserPointer(
+    messages,
+    collapseLen,
+    protectedPrefix,
+    o.protectedProjectRef,
+    o.protectedOpeningCarrierText,
+  );
   const historyFactSheet = factSheetText(text);
   const syntheticContent: ContentBlock[] = [
     { type: 'text', text: HISTORY_SYNTHETIC_INTRO },
@@ -655,12 +787,16 @@ export async function collapseHistory(
   };
   // Demote stale request text in the protected head so the session's opening turn
   // can't surface as clean native text ahead of the history image and read as live.
-  const head = demoteProtectedHeadText(messages.slice(0, protectedPrefix));
+  const head = demoteProtectedHeadText(
+    messages.slice(0, protectedPrefix),
+    o.protectedProjectRef,
+    o.protectedOpeningCarrierText,
+  );
   const tail = messages.slice(collapseLen);
   info.collapsedTurns = collapseLen - protectedPrefix;
   info.collapsedChars = text.length;
   info.collapsedImages = imageBlocks.length;
   if (carryOverOrdinal >= 0) info.carryOverImageOrdinal = carryOverOrdinal;
-  // [slab, history image, live tail] — slab cache_control anchor stays at the front.
+  // [protected role-bound head, history image, live tail].
   return { messages: [...head, syntheticUser, ...tail], info };
 }

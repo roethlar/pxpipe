@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   renderChunkToPng,
   renderTextToPngs,
+  renderTextToPngsWithCharLimit,
   renderTextToPngsMultiCol,
   multiColWidth,
   maxFittingCols,
@@ -123,6 +124,40 @@ describe('renderer', () => {
     );
     expect(img.height).toBeLessThanOrEqual(1932);
     expect(img.width).toBeGreaterThan(0);
+  });
+
+  it('renders a deterministic inert label on every page with final page counts', async () => {
+    const source = Array.from(
+      { length: 20 },
+      (_, index) => `source row ${index}: ${'x'.repeat(30)}`,
+    ).join('\n');
+    const calls: Array<[number, number]> = [];
+    const labeled = await renderTextToPngsWithCharLimit(
+      source,
+      40,
+      160,
+      {},
+      undefined,
+      undefined,
+      (pageIndex, pageCount) => {
+        calls.push([pageIndex, pageCount]);
+        return `PROJECT GUIDANCE · ref pg_1234abcd · page ${pageIndex + 1}/${pageCount}`;
+      },
+    );
+    const repeated = await renderTextToPngsWithCharLimit(
+      source,
+      40,
+      160,
+      {},
+      undefined,
+      undefined,
+      (pageIndex, pageCount) =>
+        `PROJECT GUIDANCE · ref pg_1234abcd · page ${pageIndex + 1}/${pageCount}`,
+    );
+
+    expect(labeled.length).toBeGreaterThan(1);
+    expect(calls).toEqual(labeled.map((_, index) => [index, labeled.length]));
+    expect(labeled.map((page) => page.png)).toEqual(repeated.map((page) => page.png));
   });
 
   it('splits very long input into multiple PNGs', async () => {
@@ -670,39 +705,25 @@ describe('transform', () => {
     expect(body).toBe(bytes); // returns same reference
   });
 
-  it('compresses large system fields into image blocks', async () => {
-    const bigSystem = 'You are a helpful assistant. '.repeat(5000); // ~31.9k chars, well past 2-image break-even (20k)
-    const req = JSON.stringify({
+  it('leaves large native system fields byte-exact', async () => {
+    const bigSystem = 'You are a helpful assistant. '.repeat(5000);
+    const req = {
       model: 'claude-3-5-sonnet',
       messages: [{ role: 'user', content: 'hi' }],
       system: bigSystem,
-    });
-    const bytes = new TextEncoder().encode(req);
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(req));
     const { body, info } = await transformRequest(bytes);
-    expect(info.compressed).toBe(true);
-    expect(info.imageCount).toBeGreaterThanOrEqual(1);
-
-    const out = JSON.parse(new TextDecoder().decode(body));
-    // Images always go into the first user message, not the system field
-    // (Anthropic rejects image blocks in `system`).
-    const userContent = out.messages[0].content as any[];
-    expect(Array.isArray(userContent)).toBe(true);
-    const imageBlocks = userContent.filter((b: any) => b.type === 'image');
-    expect(imageBlocks.length).toBe(info.imageCount);
-    expect(imageBlocks[0].source.media_type).toBe('image/png');
-    // And the system field must NOT contain image blocks (would 400).
-    if (Array.isArray(out.system)) {
-      for (const b of out.system) expect(b.type).not.toBe('image');
-    }
+    expect(info.compressed).toBe(false);
+    expect(info.imageCount ?? 0).toBe(0);
+    expect(body).toBe(bytes);
+    expect(JSON.parse(new TextDecoder().decode(body))).toEqual(req);
   });
 
-  it('moves tool docs into the imaged Tool Reference and stubs originals', async () => {
-    const req = JSON.stringify({
+  it('leaves Anthropic tool definitions and their native system sibling byte-exact', async () => {
+    const req = {
       model: 'claude-3-5-sonnet',
       messages: [{ role: 'user', content: 'hi' }],
-      // Sized so system + tool docs + banner fit inside the 65,536-char
-      // info.imageSourceText diagnostic window (the reference renders after
-      // the static slab) while still clearing the compression gates.
       system: 'x'.repeat(30000),
       tools: [
         {
@@ -711,45 +732,16 @@ describe('transform', () => {
           input_schema: { type: 'object', properties: { x: { type: 'string' } } },
         },
       ],
-    });
-    const bytes = new TextEncoder().encode(req);
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(req));
     const { body, info } = await transformRequest(bytes);
-    expect(info.compressed).toBe(true);
-    expect(info.toolDocsChars).toBeGreaterThan(0);
-
-    const out = JSON.parse(new TextDecoder().decode(body));
-    // Stub cites its own heading in the imaged Tool Reference (link-up contract).
-    expect(out.tools[0].name).toBe('BigTool');
-    expect(out.tools[0].description).toContain('"## Tool: BigTool"');
-    expect(out.tools[0].description).toContain('Tool Reference');
-    // Full docs ride the imaged slab — that IS the compression.
-    const imgSrc = info.imageSourceText ?? '';
-    expect(imgSrc).toContain('=== TOOL REFERENCE ===');
-    expect(imgSrc).toContain('## Tool: BigTool');
-    expect(imgSrc).toContain('A very long tool description.');
-    // No text-splice remains in the system field.
-    const sysTexts = ((out.system as any[]) ?? [])
-      .filter((b: any) => b.type === 'text')
-      .map((b: any) => b.text as string);
-    expect(sysTexts.some((t) => t.includes('=== TOOL REFERENCE ==='))).toBe(false);
-    // Classifier regression (169521c; retripped 2026-07-02 by a stub citing "the
-    // system prompt"): pxpipe-authored framing must never read as a replayed or
-    // extracted prompt. Ban the trigger wording in the stub and the reference
-    // header, and require first-party provenance framing on the reference block.
-    // Scoped to the header only — quoted tool docs below it are third-party text.
-    expect(out.tools[0].description).not.toMatch(/system prompt|authoritative/i);
-    const refStart = imgSrc.indexOf('=== TOOL REFERENCE ===');
-    const refHeader = imgSrc.slice(refStart, imgSrc.indexOf('## Tool:', refStart));
-    expect(refHeader).not.toMatch(/system prompt|authoritative/i);
-    expect(refHeader).toContain("this user's local proxy");
+    expect(info.compressed).toBe(false);
+    expect(info.toolDocsChars).toBeUndefined();
+    expect(body).toBe(bytes);
+    expect(JSON.parse(new TextDecoder().decode(body))).toEqual(req);
   });
 
-  it('ships annotation-stripped schemas in tools[], full schema in the imaged reference', async () => {
-    // History: a bare `{type:'object'}` stub caused validator 400s; a text
-    // reference paid the annotations at text rates. Current contract: tools[]
-    // keeps the structural contract (type/properties/required/enum) for the
-    // validator, annotations (description/default/$schema) move into the
-    // imaged reference where they cost image rates.
+  it('preserves annotations and structural constraints in Anthropic tools[]', async () => {
     const req = JSON.stringify({
       model: 'claude-3-5-sonnet',
       messages: [{ role: 'user', content: 'hi' }],
@@ -811,32 +803,9 @@ describe('transform', () => {
     });
     const bytes = new TextEncoder().encode(req);
     const { body, info } = await transformRequest(bytes);
-    expect(info.compressed).toBe(true);
-    expect(info.reason).toBeUndefined();
-
-    const out = JSON.parse(new TextDecoder().decode(body));
-    // Structural contract survives in tools[] — validator-visible keys intact.
-    const s0 = out.tools[0].input_schema;
-    expect(s0.type).toBe('object');
-    expect(Object.keys(s0.properties)).toEqual(['file_path', 'mode']);
-    expect(s0.required).toEqual(['file_path']);
-    expect(s0.properties.mode.enum).toEqual(['read', 'binary']);
-    // Annotations are stripped from tools[] everywhere in the tree.
-    expect(JSON.stringify(s0)).not.toContain('description');
-    expect(s0.$schema).toBeUndefined();
-    expect(s0.properties.mode.default).toBeUndefined();
-    const s1 = out.tools[1].input_schema;
-    expect(s1.required).toEqual(['command']);
-    expect(Object.keys(s1.properties.env.properties)).toEqual(['PATH']);
-    expect(s1.properties.files.items.required).toEqual(['path']);
-    expect(JSON.stringify(s1)).not.toContain('description');
-    // The full annotated schema rides the imaged reference instead.
-    const imgSrc = info.imageSourceText ?? '';
-    expect(imgSrc).toContain('Absolute path to the file');
-    expect(imgSrc).toContain('path var');
-    // Stubs cite the reference heading.
-    expect(out.tools[0].description).toContain('"## Tool: Read"');
-    expect(out.tools[1].description).toContain('"## Tool: Bash"');
+    expect(info.compressed).toBe(false);
+    expect(body).toBe(bytes);
+    expect(JSON.parse(new TextDecoder().decode(body))).toEqual(JSON.parse(req));
   });
 
   it('passes a bare {type:"object"} schema through with no advisory', async () => {
@@ -1251,67 +1220,36 @@ describe('transform', () => {
     });
   });
 
-  it('strips x-anthropic-billing-header line and keeps it as text', async () => {
+  it('does not interpret or relocate billing-shaped native system text', async () => {
     const sysText = 'x-anthropic-billing-header: cch=abc123\n' + 'real prompt text. '.repeat(2500);
-    const req = JSON.stringify({
+    const req = {
       model: 'claude-3-5-sonnet',
       messages: [{ role: 'user', content: 'hi' }],
       system: sysText,
-    });
-    const bytes = new TextEncoder().encode(req);
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(req));
     const { body, info } = await transformRequest(bytes);
-    expect(info.compressed).toBe(true);
-
-    const out = JSON.parse(new TextDecoder().decode(body));
-    const textBlocks = out.system.filter((b: any) => b.type === 'text');
-    expect(textBlocks.some((b: any) => b.text.includes('x-anthropic-billing-header'))).toBe(true);
+    expect(info.compressed).toBe(false);
+    expect(body).toBe(bytes);
+    expect(JSON.parse(new TextDecoder().decode(body))).toEqual(req);
   });
 
-  it('keeps <env> as text outside the image so cache_control stays stable', async () => {
-    // Dense slab (long single line) so the row-aware break-even gate
-    // greenlights compression. Same total chars as the old short-line
-    // fixture but profitable: 1 image @ 2500 < 52800/4 = 13200 text.
+  it('keeps env-shaped native system content byte-exact', async () => {
     const staticSlab = 'claude.md ground truth. '.repeat(2200);
     const envBlock =
       "<env>\nWorking directory: /tmp/parityproj\nIs directory a git repo: Yes\nPlatform: darwin\nToday's date: 2026-05-18\n</env>";
     const sys = staticSlab + '\n' + envBlock;
-    const body = new TextEncoder().encode(
-      JSON.stringify({
-        model: 'claude',
-        messages: [{ role: 'user', content: 'hi' }],
-        system: sys,
-      }),
-    );
-    const { body: outBytes, info } = await transformRequest(body);
-    expect(info.compressed).toBe(true);
-    expect(info.dynamicBlockCount).toBe(1);
-    expect(info.dynamicChars).toBeGreaterThan(0);
-    expect(info.staticChars).toBeGreaterThan(info.dynamicChars);
-
-    const out = JSON.parse(new TextDecoder().decode(outBytes));
-    // Images live in the first user message and the dynamic <env> block is
-    // kept as text in the system field — so cache_control on the image is
-    // unaffected by env drift.
-    const userContent = out.messages[0].content as any[];
-    const sysBlocks = (Array.isArray(out.system) ? out.system : []) as any[];
-
-    const hasImage = userContent.some((b: any) => b.type === 'image');
-    expect(hasImage).toBe(true);
-
-    // <env> must show up as text somewhere outside the image — the dynamic
-    // tail lives in the system field as cheap text.
-    const allText = [...sysBlocks, ...userContent]
-      .filter((b: any) => b.type === 'text')
-      .map((b: any) => b.text)
-      .join('\n');
-    expect(allText).toContain('<env>');
-    expect(allText).toContain('Working directory: /tmp/parityproj');
-
-    // The static slab must NOT appear in any text block — it lives in the
-    // image now.
-    for (const b of [...sysBlocks, ...userContent]) {
-      if (b.type === 'text') expect(b.text).not.toContain('claude.md ground truth.');
-    }
+    const req = {
+      model: 'claude',
+      messages: [{ role: 'user', content: 'hi' }],
+      system: sys,
+    };
+    const input = new TextEncoder().encode(JSON.stringify(req));
+    const { body, info } = await transformRequest(input);
+    expect(info.compressed).toBe(false);
+    expect(info.env).toBeUndefined();
+    expect(body).toBe(input);
+    expect(JSON.parse(new TextDecoder().decode(body))).toEqual(req);
   });
 
   it('never adds its own cache_control marker (Task #21)', async () => {
@@ -1331,7 +1269,8 @@ describe('transform', () => {
       }),
     );
     const { body: outBytes, info } = await transformRequest(body);
-    expect(info.dynamicBlockCount).toBe(2);
+    expect(info.compressed).toBe(false);
+    expect(outBytes).toBe(body);
 
     const out = JSON.parse(new TextDecoder().decode(outBytes));
     const sysBlocks = (Array.isArray(out.system) ? out.system : []) as any[];
@@ -1340,7 +1279,7 @@ describe('transform', () => {
     expect(cached.length).toBe(0);
   });
 
-  it('moves caller cache_control from static system text to the last slab image', async () => {
+  it('preserves caller cache_control on its native system text block', async () => {
     const cacheControl = { type: 'ephemeral' as const, ttl: '1h' as const };
     const body = new TextEncoder().encode(
       JSON.stringify({
@@ -1357,20 +1296,21 @@ describe('transform', () => {
     );
 
     const { body: outBytes, info } = await transformRequest(body);
-    expect(info.compressed).toBe(true);
+    expect(info.compressed).toBe(false);
+    expect(outBytes).toBe(body);
 
     const rewritten = JSON.parse(new TextDecoder().decode(outBytes));
-    const rewrittenUserContent = rewritten.messages[0].content as any[];
-    const imageBlocks = rewrittenUserContent.filter((b: any) => b.type === 'image');
-    expect(imageBlocks.length).toBeGreaterThan(0);
-
-    const cachedBlocks = rewrittenUserContent.filter((b: any) => b.cache_control);
-    expect(cachedBlocks).toHaveLength(1);
-    expect(cachedBlocks[0]).toBe(imageBlocks[imageBlocks.length - 1]);
-    expect(cachedBlocks[0].cache_control).toEqual(cacheControl);
+    expect(rewritten.system).toEqual([
+      {
+        type: 'text',
+        text: 'Important cached system instruction. '.repeat(2500),
+        cache_control: cacheControl,
+      },
+    ]);
+    expect(rewritten.messages[0]).toEqual({ role: 'user', content: 'hi' });
   });
 
-  it('extracts env fields (cwd, platform, today, isGitRepo, branch) into info.env', async () => {
+  it('does not extract metadata from env-shaped native system content', async () => {
     const sys =
       'claude.md\n'.repeat(400) +
       "<env>\n" +
@@ -1388,14 +1328,10 @@ describe('transform', () => {
         system: sys,
       }),
     );
-    const { info } = await transformRequest(body);
-    expect(info.env).toBeDefined();
-    expect(info.env!.cwd).toBe('/Users/me/code/pxpipe');
-    expect(info.env!.isGitRepo).toBe(true);
-    expect(info.env!.platform).toBe('darwin');
-    expect(info.env!.osVersion).toBe('Darwin 25.0.0');
-    expect(info.env!.today).toBe('2026-05-18');
-    expect(info.env!.gitBranch).toBe('main');
+    const { body: out, info } = await transformRequest(body);
+    expect(info.compressed).toBe(false);
+    expect(info.env).toBeUndefined();
+    expect(out).toBe(body);
   });
 
   it('leaves info.env undefined when there is no <env> block', async () => {
@@ -1411,7 +1347,7 @@ describe('transform', () => {
     expect(info.env).toBeUndefined();
   });
 
-  it('computes stable systemSha8 across turns when the static slab is identical', async () => {
+  it('does not mint a project cache digest from unrecognized native system text', async () => {
     const staticSlab = 'claude.md\n'.repeat(400);
     const t1 =
       staticSlab + "<env>\nWorking directory: /a\nToday's date: 2026-05-18\n</env>";
@@ -1427,11 +1363,12 @@ describe('transform', () => {
       );
     const a = await transformRequest(mk(t1));
     const b = await transformRequest(mk(t2));
-    expect(a.info.systemSha8).toBeDefined();
-    expect(b.info.systemSha8).toBeDefined();
-    // Static slab is identical, dynamic block changed → systemSha8 must NOT
-    // change (the whole point is that the cached payload is stable).
-    expect(a.info.systemSha8).toBe(b.info.systemSha8);
+    expect(a.info.compressed).toBe(false);
+    expect(b.info.compressed).toBe(false);
+    expect(a.info.systemSha8).toBeUndefined();
+    expect(b.info.systemSha8).toBeUndefined();
+    expect(a.body).toEqual(mk(t1));
+    expect(b.body).toEqual(mk(t2));
   });
 
   it('computes firstUserSha8 from the first user message', async () => {
@@ -1451,10 +1388,7 @@ describe('transform', () => {
     expect(info.firstUserSha8).toMatch(/^[0-9a-f]{8}$/);
   });
 
-  it('renders identical input to byte-identical output (determinism = cacheability)', async () => {
-    // The whole token-savings story collapses if the renderer is non-
-    // deterministic, because identical system prompts on consecutive turns
-    // would produce different image bytes → 0% cache hit. Guard rail.
+  it('passes identical native system requests through byte-identically', async () => {
     const sys = 'x'.repeat(150000);
     const body = new TextEncoder().encode(
       JSON.stringify({
@@ -1473,19 +1407,13 @@ describe('transform', () => {
         }),
       ),
     );
-    // Compare image PNG bytes only — the request envelope wraps the same
-    // bytes but JSON ordering is deterministic too, so the whole body should
-    // match. Images live in the first user message.
-    const ua = (JSON.parse(new TextDecoder().decode(a.body)).messages[0].content ?? []) as any[];
-    const ub = (JSON.parse(new TextDecoder().decode(b.body)).messages[0].content ?? []) as any[];
-    const imgsA = ua.filter((x: any) => x.type === 'image').map((x: any) => x.source.data);
-    const imgsB = ub.filter((x: any) => x.type === 'image').map((x: any) => x.source.data);
-    expect(imgsA.length).toBeGreaterThan(0);
-    expect(imgsA).toEqual(imgsB);
-    expect(a.info.systemSha8).toBe(b.info.systemSha8);
+    expect(a.info.compressed).toBe(false);
+    expect(b.info.compressed).toBe(false);
+    expect(a.body).toBe(body);
+    expect(a.body).toEqual(b.body);
   });
 
-  it('flags unknown tag-shaped blocks in the static slab (canary for new dynamic tags)', async () => {
+  it('does not classify tag-shaped native system content', async () => {
     const sys =
       'claude.md\n'.repeat(400) +
       '<recent_files>\nfoo.ts\nbar.ts\n</recent_files>\n' +
@@ -1497,11 +1425,10 @@ describe('transform', () => {
         system: sys,
       }),
     );
-    const { info } = await transformRequest(body);
-    expect(info.unknownStaticTags).toBeDefined();
-    expect(info.unknownStaticTags).toContain('recent_files');
-    // <env> is known, must NOT appear here.
-    expect(info.unknownStaticTags).not.toContain('env');
+    const { body: out, info } = await transformRequest(body);
+    expect(info.compressed).toBe(false);
+    expect(info.unknownStaticTags).toBeUndefined();
+    expect(out).toBe(body);
   });
 
   it('does not flag <types> as an unknown tag (it lives in KNOWN_STATIC_TAGS)', async () => {
@@ -1534,7 +1461,7 @@ describe('transform', () => {
     expect(info.unknownStaticTags).toBeUndefined();
   });
 
-  it('passes through when the system prompt is only dynamic blocks', async () => {
+  it('passes through when native system content happens to contain only an env tag', async () => {
     const sys = '<env>\nWorking directory: /tmp\n</env>';
     const body = new TextEncoder().encode(
       JSON.stringify({
@@ -1544,9 +1471,9 @@ describe('transform', () => {
       }),
     );
     const { body: outBytes, info } = await transformRequest(body, { minCompressChars: 100 });
-    // Static slab is empty → below_min_chars → no-op pass-through.
     expect(info.compressed).toBe(false);
-    expect(info.reason).toMatch(/below_min_chars/);
+    expect(info.reason).toBeUndefined();
+    expect(outBytes).toBe(body);
     const out = JSON.parse(new TextDecoder().decode(outBytes));
     expect(out.system).toBe(sys);
   });
@@ -1572,12 +1499,7 @@ describe('transform', () => {
     expect(cached.length).toBe(0);
   });
 
-  it('compresses long <system-reminder> blocks in the first user message', async () => {
-    // 'a long policy note. ' = 20 chars. 1550× = 31k chars + reminder tags
-    // — past the 14k minReminderChars threshold AND past the multi-col
-    // 1-image break-even (~30.7k chars at n=2, 7×10 cell).
-    // 1550 × 20 = 31,000 chars → 310 visual rows → 1 image at n=2 (capacity 312 rows)
-    // image cost 7665 tokens < text cost 31000/4=7750 → profitable.
+  it('leaves generic long <system-reminder> blocks byte-exact', async () => {
     const reminder = '<system-reminder>\n' + 'a long policy note. '.repeat(1550) + '\n</system-reminder>';
     const body = new TextEncoder().encode(
       JSON.stringify({
@@ -1595,24 +1517,14 @@ describe('transform', () => {
       }),
     );
     const { body: outBytes, info } = await transformRequest(body);
-    expect(info.reminderImgs).toBeGreaterThanOrEqual(1);
-
+    expect(info.compressed).toBe(false);
+    expect(info.reminderImgs ?? 0).toBe(0);
+    expect(outBytes).toBe(body);
     const out = JSON.parse(new TextDecoder().decode(outBytes));
-    const content = out.messages[0].content as any[];
-    // Reminder text must NOT appear as a text block anymore.
-    for (const b of content) {
-      if (b.type === 'text') expect(b.text).not.toContain('<system-reminder>');
-    }
-    // But the user's actual prompt must still be there.
-    const userTexts = content.filter((b: any) => b.type === 'text').map((b: any) => b.text);
-    expect(userTexts.some((t: string) => t.includes('real user prompt'))).toBe(true);
-
-    // Reminder images carry NO cache_control (only the system+tools image
-    // does — Anthropic caps at 4 breakpoints).
-    const reminderImageBlocks = content.filter(
-      (b: any) => b.type === 'image' && !b.cache_control,
-    );
-    expect(reminderImageBlocks.length).toBeGreaterThanOrEqual(info.reminderImgs ?? 0);
+    expect(out.messages[0].content).toEqual([
+      { type: 'text', text: 'real user prompt' },
+      { type: 'text', text: reminder },
+    ]);
   });
 
   it('leaves short <system-reminder> blocks alone (below minReminderChars)', async () => {
@@ -1713,23 +1625,25 @@ describe('transform', () => {
   // capture & inspect the request body.
 
   it('populates droppedCodepointsTop when drops occur, sorted by count', async () => {
-    // System slab forces compression. The slab contains drops for two distinct
-    // supplementary-plane codepoints at different rates so we can verify the
-    // sort order.
+    // Tool-result compression remains provenance-safe. Put drops at the front
+    // so they remain visible even when the page budget truncates the tail.
     const cpA = String.fromCodePoint(0x1f600); // 😀
     const cpB = String.fromCodePoint(0x1f604); // 😄
     const cpC = String.fromCodePoint(0x1f60a); // 😊
-    const sys =
-      'x'.repeat(150000) + // bulk to force compression
-      '\n' + cpA.repeat(10) +  // 10 drops of U+1F600
+    const result =
+      cpA.repeat(10) +  // 10 drops of U+1F600
       '\n' + cpB.repeat(3) +   // 3  drops of U+1F604
-      '\n' + cpC.repeat(1);    // 1  drop  of U+1F60A
+      '\n' + cpC.repeat(1) +   // 1  drop  of U+1F60A
+      '\n' + 'x'.repeat(40_000);
     const req = JSON.stringify({
       model: 'claude-3-5-sonnet',
-      messages: [{ role: 'user', content: 'hi' }],
-      system: sys,
+      messages: [{
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_drops', content: result }],
+      }],
+      system: 'native system text',
     });
-    const { info } = await transformRequest(new TextEncoder().encode(req));
+    const { info } = await transformRequest(new TextEncoder().encode(req), { charsPerToken: 2 });
     expect(info.compressed).toBe(true);
     expect(info.droppedChars).toBeGreaterThanOrEqual(14);
     expect(info.droppedCodepointsTop).toBeDefined();
@@ -1748,13 +1662,20 @@ describe('transform', () => {
   });
 
   it('omits droppedCodepointsTop entirely when no drops occur', async () => {
-    // Pure ASCII; nothing the practical-profile atlas wouldn't cover.
+    // Pure-ASCII compressed tool output has nothing for the atlas telemetry.
     const req = JSON.stringify({
       model: 'claude-3-5-sonnet',
-      messages: [{ role: 'user', content: 'hi' }],
-      system: 'x'.repeat(150000),
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_ascii',
+          content: 'x'.repeat(40_000),
+        }],
+      }],
+      system: 'native system text',
     });
-    const { info } = await transformRequest(new TextEncoder().encode(req));
+    const { info } = await transformRequest(new TextEncoder().encode(req), { charsPerToken: 2 });
     expect(info.compressed).toBe(true);
     expect(info.droppedChars ?? 0).toBe(0);
     expect(info.droppedCodepointsTop).toBeUndefined();
@@ -1763,18 +1684,22 @@ describe('transform', () => {
   it('caps droppedCodepointsTop at 20 entries', async () => {
     // 25 distinct supplementary-plane codepoints, each appearing N times so
     // we can verify the cap drops the smallest counts.
-    let payload = 'x'.repeat(150000) + '\n';
+    let payload = '';
     for (let i = 0; i < 25; i++) {
       // U+1F300..U+1F318 — 25 distinct codepoints, each occurring (25 - i) times
       // so U+1F300 occurs 25 times, U+1F318 occurs 1 time.
       payload += String.fromCodePoint(0x1f300 + i).repeat(25 - i);
     }
+    payload += '\n' + 'x'.repeat(40_000);
     const req = JSON.stringify({
       model: 'claude-3-5-sonnet',
-      messages: [{ role: 'user', content: 'hi' }],
-      system: payload,
+      messages: [{
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_many_drops', content: payload }],
+      }],
+      system: 'native system text',
     });
-    const { info } = await transformRequest(new TextEncoder().encode(req));
+    const { info } = await transformRequest(new TextEncoder().encode(req), { charsPerToken: 2 });
     expect(info.droppedCodepointsTop).toBeDefined();
     const top = info.droppedCodepointsTop!;
     expect(Object.keys(top).length).toBe(20);
@@ -1875,7 +1800,7 @@ describe('transform', () => {
   // unlocks the production-shape slab while preserving the prime-directive
   // safety (no net-loss compressions on shapes we've actually observed).
 
-  it('transformRequest: production-shape 161k slab compresses without an explicit cpt override', async () => {
+  it('transformRequest: production-shape native system slabs stay native', async () => {
     // Build a dense ~161k-char slab matching the production passthrough event
     // (orig_chars=161101). 60-100 char lines, modest blank density —
     // representative of system + tool-doc slab shape under multi-col=2.
@@ -1895,12 +1820,10 @@ describe('transform', () => {
     });
     const bytes = new TextEncoder().encode(req);
 
-    // No host-supplied cpt: built-in SLAB_CHARS_PER_TOKEN flips this to ACCEPT
-    // at multi-col=2 (production default). This is the regression guard for
-    // the 2026-05-20 zero-compression production bug.
     const out = await transformRequest(bytes, { multiCol: 2 });
-    expect(out.info.compressed).toBe(true);
-    expect(out.info.imageCount ?? 0).toBeGreaterThan(0);
+    expect(out.info.compressed).toBe(false);
+    expect(out.info.imageCount ?? 0).toBe(0);
+    expect(out.body).toBe(bytes);
   });
 
   it('isCompressionProfitable: 7x10 atlas makes a 161k production-shape slab profitable at cpt=2', () => {
@@ -2018,8 +1941,7 @@ describe('transform', () => {
     expect(Array.isArray(tr!.content)).toBe(true);
   });
 
-  it('break-even gate: 25000-char reminder images (above threshold and profitable)', async () => {
-    // With charsPerToken=2 (dense code/log), profitable: textCost=12500 vs imgCost=2*3484=6968.
+  it('break-even gate never authorizes generic reminder imaging', async () => {
     const reminder = '<system-reminder>' + 'x'.repeat(25000) + '</system-reminder>';
     const req = JSON.stringify({
       model: 'claude-3-5-sonnet',
@@ -2028,22 +1950,24 @@ describe('transform', () => {
       ],
       system: 'x'.repeat(150000),
     });
-    const { info } = await transformRequest(new TextEncoder().encode(req), { charsPerToken: 2 });
-    expect(info.compressed).toBe(true);
-    expect((info.reminderImgs ?? 0)).toBeGreaterThan(0);
+    const input = new TextEncoder().encode(req);
+    const { body, info } = await transformRequest(input, { charsPerToken: 2 });
+    expect(info.compressed).toBe(false);
+    expect(info.reminderImgs ?? 0).toBe(0);
+    expect(body).toBe(input);
   });
 
-  it('break-even gate: passthroughReasons omitted when no passthrough happened', async () => {
-    // 40k slab, no per-block reminders or tool_results. Only the static slab
-    // gets imaged; nothing's gated by the per-block check.
+  it('native-only passthrough does not report a compression-gate reason', async () => {
     const req = JSON.stringify({
       model: 'claude-3-5-sonnet',
       messages: [{ role: 'user', content: 'hi' }],
       system: 'x'.repeat(150000),
     });
-    const { info } = await transformRequest(new TextEncoder().encode(req));
-    expect(info.compressed).toBe(true);
+    const input = new TextEncoder().encode(req);
+    const { body, info } = await transformRequest(input);
+    expect(info.compressed).toBe(false);
     expect(info.passthroughReasons).toBeUndefined();
+    expect(body).toBe(input);
   });
 
   describe('outgoingTextChars walker (denominator honesty)', () => {

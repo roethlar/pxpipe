@@ -18,9 +18,23 @@
  * Run just this file:  pnpm vitest run tests/cache-stability-e2e.test.ts
  */
 import { describe, expect, it } from 'vitest';
+import {
+  makeProjectGuidanceBoundary,
+  projectGuidanceBoundaryRef,
+} from '../src/core/anthropic-context.js';
 import { createProxy } from '../src/core/proxy.js';
 import { countCacheControlMarkers } from '../src/core/measurement.js';
 import { HISTORY_SYNTHETIC_INTRO } from '../src/core/history.js';
+import {
+  PROJECT_GUIDANCE_MANIFEST_TAG,
+  sha8,
+  type TransformInfo,
+} from '../src/core/transform.js';
+import type { ContentBlock, MessagesRequest, TextBlock } from '../src/core/types.js';
+import {
+  DIRECT_PROJECT_GUIDANCE,
+  makeCapturedRequest,
+} from './fixtures/anthropic-context.js';
 
 // ---------------------------------------------------------------------------
 // Fake upstream — records every outbound MAIN request body and answers with a
@@ -116,6 +130,14 @@ const FORCE = { charsPerToken: 1, minCompressChars: 1 } as const;
 const slab = (n: number) => '# CLAUDE.md\nYou are helpful.\n' + 'rule. '.repeat(Math.ceil(n / 6));
 const filler = (n: number) => 'x'.repeat(n);
 
+function largeProjectGuidance(marker = 'stable'): string {
+  const rows = Array.from(
+    { length: 3200 },
+    (_, index) => `${marker} governance row ${index}: preserve role and priority.`,
+  ).join('\n');
+  return `${DIRECT_PROJECT_GUIDANCE}\n\n${rows}`;
+}
+
 // ---- outbound-body inspectors -------------------------------------------
 /** Every Anthropic image block across all messages, in order, with its marker. */
 function anthropicImages(bodyText: string): { data: string; marked: boolean }[] {
@@ -132,19 +154,72 @@ function anthropicImages(bodyText: string): { data: string; marked: boolean }[] 
   return out;
 }
 
-/** The first-text-block banner of whichever message holds the marked image,
- *  or undefined if that message doesn't START with a text block (i.e. the
- *  marker is on an image-first message = the slab message, NOT the synthetic). */
-function markedBanner(bodyText: string): string | undefined {
-  const b = JSON.parse(bodyText);
-  for (const m of b.messages ?? []) {
-    if (!Array.isArray(m.content)) continue;
-    const marked = m.content.some(
-      (c: any) => c?.type === 'image' && c.cache_control !== undefined,
-    );
-    if (marked) return m.content[0]?.type === 'text' ? m.content[0].text : undefined;
-  }
-  return undefined;
+/** History images are identified by their synthetic banner, never by message index. */
+function anthropicHistoryImages(bodyText: string): { data: string; marked: boolean }[] {
+  const body = JSON.parse(bodyText) as MessagesRequest;
+  const synthetic = body.messages.find(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content[0]?.type === 'text' &&
+      message.content[0].text === HISTORY_SYNTHETIC_INTRO,
+  );
+  if (!synthetic || !Array.isArray(synthetic.content)) return [];
+  return synthetic.content
+    .filter((block) => block.type === 'image')
+    .map((block) => ({
+      data: block.source.data,
+      marked: block.cache_control !== undefined,
+    }));
+}
+
+interface ProjectContract {
+  ref: string;
+  images: { data: string; marked: boolean }[];
+  manifest: string;
+  boundary: string;
+}
+
+/** Read the role-binding contract using TransformInfo + the shared boundary parser. */
+function projectContract(bodyText: string, info: TransformInfo): ProjectContract {
+  expect(info.projectDisposition).toBe('imaged');
+  expect(info.projectRef).toMatch(/^pg_[0-9a-f]{32}$/);
+  expect(info.projectImageCount).toBeGreaterThan(0);
+  const ref = info.projectRef!;
+  const body = JSON.parse(bodyText) as MessagesRequest;
+  const carrier = body.messages.find(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some(
+        (block) => block.type === 'text' && projectGuidanceBoundaryRef(block.text) === ref,
+      ),
+  );
+  expect(carrier).toBeDefined();
+  expect(Array.isArray(carrier!.content)).toBe(true);
+  const content = carrier!.content as ContentBlock[];
+  const boundaryIndex = content.findIndex(
+    (block) => block.type === 'text' && projectGuidanceBoundaryRef(block.text) === ref,
+  );
+  expect(boundaryIndex).toBe(info.projectImageCount);
+  const projectBlocks = content.slice(0, boundaryIndex);
+  expect(projectBlocks.every((block) => block.type === 'image')).toBe(true);
+  const images = projectBlocks.map((block) => {
+    const image = block as Extract<ContentBlock, { type: 'image' }>;
+    return {
+      data: image.source.data,
+      marked: image.cache_control !== undefined,
+    };
+  });
+  const system = Array.isArray(body.system) ? body.system : [];
+  const manifest = system.find(
+    (block): block is TextBlock =>
+      block.type === 'text' && block.text.includes(`<${PROJECT_GUIDANCE_MANIFEST_TAG} version="1">`),
+  )?.text;
+  expect(manifest).toBeDefined();
+  expect(manifest).toContain(`ref: ${ref}`);
+  expect(manifest).toContain(`first ${images.length} image block(s)`);
+  const boundary = (content[boundaryIndex] as TextBlock).text;
+  expect(boundary).toBe(makeProjectGuidanceBoundary(ref));
+  return { ref, images, manifest: manifest!, boundary };
 }
 
 /** GPT chat-completions image data URLs across all messages, in order. */
@@ -197,6 +272,33 @@ function anthropicBody(opts: {
   });
 }
 
+function anthropicProjectBody(opts: {
+  model?: string;
+  projectGuidance?: string;
+  liveText?: string;
+  email?: string;
+  date?: string;
+  turns?: { role: 'user' | 'assistant'; text: string }[];
+} = {}): string {
+  const req = makeCapturedRequest({
+    projectGuidance: opts.projectGuidance ?? largeProjectGuidance(),
+    email: opts.email ?? 'owner@example.invalid',
+    date: opts.date ?? '2026-07-10',
+  });
+  req.model = opts.model ?? 'claude-fable-5';
+  req.max_tokens = 16;
+  const opening = req.messages[0]!.content as ContentBlock[];
+  opening[1] = {
+    type: 'text',
+    text: opts.liveText ?? 'Inspect the synthetic repository.',
+    cache_control: { type: 'ephemeral' },
+  };
+  for (const turn of opts.turns ?? []) {
+    req.messages.push({ role: turn.role, content: turn.text });
+  }
+  return JSON.stringify(req);
+}
+
 function turns(n: number, chars: number): { role: 'user' | 'assistant'; text: string }[] {
   return Array.from({ length: n }, (_, i) => ({
     role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
@@ -223,46 +325,90 @@ async function driveAnthropic(body: string, cap = fakeUpstream(), proxyOpts = {}
   return cap;
 }
 
+async function driveAnthropicWithInfo(body: string): Promise<{
+  cap: ReturnType<typeof fakeUpstream>;
+  info: TransformInfo;
+}> {
+  const cap = fakeUpstream();
+  let resolveInfo!: (info: TransformInfo) => void;
+  let rejectInfo!: (error: Error) => void;
+  const infoPromise = new Promise<TransformInfo>((resolve, reject) => {
+    resolveInfo = resolve;
+    rejectInfo = reject;
+  });
+  await driveAnthropic(body, cap, {
+    onRequest: (event: { info?: TransformInfo }) => {
+      if (event.info) resolveInfo(event.info);
+      else rejectInfo(new Error('Anthropic proxy event omitted TransformInfo'));
+    },
+  });
+  return { cap, info: await infoPromise };
+}
+
 // ===========================================================================
 describe('e2e cache alignment — Anthropic /v1/messages through the real proxy', () => {
-  it('never adds a cache_control marker; the one caller marker is conserved', async () => {
-    const body = anthropicBody({ slabChars: 80_000, turns: turns(4, 20) });
+  it('never adds a cache_control marker; every caller marker is conserved', async () => {
+    const body = anthropicProjectBody();
+    const original = JSON.parse(body) as MessagesRequest;
     const inMarks = countCacheControlMarkers(new TextEncoder().encode(body));
-    const cap = await driveAnthropic(body);
+    const { cap, info } = await driveAnthropicWithInfo(body);
     cap.restore();
 
     expect(cap.main).toHaveLength(1);
-    expect(inMarks).toBe(1); // sanity: caller sent exactly one
+    expect(inMarks).toBe(3); // two native-system markers + the live-prompt marker
     const outMarks = countCacheControlMarkers(new TextEncoder().encode(cap.main[0]!.body));
-    expect(outMarks).toBe(1); // conserved — not dropped, not duplicated
+    expect(outMarks).toBe(inMarks);
+    const forwarded = JSON.parse(cap.main[0]!.body) as MessagesRequest;
+    expect((forwarded.system as ContentBlock[]).slice(0, (original.system as ContentBlock[]).length))
+      .toEqual(original.system);
+    expect(projectContract(cap.main[0]!.body, info).images.every((image) => !image.marked)).toBe(true);
   });
 
-  it('relocates the surviving marker onto an IMAGE block in the forwarded body', async () => {
-    const cap = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: turns(4, 20) }));
+  it('keeps the caller-owned live marker on the original live block after project pages', async () => {
+    const input = anthropicProjectBody({ liveText: 'caller-owned live prompt' });
+    const { cap, info } = await driveAnthropicWithInfo(input);
     cap.restore();
 
-    const imgs = anthropicImages(cap.main[0]!.body);
-    expect(imgs.length).toBeGreaterThan(0);
-    const marked = imgs.filter((i) => i.marked);
-    expect(marked).toHaveLength(1); // the breakpoint sits on exactly one image
+    const contract = projectContract(cap.main[0]!.body, info);
+    const body = JSON.parse(cap.main[0]!.body) as MessagesRequest;
+    const carrier = body.messages.find(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some(
+          (block) => block.type === 'text' && projectGuidanceBoundaryRef(block.text) === contract.ref,
+        ),
+    )!;
+    const live = (carrier.content as ContentBlock[]).find(
+      (block): block is TextBlock => block.type === 'text' && block.text === 'caller-owned live prompt',
+    );
+    expect(live?.cache_control).toEqual({ type: 'ephemeral' });
+    expect(contract.images.every((image) => !image.marked)).toBe(true);
+    expect(countCacheControlMarkers(new TextEncoder().encode(cap.main[0]!.body))).toBe(
+      countCacheControlMarkers(new TextEncoder().encode(input)),
+    );
   });
 
-  it('CACHE-STABLE: the marked slab image is byte-identical as short tail turns are appended', async () => {
-    // Same big slab; only the (tiny, non-collapsing) tail grows. The cache
-    // breakpoint must point at byte-identical content both times → cache_read.
-    const base = turns(2, 20);
-    const cap1 = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: base }));
-    cap1.restore();
-    const cap2 = await driveAnthropic(
-      anthropicBody({ slabChars: 80_000, turns: [...base, ...turns(4, 20)] }),
-    );
-    cap2.restore();
+  it('CACHE-STABLE: project images/ref/manifest/prefix ignore live-prompt changes', async () => {
+    const project = largeProjectGuidance('same');
+    const run1 = await driveAnthropicWithInfo(anthropicProjectBody({
+      projectGuidance: project,
+      liveText: 'first live request',
+    }));
+    run1.cap.restore();
+    const run2 = await driveAnthropicWithInfo(anthropicProjectBody({
+      projectGuidance: project,
+      liveText: 'different live request with volatile environment observations',
+    }));
+    run2.cap.restore();
 
-    const marked1 = anthropicImages(cap1.main[0]!.body).find((i) => i.marked);
-    const marked2 = anthropicImages(cap2.main[0]!.body).find((i) => i.marked);
-    expect(marked1).toBeDefined();
-    expect(marked2).toBeDefined();
-    expect(marked2!.data).toBe(marked1!.data); // byte-identical cached prefix
+    const a = projectContract(run1.cap.main[0]!.body, run1.info);
+    const b = projectContract(run2.cap.main[0]!.body, run2.info);
+    expect(b.ref).toBe(a.ref);
+    expect(b.images).toEqual(a.images);
+    expect(b.manifest).toBe(a.manifest);
+    expect(b.boundary).toBe(a.boundary);
+    expect(run1.info.cachePrefixSha8).toMatch(/^[0-9a-f]{8}$/);
+    expect(run2.info.cachePrefixSha8).toBe(run1.info.cachePrefixSha8);
   });
 
   it('APPEND-ONLY: frozen history images stay byte-identical when growth advances the collapse window', async () => {
@@ -287,155 +433,119 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
     // Earlier pages must be a byte-identical prefix. (GPT's sealed sections are
     // stricter — see the GPT append-only test, which asserts the FULL prefix.)
     expect(b.slice(0, a.length - 1)).toEqual(a.slice(0, a.length - 1));
-    // No slab → relocateAnchorToHistoryImage never runs; input had 0 markers
+    // Native system context contributes no movable image anchor; input had 0 markers.
     // (plain-string system), so the proxy must not invent one.
     expect(countCacheControlMarkers(new TextEncoder().encode(cap1.main[0]!.body))).toBe(0);
   });
 
-  it('CARRY-OVER (#11): the marked history image is a frozen page, not the partial tail, across an advance', async () => {
-    // Slab present (so the anchor relocates onto a history image) + enough history
-    // to collapse AND advance the window. The marker must land on a byte-FROZEN page
-    // (the carry-over anchor), never the last partial page — else the cached prefix
-    // busts on every advance (#11). Before the fix the marker sat on the LAST image.
-    const cap1 = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: turns(80, 4000) }));
-    cap1.restore();
-    const cap2 = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: turns(200, 4000) }));
-    cap2.restore();
+  it('CARRY-OVER (#11): finds frozen history pages by banner after a protected project prefix', async () => {
+    const project = largeProjectGuidance('history-prefix');
+    const run1 = await driveAnthropicWithInfo(anthropicProjectBody({
+      projectGuidance: project,
+      turns: turns(80, 4000),
+    }));
+    run1.cap.restore();
+    const run2 = await driveAnthropicWithInfo(anthropicProjectBody({
+      projectGuidance: project,
+      turns: turns(200, 4000),
+    }));
+    run2.cap.restore();
 
-    const imgs1 = anthropicImages(cap1.main[0]!.body);
-    const imgs2 = anthropicImages(cap2.main[0]!.body);
-    const markedIdx1 = imgs1.findIndex((i) => i.marked);
-
-    // Conserved: exactly one marker, and it sits on an image.
-    expect(imgs1.filter((i) => i.marked)).toHaveLength(1);
-    expect(markedIdx1).toBeGreaterThanOrEqual(0);
-    // The advance is real (the window grew), so the byte-frozen check isn't vacuous.
+    const imgs1 = anthropicHistoryImages(run1.cap.main[0]!.body);
+    const imgs2 = anthropicHistoryImages(run2.cap.main[0]!.body);
+    expect(imgs1.length).toBeGreaterThan(1);
     expect(imgs2.length).toBeGreaterThan(imgs1.length);
-    // (1) NOT the last (partial, still-growing) page — that placement is the #11 bust.
-    expect(markedIdx1).toBeLessThan(imgs1.length - 1);
-    // (2) The marked page is byte-frozen: it reappears identically after the advance,
-    //     so Anthropic cache_reads the prefix instead of re-creating it.
-    expect(imgs2.some((i) => i.data === imgs1[markedIdx1]!.data)).toBe(true);
-  });
-
-  it('relocates the single marker onto the HISTORY image once history collapses', async () => {
-    // The trickiest cache move (relocateAnchorToHistoryImage), end-to-end: with a
-    // tiny tail the caller marker stays on the SLAB image; once history collapses
-    // the SAME single marker moves onto the history synthetic image, so one
-    // breakpoint caches slab+history as one stable segment.
-    const capSlab = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: turns(4, 20) }));
-    capSlab.restore();
-    const capHist = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: turns(120, 4000) }));
-    capHist.restore();
-
-    // Both: exactly one marked image (conserved, never duplicated).
-    expect(anthropicImages(capSlab.main[0]!.body).filter((i) => i.marked)).toHaveLength(1);
-    expect(anthropicImages(capHist.main[0]!.body).filter((i) => i.marked)).toHaveLength(1);
-    // No history → the marker sits on the SLAB image, which lives in messages[0]
-    // (an image-first message), NOT on a history synthetic.
-    const slabMsg0 = JSON.parse(capSlab.main[0]!.body).messages[0];
-    expect(
-      slabMsg0.content.some((b: any) => b?.type === 'image' && b.cache_control !== undefined),
-    ).toBe(true);
-    expect(markedBanner(capSlab.main[0]!.body)).toBeUndefined();
-    // History collapsed → marker relocated ONTO the history synthetic image.
-    expect(markedBanner(capHist.main[0]!.body)).toBe(HISTORY_SYNTHETIC_INTRO);
-  });
-
-  it('ENV SPLIT: a git-status change in `# Environment` never re-renders the slab image', async () => {
-    // Cross-session cache bust regression: Claude Code injects a `# Environment`
-    // markdown section (working dir, git status, model ID) into the system text
-    // with no XML wrapper. Baked into the slab PNG, a one-file edit flipped
-    // system_sha8 717f1fce → 5efaa4bb and re-created the whole prefix. The fix
-    // (stripMarkdownEnvSection) pulls it out BEFORE the static/dynamic split:
-    // slab bytes must be independent of git state, while the env text still
-    // reaches the model as plain system text after the anchor.
-    const env = (git: string) =>
-      `\n# Environment\nWorking directory: /repo\nPlatform: darwin\nGit status:\n${git}`;
-    const cap1 = await driveAnthropic(
-      anthropicBody({ slabChars: 80_000, sysSuffix: env('clean'), turns: turns(4, 20) }),
-    );
-    cap1.restore();
-    const cap2 = await driveAnthropic(
-      anthropicBody({
-        slabChars: 80_000,
-        sysSuffix: env('modified: src/pricing.ts'),
-        turns: turns(4, 20),
-      }),
-    );
-    cap2.restore();
-
-    // Tail turns identical + no collapse (4 turns < minCollapsePrefix) → every
-    // forwarded image is a slab image. ALL of them must be byte-identical across
-    // the two "sessions" — the env change may not reach the renderer at all.
-    const a = anthropicImages(cap1.main[0]!.body).map((i) => i.data);
-    const b = anthropicImages(cap2.main[0]!.body).map((i) => i.data);
-    expect(a.length).toBeGreaterThan(0);
-    expect(b).toEqual(a);
-
-    // Not dropped: the volatile section re-enters as trailing TEXT on the LAST
-    // user message (per-turn live tail), so the model still sees the current
-    // git state. It must NOT ride in system: system bytes sit BEFORE the slab
-    // anchor in Anthropic's prefix order (tools → system → messages), so any
-    // env change there cold-restarts the entire anchored prefix (48.8% of
-    // telemetry-era cold-create waste).
-    const sysText = (bodyText: string): string => {
-      const sys = JSON.parse(bodyText).system;
-      return Array.isArray(sys) ? sys.map((s: any) => s?.text ?? '').join('\n') : String(sys ?? '');
-    };
-    const lastUserText = (bodyText: string): string => {
-      const msgs = JSON.parse(bodyText).messages as Array<{ role: string; content: unknown }>;
-      const m = [...msgs].reverse().find((x) => x.role === 'user')!;
-      return Array.isArray(m.content)
-        ? m.content.map((c: any) => (c?.type === 'text' ? c.text : '')).join('\n')
-        : String(m.content ?? '');
-    };
-    expect(lastUserText(cap2.main[0]!.body)).toContain('modified: src/pricing.ts');
-    expect(lastUserText(cap1.main[0]!.body)).toContain('Git status:\nclean');
-    // And the section left both the imaged region AND system entirely — nothing
-    // upstream of the anchor may depend on git state. (Byte-equality above is
-    // the load-bearing check; this pins the mechanism.)
-    expect(lastUserText(cap2.main[0]!.body)).toContain('# Environment');
-    expect(sysText(cap2.main[0]!.body)).not.toContain('modified: src/pricing.ts');
-    expect(sysText(cap2.main[0]!.body)).not.toContain('# Environment');
-    // Regression (2026-07): the relocated block must be delimited as injected
-    // context, never blended into user prose — undelimited, it can BECOME the
-    // entire visible message on an empty/short user turn (observed live).
-    expect(lastUserText(cap2.main[0]!.body)).toMatch(
-      /<system-reminder>[\s\S]*relocated by pxpipe[\s\S]*# Environment[\s\S]*<\/system-reminder>/,
+    // The final page can still grow; every earlier frozen history page is stable.
+    expect(imgs2.slice(0, imgs1.length - 1)).toEqual(imgs1.slice(0, imgs1.length - 1));
+    expect(run1.info.historyImageSha).toBe(await sha8(imgs1.map((image) => image.data).join('')));
+    expect(run2.info.historyImageSha).toBe(await sha8(imgs2.map((image) => image.data).join('')));
+    expect(projectContract(run2.cap.main[0]!.body, run2.info).ref).toBe(
+      projectContract(run1.cap.main[0]!.body, run1.info).ref,
     );
   });
 
-  it('FIRST COLLAPSE (turn-2 rewrite): no frozen chunk yet → anchor stays on the SLAB image', async () => {
-    // With defaults (keepTail 4, minCollapsePrefix 10, freezeChunk 10) and a slab
-    // (protectedPrefix 1), 15 messages give collapse range [1..11) = exactly 10 =
-    // one freeze window → no fully-frozen chunk → carryOverImageOrdinal undefined.
-    // Before the fix, relocateAnchorToHistoryImage ran anyway and pinned the anchor
-    // to the newest STILL-GROWING history image — a volatile breakpoint that forced
-    // a one-time full-prefix rewrite (~53k tokens/session). The anchor must stay on
-    // the byte-stable slab image until a frozen chunk exists to pin to.
-    const cap1 = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: turns(15, 4000) }));
-    cap1.restore();
-    // +2 tail turns: collapseChunk snapping keeps the boundary at 11, so the
-    // history image is unchanged — the cacheable prefix must be byte-stable.
-    const cap2 = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: turns(17, 4000) }));
-    cap2.restore();
+  it('history collapse preserves caller marker ownership and keeps history pages unmarked', async () => {
+    const input = anthropicProjectBody({ turns: turns(120, 4000) });
+    const run = await driveAnthropicWithInfo(input);
+    run.cap.restore();
 
-    for (const cap of [cap1, cap2]) {
-      const body = cap.main[0]!.body;
-      // Guard against a vacuous pass: collapse really happened.
-      expect(body).toContain(HISTORY_SYNTHETIC_INTRO.slice(0, 40));
-      // Marker conserved…
-      expect(anthropicImages(body).filter((i) => i.marked)).toHaveLength(1);
-      // …and NOT on the history synthetic: the marked message is image-first
-      // (the slab in messages[0]), not the text-banner history message.
-      expect(markedBanner(body)).toBeUndefined();
+    expect(run.info.historyReason).toBe('collapsed');
+    const historyImages = anthropicHistoryImages(run.cap.main[0]!.body);
+    expect(historyImages.length).toBeGreaterThan(0);
+    expect(historyImages.every((image) => !image.marked)).toBe(true);
+    expect(projectContract(run.cap.main[0]!.body, run.info).images.every((image) => !image.marked)).toBe(true);
+    expect(countCacheControlMarkers(new TextEncoder().encode(run.cap.main[0]!.body))).toBe(
+      countCacheControlMarkers(new TextEncoder().encode(input)),
+    );
+    const forwarded = JSON.parse(run.cap.main[0]!.body) as MessagesRequest;
+    const syntheticIndex = forwarded.messages.findIndex(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content[0]?.type === 'text' &&
+        message.content[0].text === HISTORY_SYNTHETIC_INTRO,
+    );
+    expect(syntheticIndex).toBeGreaterThan(1);
+  });
+
+  it('RUNTIME SPLIT: volatile reminder siblings never re-render project pages or prefix', async () => {
+    const project = largeProjectGuidance('runtime-stable');
+    const run1 = await driveAnthropicWithInfo(anthropicProjectBody({
+      projectGuidance: project,
+      email: 'clean@example.invalid',
+      date: '2026-07-10',
+    }));
+    run1.cap.restore();
+    const run2 = await driveAnthropicWithInfo(anthropicProjectBody({
+      projectGuidance: project,
+      email: 'modified@example.invalid',
+      date: '2026-07-11',
+    }));
+    run2.cap.restore();
+
+    const a = projectContract(run1.cap.main[0]!.body, run1.info);
+    const b = projectContract(run2.cap.main[0]!.body, run2.info);
+    expect(b.ref).toBe(a.ref);
+    expect(b.images).toEqual(a.images);
+    expect(b.manifest).toBe(a.manifest);
+    expect(run2.info.cachePrefixSha8).toBe(run1.info.cachePrefixSha8);
+    const forwarded = JSON.parse(run2.cap.main[0]!.body) as MessagesRequest;
+    const reminderText = forwarded.messages
+      .filter((message) => Array.isArray(message.content))
+      .flatMap((message) => message.content as ContentBlock[])
+      .filter((block): block is TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .find((text) => text.includes('# currentDate'));
+    expect(reminderText).toContain('# userEmail\nmodified@example.invalid');
+    expect(reminderText).toContain("# currentDate\nToday's date is 2026-07-11.");
+  });
+
+  it('FIRST COLLAPSE: protected project contract/prefix stay stable before a frozen history chunk', async () => {
+    const project = largeProjectGuidance('first-collapse');
+    const body1 = anthropicProjectBody({ projectGuidance: project, turns: turns(15, 4000) });
+    const run1 = await driveAnthropicWithInfo(body1);
+    run1.cap.restore();
+    const body2 = anthropicProjectBody({ projectGuidance: project, turns: turns(17, 4000) });
+    const run2 = await driveAnthropicWithInfo(body2);
+    run2.cap.restore();
+
+    const contract1 = projectContract(run1.cap.main[0]!.body, run1.info);
+    const contract2 = projectContract(run2.cap.main[0]!.body, run2.info);
+    for (const [run, input, contract] of [
+      [run1, body1, contract1],
+      [run2, body2, contract2],
+    ] as const) {
+      expect(run.info.historyReason).toBe('collapsed');
+      expect(anthropicHistoryImages(run.cap.main[0]!.body).length).toBeGreaterThan(0);
+      expect(anthropicHistoryImages(run.cap.main[0]!.body).every((image) => !image.marked)).toBe(true);
+      expect(contract.images.every((image) => !image.marked)).toBe(true);
+      expect(countCacheControlMarkers(new TextEncoder().encode(run.cap.main[0]!.body))).toBe(
+        countCacheControlMarkers(new TextEncoder().encode(input)),
+      );
     }
-    // The marked image is byte-identical across the advance — the whole point:
-    // the breakpoint sits on frozen bytes, so the prefix cache_reads, not re-creates.
-    const m1 = anthropicImages(cap1.main[0]!.body).find((i) => i.marked)!;
-    const m2 = anthropicImages(cap2.main[0]!.body).find((i) => i.marked)!;
-    expect(m2.data).toBe(m1.data);
+    expect(contract2.ref).toBe(contract1.ref);
+    expect(contract2.images).toEqual(contract1.images);
+    expect(contract2.manifest).toBe(contract1.manifest);
+    expect(run2.info.cachePrefixSha8).toBe(run1.info.cachePrefixSha8);
   });
 
   it('GATE: an out-of-scope model is forwarded byte-for-byte untouched (no images)', async () => {
@@ -467,11 +577,12 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
   });
 
   it('produces valid JSON with well-formed base64 PNGs on EVERY page', async () => {
-    const cap = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: turns(4, 20) }));
+    const { cap, info } = await driveAnthropicWithInfo(anthropicProjectBody());
     cap.restore();
     const parsed = JSON.parse(cap.main[0]!.body);
     expect(Array.isArray(parsed.messages)).toBe(true);
-    const imgs = anthropicImages(cap.main[0]!.body);
+    const contract = projectContract(cap.main[0]!.body, info);
+    const imgs = contract.images;
     expect(imgs.length).toBeGreaterThan(0);
     // EVERY page must be a real PNG (base64 PNG magic = 'iVBORw0KGgo'), not just
     // the first — a corrupted page 2+ would otherwise slip through.

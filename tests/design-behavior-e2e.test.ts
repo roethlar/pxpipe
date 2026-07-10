@@ -5,7 +5,7 @@
  * (savings-honesty / savings-math), this asserts the three things pxpipe is
  * actually FOR behave per design, end to end:
  *
- *   1. SYSTEM PROMPT  — the bulky system/slab is imaged out of the request
+ *   1. SYSTEM CONTEXT — native system content stays in its API role
  *                       (no longer billed as text), live content preserved.
  *   2. HISTORY COLLAPSE — old closed turns become images; recent turns stay as
  *                         legible text (the working set the model still acts on).
@@ -87,8 +87,8 @@ const imageCount = (out: any, key: 'messages' | 'input' = 'messages'): number =>
 };
 
 // ===========================================================================
-describe('design: SYSTEM PROMPT imaging (Anthropic)', () => {
-  it('moves the bulky system slab into images and drops it from the request text', async () => {
+describe('design: native SYSTEM context (Anthropic)', () => {
+  it('keeps bulky native system context in its API role', async () => {
     const out = await drive(
       '/v1/messages',
       JSON.stringify({
@@ -99,12 +99,9 @@ describe('design: SYSTEM PROMPT imaging (Anthropic)', () => {
       }),
     );
     const hay = JSON.stringify(out);
-    // The slab is no longer billed as text anywhere…
-    expect(hay).not.toContain('SLAB_SECRET_');
-    // …it became image(s), which land in the first user message.
-    expect(imageCount(out)).toBeGreaterThan(0);
-    // The system field no longer carries the slab (Anthropic forbids images there).
-    expect(JSON.stringify(out.system ?? '')).not.toContain('SLAB_SECRET_');
+    expect(hay).toContain('SLAB_SECRET_');
+    expect(imageCount(out)).toBe(0);
+    expect(JSON.stringify(out.system ?? '')).toContain('SLAB_SECRET_');
     // The live turn is preserved verbatim and legible.
     expect(hay).toContain('LIVE_QUESTION here');
   });
@@ -181,7 +178,7 @@ describe('design: TOOLS IN RECENT TURNS (Anthropic)', () => {
 
 // ===========================================================================
 describe('design: RECENT REQUEST stays legible (GPT)', () => {
-  it('images the system slab but keeps the most-recent user request as readable text', async () => {
+  it('images old history but keeps native system context and the latest user request readable', async () => {
     const turns = Array.from({ length: 12 }, (_, i) => ({
       role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
       content: `gturn ${i} ${big(2000)}`,

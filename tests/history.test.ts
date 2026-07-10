@@ -23,7 +23,9 @@ import {
   messagesToHistoryText,
   collapseHistory,
   HISTORY_DEFAULTS,
+  HISTORY_SYNTHETIC_INTRO,
 } from '../src/core/history.js';
+import { makeProjectGuidanceBoundary } from '../src/core/anthropic-context.js';
 import { transformRequest, isCompressionProfitable } from '../src/core/transform.js';
 import { DENSE_CONTENT_CHARS_PER_IMAGE } from '../src/core/render.js';
 import type { Message } from '../src/core/types.js';
@@ -34,6 +36,21 @@ function asst(content: Message['content']): Message {
 }
 function usr(content: Message['content']): Message {
   return { role: 'user', content };
+}
+function sys(content: Message['content']): Message {
+  return { role: 'system', content };
+}
+
+function syntheticHistoryMessage(messages: Message[]): Message {
+  const found = messages.find(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some(
+        (block) => block.type === 'text' && block.text === HISTORY_SYNTHETIC_INTRO,
+      ),
+  );
+  expect(found).toBeDefined();
+  return found!;
 }
 
 describe('findClosedPrefixBoundary', () => {
@@ -279,6 +296,12 @@ describe('messagesToHistoryText', () => {
     // Only one role header should appear (empty user turns are skipped).
     expect(out.match(/^<assistant /gm)?.length).toBe(1);
   });
+
+  it('refuses to relabel a literal system role as user', () => {
+    expect(() => messagesToHistoryText([sys('native runtime attachment')], 1)).toThrow(
+      'Cannot serialize a system-role message into user-role history',
+    );
+  });
 });
 
 describe('collapseHistory', () => {
@@ -291,6 +314,217 @@ describe('collapseHistory', () => {
     expect(messages).toEqual([]);
     expect(info.reason).toBe('no_history');
     expect(info.collapsedTurns).toBe(0);
+  });
+
+  it('protects the leading shared project boundary and contiguous system attachments', async () => {
+    const projectImage = {
+      type: 'image' as const,
+      source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'UFJPTEVDVA==' },
+    };
+    const boundary = {
+      type: 'text' as const,
+      text: makeProjectGuidanceBoundary('pg_history_fixture'),
+    };
+    const hostReminder = {
+      type: 'text' as const,
+      text: '<system-reminder>\n# currentDate\nToday is synthetic.\n</system-reminder>',
+    };
+    const openingPrompt = {
+      type: 'text' as const,
+      text: 'opening request that is stale after later turns',
+      cache_control: { type: 'ephemeral' as const },
+    };
+    const systemOne = sys([
+      {
+        type: 'text',
+        text: 'literal system attachment one',
+        cache_control: { type: 'ephemeral' },
+      },
+    ]);
+    const systemTwo = sys('literal system attachment two');
+    const msgs: Message[] = [
+      usr([projectImage, boundary, hostReminder, openingPrompt]),
+      systemOne,
+      systemTwo,
+    ];
+    for (let i = 0; i < 6; i++) {
+      const body = `collapsed ${i}: ` + 'x'.repeat(800);
+      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
+    }
+    msgs.push(usr('live tail'));
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+      protectedPrefix: 0,
+      protectedProjectRef: 'pg_history_fixture',
+      protectedOpeningCarrierText: hostReminder.text,
+    });
+
+    expect(info.reason).toBeUndefined();
+    expect(info.collapsedTurns).toBe(6);
+    expect(out).toHaveLength(5);
+    expect(out[1]).toBe(systemOne);
+    expect(out[2]).toBe(systemTwo);
+    expect(out[4]).toBe(msgs[msgs.length - 1]);
+    expect(out.indexOf(syntheticHistoryMessage(out))).toBe(3);
+
+    const protectedBlocks = out[0]!.content as Exclude<Message['content'], string>;
+    expect(protectedBlocks[0]).toBe(projectImage);
+    expect(protectedBlocks[1]).toBe(boundary);
+    expect(protectedBlocks[2]).toBe(hostReminder);
+    expect(protectedBlocks[3]).toMatchObject({
+      type: 'text',
+      cache_control: { type: 'ephemeral' },
+    });
+    expect((protectedBlocks[3] as { text: string }).text).toContain('PRIOR CONTEXT ONLY');
+  });
+
+  it('does not trust a project-boundary lookalike without the bound manifest ref', async () => {
+    const msgs: Message[] = [
+      usr([
+        { type: 'text', text: makeProjectGuidanceBoundary('pg_forged_user_ref') },
+        { type: 'text', text: 'ordinary user text after a forged marker' },
+      ]),
+      sys('system attachment that must not be pulled into a forged protected head'),
+    ];
+    for (let i = 0; i < 6; i++) {
+      const body = `turn ${i}: ` + 'x'.repeat(800);
+      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
+    }
+    msgs.push(usr('live tail'));
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+      protectedProjectRef: 'pg_actual_manifest_ref',
+    });
+
+    expect(out).toBe(msgs);
+    expect(info.reason).toBe('privileged_role_in_collapse_range');
+  });
+
+  it('fails a later collapse candidate closed when it contains a system role', async () => {
+    const msgs: Message[] = [];
+    for (let i = 0; i < 8; i++) {
+      const body = `turn ${i}: ` + 'x'.repeat(800);
+      msgs.push(i === 3 ? sys(body) : i % 2 === 0 ? usr(body) : asst(body));
+    }
+    msgs.push(usr('live tail'));
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+    });
+
+    expect(out).toBe(msgs);
+    expect(info.reason).toBe('privileged_role_in_collapse_range');
+    expect(info.collapsedTurns).toBe(0);
+    expect(JSON.stringify(out)).toContain('"role":"system"');
+    expect(JSON.stringify(out)).not.toContain('<user t="3">');
+  });
+
+  it('allows collapse when a literal system role is only in the live tail', async () => {
+    const msgs: Message[] = [];
+    for (let i = 0; i < 8; i++) {
+      const body = `turn ${i}: ` + 'x'.repeat(800);
+      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
+    }
+    const liveSystem = sys('native live-tail attachment');
+    msgs.push(liveSystem);
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+    });
+
+    expect(info.reason).toBeUndefined();
+    expect(out[out.length - 1]).toBe(liveSystem);
+    expect(syntheticHistoryMessage(out).role).toBe('user');
+  });
+
+  it('keeps an unrecognized opening reminder and contiguous system attachment native', async () => {
+    const reminder = '<system-reminder>unknown host context shape</system-reminder>';
+    const systemAttachment = sys('literal system attachment');
+    const msgs: Message[] = [
+      usr([
+        { type: 'text', text: reminder },
+        { type: 'text', text: 'stale opening task' },
+      ]),
+      systemAttachment,
+    ];
+    for (let i = 0; i < 12; i++) {
+      const body = `turn ${i}: ` + 'x'.repeat(800);
+      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
+    }
+    msgs.push(usr('live tail'));
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+      protectedOpeningCarrierText: reminder,
+    });
+
+    expect(info.reason).toBeUndefined();
+    expect(out[1]).toBe(systemAttachment);
+    const opening = out[0]!.content as ContentBlock[];
+    expect(opening[0]).toEqual({ type: 'text', text: reminder });
+    expect((opening[1] as TextBlock).text).toContain('PRIOR CONTEXT ONLY');
+    expect(out.indexOf(syntheticHistoryMessage(out))).toBe(2);
+  });
+
+  it.each([
+    ['complete', '<system-reminder>later unknown context</system-reminder>'],
+    ['missing closer', '<system-reminder>later malformed context'],
+    ['trailing bytes', '<system-reminder>later context</system-reminder> trailing'],
+  ])('fails history closed when a %s reminder is inside the collapse range', async (_shape, reminder) => {
+    const msgs: Message[] = [];
+    for (let i = 0; i < 12; i++) {
+      const content: Message['content'] = i === 4
+        ? [{ type: 'text', text: reminder }]
+        : `turn ${i}: ${'x'.repeat(800)}`;
+      msgs.push(i % 2 === 0 ? usr(content) : asst(content));
+    }
+    msgs.push(usr('live tail'));
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+    });
+
+    expect(out).toBe(msgs);
+    expect(info.reason).toBe('context_reminder_in_collapse_range');
+    expect(JSON.stringify(out)).toContain(reminder);
+  });
+
+  it('restores the original history bucket when rendering throws', async () => {
+    const msgs: Message[] = [];
+    for (let i = 0; i < 12; i++) {
+      const body = `turn ${i}: ` + 'x'.repeat(800);
+      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
+    }
+    msgs.push(usr('live tail'));
+
+    const { messages: out, info } = await collapseHistory(msgs, () => true, {
+      keepTail: 1,
+      minCollapsePrefix: 5,
+      collapseChunk: 0,
+      renderPages: async () => {
+        throw new Error('synthetic renderer failure');
+      },
+    });
+
+    expect(out).toBe(msgs);
+    expect(info.reason).toBe('render_error');
+    expect(info.collapsedImages).toBe(0);
+    expect(info.collapsedPngs).toEqual([]);
+    expect(info.collapsedImageBytes).toBe(0);
   });
 
   it('bails with reason=prefix_too_short when the closed prefix < minCollapsePrefix', async () => {
@@ -588,20 +822,15 @@ describe('transformRequest history compression (always-on)', () => {
     expect(Array.isArray(reparsed.messages)).toBe(true);
   });
 
-  it('collapses 10 closed turns after the protected slab message (keepTail=4)', async () => {
-    // 15 turns total. The big system slab is imaged into the FIRST user
-    // message, which is then protected from collapse (protectedPrefix=1).
-    // Default keepTail=4 + minPrefix=10 means 10 turns collapse into 1
-    // synthetic user, placed AFTER the slab message: slab + synthetic + 4 live
-    // = 6 total. Per-turn body 3500 chars puts the fixture comfortably above
-    // the row-aware profitability gate.
+  it('collapses 10 closed turns while leaving native system context untouched (keepTail=4)', async () => {
+    // 15 turns total. Native system context is no longer converted into a
+    // slab-bearing user message, so history is the only image bucket here.
     const msgs: Message[] = [];
     for (let i = 0; i < 15; i++) {
       const body = `turn ${i}: ` + bigPlain(3500);
       msgs.push(i % 2 === 0 ? usr(body) : asst(body));
     }
-    // Marked system (as real Claude Code sends) so the cache_control anchor
-    // relocates onto the slab image — lets us assert the marker survives.
+    // The caller-owned system marker remains exactly where the caller put it.
     const markedBody = new TextEncoder().encode(
       JSON.stringify({
         model: 'claude-3-5-sonnet',
@@ -614,30 +843,19 @@ describe('transformRequest history compression (always-on)', () => {
     expect(info.collapsedChars).toBeGreaterThan(0);
     expect(info.collapsedImages).toBeGreaterThanOrEqual(1);
     expect(info.historyReason).toBe('collapsed');
-    expect(info.imageCount).toBeGreaterThanOrEqual(1 + (info.collapsedImages ?? 0));
+    expect(info.imageCount).toBe(info.collapsedImages);
 
     const reparsed = JSON.parse(new TextDecoder().decode(body));
-    expect(reparsed.messages.length).toBe(6); // slab + 1 synthetic + 4 live tail
+    expect(reparsed.messages.length).toBe(6); // 1 synthetic + 5 live-tail turns
+    expect(reparsed.system).toEqual([
+      { type: 'text', text: bigPlain(80_000), cache_control: { type: 'ephemeral' } },
+    ]);
 
-    // REGRESSION (slab survives collapse): messages[0] is the slab-bearing
-    // first user message, NOT the synthetic history. It must still carry a real
-    // image (the system prompt + tool docs) — if collapse had swept it in, the
-    // slab would be reduced to an `[image]` placeholder.
-    const slabMsg = reparsed.messages[0];
-    expect(slabMsg.role).toBe('user');
-    const slabImgs = slabMsg.content.filter((b: { type: string }) => b.type === 'image');
-    expect(slabImgs.length).toBeGreaterThanOrEqual(1);
-    // FIRST collapse: the range [1..11) fits in one freeze window, so no
-    // byte-frozen carry-over chunk exists yet. The anchor stays on the
-    // byte-stable slab image — relocating onto the still-growing history image
-    // would pin the breakpoint to volatile bytes and force the one-time ~53k
-    // full-prefix rewrite (see 'FIRST COLLAPSE' e2e test).
-    expect(slabImgs.some((b: { cache_control?: unknown }) => b.cache_control !== undefined)).toBe(true);
-
-    // The synthetic history image is at messages[1], AFTER the slab anchor,
-    // and carries no relocated marker on a first collapse.
-    expect(reparsed.messages[1].role).toBe('user');
-    const content = reparsed.messages[1].content;
+    // Locate the synthetic history by its exported marker: role-bound system
+    // attachments can make its message index greater than one.
+    const historyMessage = syntheticHistoryMessage(reparsed.messages as Message[]);
+    expect(historyMessage.role).toBe('user');
+    const content = historyMessage.content;
     expect(Array.isArray(content)).toBe(true);
     expect(content[0]).toMatchObject({ type: 'text' });
     expect((content[0] as { text: string }).text).toContain('attribute every turn strictly by its tag');
@@ -734,28 +952,15 @@ describe('transformRequest history compression (always-on)', () => {
     expect(explicit20.info.collapsedTurns).toBe(10);
   });
 
-  it('relocates the sole cache anchor onto the byte-frozen carry-over history image (one stable prefix, no added marker)', async () => {
-    // Why: the history image sits AFTER the slab in prefix order. Anchoring the
-    // single breakpoint on it caches slab + history as ONE stable segment
-    // (created once, then read). Left unanchored, the history image only caches
-    // when the caller's roaming downstream marker lands after it — otherwise the
-    // largest block re-creates at 1.25x every turn.
-    //
-    // Relocation requires a byte-frozen carry-over chunk to pin to (first-collapse
-    // fixtures keep the anchor on the slab — see the keepTail=4 test above). With
-    // defaults (protectedPrefix 1, collapseChunk 50, freezeChunk 10, keepTail 4),
-    // the cutoff SNAPS to the collapseChunk grid: rawCutoff = len - 4 must reach 50
-    // or it floors to the minCollapsePrefix clamp (11 → one window → no frozen
-    // chunk → no relocation). 56 messages give rawCutoff ≥ 50 → cutoff 50 →
-    // collapse range [1..50): windows ending at 11/21/31/41 are fully frozen, so
-    // carryOverEnd=41 and the chunk [41..50) is the still-growing tail.
+  it('never relocates a caller system marker onto history images', async () => {
+    // Native system content is not an image bucket. Even with frozen carry-over
+    // history pages, pxpipe must not move marker ownership across API roles.
     const msgs: Message[] = [];
     for (let i = 0; i < 56; i++) {
       const body = `turn ${i}: ` + bigPlain(3500);
       msgs.push(i % 2 === 0 ? usr(body) : asst(body));
     }
-    // Marked system array (as real Claude Code sends) gives pxpipe exactly one
-    // caller marker to relocate.
+    // Marked system array gives pxpipe exactly one caller-owned marker to preserve.
     const marked = new TextEncoder().encode(
       JSON.stringify({
         model: 'claude-3-5-sonnet',
@@ -764,29 +969,23 @@ describe('transformRequest history compression (always-on)', () => {
       }),
     );
     const { body, info } = await transformRequest(marked);
-    expect(info.collapsedTurns).toBe(49);
+    expect(info.collapsedTurns).toBe(50);
     expect(info.collapsedImages).toBeGreaterThanOrEqual(2);
     const reparsed = JSON.parse(new TextDecoder().decode(body));
 
-    // Slab images survive but no longer carry the anchor.
-    const slabImgs = reparsed.messages[0].content.filter((b: { type: string }) => b.type === 'image');
-    expect(slabImgs.length).toBeGreaterThanOrEqual(1);
-    for (const img of slabImgs) expect(img.cache_control).toBeUndefined();
+    expect(reparsed.system).toEqual([
+      { type: 'text', text: bigPlain(80_000), cache_control: { type: 'ephemeral' } },
+    ]);
 
-    // Exactly ONE history image carries the breakpoint, and it is NOT the last
-    // one: the last image belongs to the still-growing chunk whose bytes change
-    // on every window advance (#11 bust). The anchor pins the newest byte-frozen
-    // carry-over image instead.
-    const histImgs = reparsed.messages[1].content.filter((b: { type: string }) => b.type === 'image');
+    // History images never acquire a marker from native system context.
+    const historyMessage = syntheticHistoryMessage(reparsed.messages as Message[]);
+    const histImgs = (historyMessage.content as Array<{ type: string; cache_control?: unknown }>).filter(
+      (b) => b.type === 'image',
+    );
     expect(histImgs.length).toBeGreaterThanOrEqual(2);
-    const markedIdxs = histImgs
-      .map((img: { cache_control?: unknown }, i: number) => (img.cache_control !== undefined ? i : -1))
-      .filter((i: number) => i >= 0);
-    expect(markedIdxs).toHaveLength(1);
-    expect(markedIdxs[0]).toBeLessThan(histImgs.length - 1);
+    expect(histImgs.every((img) => img.cache_control === undefined)).toBe(true);
 
-    // Pure relocation: exactly one cache_control across the whole request — the
-    // caller sent one (on the system slab); pxpipe moved it, never added.
+    // Exactly one cache_control remains, still on the original native block.
     const all = [
       ...(Array.isArray(reparsed.system) ? reparsed.system : []),
       ...reparsed.messages.flatMap((m: { content?: unknown }) =>
@@ -1021,7 +1220,7 @@ describe('collapseHistory — opening-turn request quarantine (regression #14)',
 
     // (4) Synthetic history sits BETWEEN head and live; its recency pointer/outro
     //     points at the live text and never resurrects the opening request.
-    const synth = out[1]!;
+    const synth = syntheticHistoryMessage(out);
     const synthText = (synth.content as Array<Record<string, unknown>>).filter(
       (c) => c.type === 'text',
     ) as Array<{ text: string }>;
@@ -1033,16 +1232,11 @@ describe('collapseHistory — opening-turn request quarantine (regression #14)',
 });
 
 // ---------------------------------------------------------------------------
-// #7: the inverse trap of regression #14. When the opening turn is the ONLY
-// user-typed text in the session (later user turns are tool_results/reminders),
-// demoting it to a 300-char preview DESTROYS the task: the EC demo's 577-char
-// prompt lost its questions and its "Reply as:" output format (offset 531) —
-// they existed nowhere, in text or pixels. The recency pointer must fall
-// through to the demoted head and carry the typed text VERBATIM. This must NOT
-// weaken #14: when a later typed turn exists, it wins the scan and the opening
-// ask stays quarantined (asserted there).
+// Unknown reminder turns are provenance-ambiguous and must stay native. History
+// therefore fails this bucket closed; the opening task remains byte-exact rather
+// than depending on a synthetic recency pointer to recover it.
 // ---------------------------------------------------------------------------
-describe('collapseHistory — opening task carried verbatim from the demoted head (#7)', () => {
+describe('collapseHistory — unknown reminder turns fail closed with the task intact', () => {
   const TASK =
     'context/ has needle.txt plus filler-NNN.txt files. Using the Read tool on each file ' +
     'individually (do NOT use grep, bash, find, or any search tool): FIRST read needle.txt, ' +
@@ -1052,7 +1246,7 @@ describe('collapseHistory — opening task carried verbatim from the demoted hea
     'many lines contained "AUDIT-ZX9", and (3) their sum. ' +
     'Reply as: balance=<n>, count=<m>, final=<n+m>.';
 
-  it('falls through reminder-only turns to the head and keeps the trailing output format', async () => {
+  it('keeps the full opening task and trailing output format native', async () => {
     expect(TASK.length).toBeGreaterThan(300); // must exceed the preview cap to regress
 
     const msgs: Message[] = [
@@ -1081,28 +1275,9 @@ describe('collapseHistory — opening task carried verbatim from the demoted hea
       protectedPrefix: 1,
     });
 
-    expect(info.reason).toBe(undefined);
-    expect(out.length).toBe(3);
-
-    // Head still tombstoned (byte-stable anchor semantics unchanged).
-    const headText = (out[0]!.content as Array<Record<string, unknown>>).filter(
-      (c) => c.type === 'text',
-    ) as Array<{ text: string }>;
-    expect(headText[0]!.text).toContain('PRIOR CONTEXT ONLY');
-
-    // The pointer in the synthetic message carries the task VERBATIM — including
-    // everything past the 300-char preview cap: the questions and the format.
-    const synthText = (out[1]!.content as Array<Record<string, unknown>>).filter(
-      (c) => c.type === 'text',
-    ) as Array<{ text: string }>;
-    const pointer = synthText.find((t) => t.text.includes('Most recent collapsed user turn'));
-    expect(pointer).toBeDefined();
-    expect(pointer!.text).toContain('carried verbatim');
-    expect(pointer!.text).toContain('<user t="0">');
-    expect(pointer!.text).toContain('COUNT the lines that contain the exact token "AUDIT-ZX9"');
-    expect(pointer!.text).toContain('Reply as: balance=<n>, count=<m>, final=<n+m>.');
-    // Scaffolding never leaks into the carried text.
-    expect(pointer!.text).not.toContain('claudeMd noise');
+    expect(info.reason).toBe('context_reminder_in_collapse_range');
+    expect(out).toBe(msgs);
+    expect((out[0]!.content as ContentBlock[])[1]).toEqual({ type: 'text', text: TASK });
   });
 
   it('elides the middle, never the tail, when the typed task exceeds the verbatim cap', async () => {
@@ -1120,7 +1295,7 @@ describe('collapseHistory — opening task carried verbatim from the demoted hea
     }
     msgs.push(usr('LIVE: answer now.'));
 
-    const { messages: out } = await collapseHistory(msgs, isCompressionProfitable, {
+    const { messages: out, info } = await collapseHistory(msgs, isCompressionProfitable, {
       keepTail: 1,
       minCollapsePrefix: 5,
       cols: 100,
@@ -1128,12 +1303,8 @@ describe('collapseHistory — opening task carried verbatim from the demoted hea
       protectedPrefix: 1,
     });
 
-    const synthText = (out[1]!.content as Array<Record<string, unknown>>).filter(
-      (c) => c.type === 'text',
-    ) as Array<{ text: string }>;
-    const pointer = synthText.find((t) => t.text.includes('Most recent collapsed user turn'))!;
-    expect(pointer.text).toContain('middle elided');
-    expect(pointer.text).toContain('SETUP: '); // head kept
-    expect(pointer.text).toContain('Reply as: balance=<n>, count=<m>, final=<n+m>.'); // tail kept
+    expect(info.reason).toBe('context_reminder_in_collapse_range');
+    expect(out).toBe(msgs);
+    expect(out[0]!.content).toEqual([{ type: 'text', text: longTask }]);
   });
 });

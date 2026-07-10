@@ -109,7 +109,14 @@ describe('proxy usage extraction', () => {
       model: 'claude-fable-5',
       max_tokens: 1,
       system: 'System instruction. '.repeat(900),
-      messages: [{ role: 'user', content: 'hi' }],
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_opencode_fixture',
+          content: 'OpenCode tool output row. '.repeat(6000),
+        }],
+      }],
     });
 
     const res = await proxy(

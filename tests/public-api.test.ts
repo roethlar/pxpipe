@@ -260,7 +260,7 @@ describe('public library API', () => {
     expect(skipped.reason).toBe('unsupported_model');
     expect(skipped.body).toBe(unsupported);
 
-    const supported = enc.encode(JSON.stringify({
+    const supportedRequest = {
       model: 'claude-fable-5',
       system: 'Important system instruction. '.repeat(1200),
       tools: [{
@@ -268,13 +268,24 @@ describe('public library API', () => {
         description: 'Read a file from disk. '.repeat(200),
         input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
       }],
-      messages: [{ role: 'user', content: 'hello' }],
-    }));
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_public_api',
+          content: 'public wrapper tool output '.repeat(6000),
+        }],
+      }],
+    };
+    const supported = enc.encode(JSON.stringify(supportedRequest));
     const transformed = await transformAnthropicMessages({ body: supported, model: 'claude-fable-5' });
     expect(transformed.applied).toBe(true);
     expect(transformed.reason).toBe('applied');
     expect(transformed.info.compressedChars).toBeGreaterThan(0);
     expect(transformed.info.imageCount).toBeGreaterThan(0);
+    const supportedOut = JSON.parse(dec.decode(transformed.body)) as any;
+    expect(supportedOut.system).toBe(supportedRequest.system);
+    expect(supportedOut.tools).toEqual(supportedRequest.tools);
     // Task #21: pxpipe never adds its own cache_control markers.
     // The caller sent zero markers, so the rewritten body also has zero.
     expect(transformed.cache.ownsCacheControl).toBe(false);
