@@ -112,7 +112,7 @@ PXPIPE_SMOKE_ROOT="$HOME/Library/Caches/pxpipe-subscription-smoke"
 PXPIPE_INSTALLED_CLI="$HOME/Library/Application Support/pxpipe/current/bin/cli.js"
 PXPIPE_TEST_MODELS="claude-fable-5,gpt-5.6-sol,grok-4.5"
 mkdir -p "$PXPIPE_SMOKE_ROOT/tmp"
-test ! -e "$PXPIPE_SMOKE_ROOT/no-config.json"
+rm -f "$PXPIPE_SMOKE_ROOT/no-config.json"
 
 pxpipe_clean_env() {
   /usr/bin/env -i \
