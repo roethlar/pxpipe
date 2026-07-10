@@ -1,7 +1,7 @@
 # Local subscription-harness routing and smoke tests
 
-Status: **REVIEWED 2026-07-10 — code and live calls await separate owner
-approval**.
+Status: **IMPLEMENTED AND INDEPENDENTLY ACCEPTED 2026-07-10 — bundle
+regeneration/install, live calls, and push await separate owner approval**.
 
 Plan base: `102b983` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was still `8d7ba3e` when this plan was drafted. Recheck upstream before
@@ -249,3 +249,16 @@ authorize code, live calls, installation, or push.
   `54996128a9e3c1648a690fade1d2f491ae49d15d`): **accepted**, no comments and
   no open questions. The reviewed plan is ready for owner judgment; no code,
   installation, live smoke, or push is authorized by the verdict.
+
+### Implementation checkpoint
+
+- The owner approved the code slice after r3. Implementation starts at
+  `80172ae`, with separately committed pre-review corrections through
+  `dfeb07f`.
+- Claude Code 2.1.206 / Sonnet 5 independently accepted the pinned review head
+  `9ef32c5e3348d34a3d42815353895fdc8e073dfb` with all guards confirmed.
+- The canonical verification, adjudication, and verdict record is
+  `.agents/review/findings/subscription-harness-routing.md`. Its index row is
+  `.agents/review/index.md`.
+- No reviewed bundle has been regenerated or installed, and no live
+  subscription smoke or push has occurred.
