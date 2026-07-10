@@ -8,19 +8,21 @@ here points back at them.
 
 ## 1. Why this proxy exists
 
-Claude Code sends a large, mostly-static prefix on every single turn: the
-CLAUDE.md project rules, the agent / subagent definitions, the tool catalogue
-with full input schemas, and a long list of internal "skill" reminders. On
-Opus-class models that prefix runs ~68K input tokens. The model never *needs*
-to re-read that text in token form — Anthropic prompt-caches it, and image
-blocks OCR cleanly at small font sizes. So pxpipe pulls the static prefix
-out of the JSON body, renders it as one or more grayscale PNG image blocks,
-and pins a single `cache_control` breakpoint on the last image. Anthropic
-charges roughly `ceil(W*H/750)` tokens per image; the current Anthropic profile
-caps pages at 1568×728 so rasterized pixels survive the provider's resize. A
-large static slab becomes a small set of image pages on the first turn and a
-cache-read (billed at 0.10×) on subsequent turns. The trade is real text tokens
-for image tokens cached under the same stable prefix.
+Claude Code repeats several large context buckets on each turn. pxpipe images
+only the buckets with their own safe placement rules: exactly recognized
+project guidance by default, plus independently guarded old history and bulky
+tool results. The native system prompt, tool definitions, and generic reminders
+stay native by default, and the owner’s live request remains ordinary user text.
+
+Recognized project guidance becomes grayscale `PROJECT GUIDANCE` pages before
+the opening user content, with a native-system manifest that vouches for their
+origin and exact range. pxpipe never creates a `cache_control` marker: it leaves
+the caller’s marker in place unless a guarded history or tool-result path moves
+that same marker within its owning content. Anthropic charges roughly
+`ceil(W*H/750)` tokens per image; the current profile caps pages at 1568×728 so
+rasterized pixels survive provider resizing. Dense eligible buckets therefore
+trade repeated text tokens for fewer image tokens without collapsing different
+authorities into one user-role slab.
 
 ## 2. Provenance partition (replaces the old static/dynamic split)
 

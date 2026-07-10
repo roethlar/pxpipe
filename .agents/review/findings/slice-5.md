@@ -341,4 +341,12 @@ changelog now keeps those upstream notes and restores the required trust-boundar
 safe-default, telemetry, migration, rollback, and owner-gated live-matrix notes
 with the r1 wording corrections included.
 
-Findings 2–9 remain pending individual adjudication against the reviewed head.
+### Finding 2 — adopted and fixed
+
+The transform overview no longer describes the removed system/tool/reminder
+slab or claim that pxpipe creates and pins a cache marker. It now names the
+separate eligible buckets, the native defaults, the preserved live request,
+the role-bound project placement, and the rule that only an existing marker
+can move within guarded history or tool-result content.
+
+Findings 3–9 remain pending individual adjudication against the reviewed head.
