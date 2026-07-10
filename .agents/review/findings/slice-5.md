@@ -156,10 +156,14 @@ Docs-only content has no unit guard; verify instead:
       identifiers."
 
 ## Coder adjudication
-Pending — next session's first action. Note for the adjudicator: several doc
-findings (2, 4, and parts of 5) cite the state of the docs at the reviewed
-SHA `162a00f`; commits `4dca949`/`c3e8744` later amended two of the cited
-passages, so verify each against the branch head before fixing. Finding 9
-quotes a HISTORY_CACHE_MODEL passage this slice did not touch — check
-whether the stale sentence survived the slice edit and fix it regardless
-(drift is drift). Eval-harness findings 11–14 look live at head.
+
+### Finding 1 — adopted; resolved by newer main-branch documentation
+
+`f70e530` merged canonical `main` at `8d7ba3e` while preferring its current
+model-profile geometry. `README.md` now describes Claude's 1568×728 pages and
+model-selected profiles; the obsolete 1928×1928 / ~92,000-character claim is
+absent from the live README. The merge preserved the provenance-safe code and
+passed typecheck, all 770 tests, and build. No additional product change is
+needed for this finding.
+
+Findings 2–14 remain pending individual adjudication against the merged head.
