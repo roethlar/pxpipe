@@ -23,4 +23,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | slice-2 | `fbf9b0c` | Role-bound project-guidance transform, shared boundary  | `[x]` accepted r3; fixes `371322d`, `4dca949` |
 | slice-3 | `2334b98` | Vouched runtime metadata tail (userEmail/currentDate)   | `[x]` accepted r3; fixes `ee992d3`, `c3e8744` |
 | slice-4 | `525cb5b` | Independent tool bucket, telemetry, host wiring         | `[x]` accepted r1, zero comments |
-| slice-5 | `162a00f` | Docs, migration note, eval harness                       | `[ ]`  |
+| slice-5 | `162a00f` | Docs, migration note, eval harness                       | `[~]` reopened r1, 14 findings pending adjudication |
