@@ -119,3 +119,37 @@ Re-review dispatch log:
   codex returned `turn.failed: usage limit` (resets ~06:52 UTC). Recorded
   fail-closed as a harness failure, NOT a verdict. Re-dispatch queued for
   after the reset.
+- r2 (2026-07-10 ~07:15 UTC, codex-cli 0.144.1, reviewed SHA `371322d`,
+  base `dbf68f9`): **reopened**, `guard_confirmed: true`.
+  - Closure 1 (digest boundary) — verified at head. Closed.
+  - Closure 2 (copied boundary) — reviewer independently re-ran the
+    red/green proof on `371322d` (negative control failed for the predicted
+    reason: pointer chose t=8 over t=10; restored guard passes). Closed.
+  - Closure 3 — **partial**: count/value guards hold, but the positional
+    half of the original finding is still reachable. Reviewer repro at head:
+    one marked text block followed by an unmarked text block in the same
+    collapsed user message → collapse succeeds with neither fail-closed
+    reason, and the lone marker lands on the final image of a segment
+    containing BOTH blocks — the caller breakpoint moves across later
+    content, changing TTL scope. Verbatim comment:
+    "src/core/history.ts:264 — Finding 3 is only partially closed: marker
+    collection discards block position, value/count comparison at line 285
+    cannot detect relocation, and lines 707-712 and 777-789 move a lone
+    marker to the final image of its whole message segment."
+
+## Coder adjudication (r2, positional finding)
+**Accepted.** The plan's slice-4 wording promises count/value preservation
+and ambiguity fail-closed, and one could read intra-message position as
+out-of-contract — but the original finding's predicted failure (caller-owned
+breakpoint scope silently expanded across later content) is concrete,
+reproducible, and contrary to the plan's fail-closed ethos and its "caller
+marker ownership is preserved" deliverable. Rather than contest on a narrow
+reading, fail closed: a single caller marker that is NOT at its message's
+final content position now fails that history bucket closed
+(`mid_message_cache_marker`), leaving the request byte-exact. Real Claude
+Code traffic marks final blocks, so the safe path is unaffected.
+
+Fixed in commit `4dca949` (`messageCacheControlAtEnd` + collapse check +
+reason union in both files + doc statements). Guard test red before/green
+after; 750 tests, typecheck, build all clean. r3 focused re-review
+dispatched on the fix.
