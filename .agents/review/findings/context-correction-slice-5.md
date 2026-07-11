@@ -3,7 +3,7 @@
 **Severity**: HIGH — the public README, package description, and technical docs
 still advertised the exact cross-role rewriting, unsafe savings claims, and
 multi-terminal setup that the correction removed.
-**Status**: In progress — pending independent Claude review
+**Status**: Verified — independently accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `86eb64e9670b11f679bb34600cfda41322d1154a` (base: parent
 `b22dabcf610a9d896a47d1a395991bee5617f476`)
@@ -129,4 +129,22 @@ Empty.
 
 ## Reviewer comments
 
-Pending.
+- R1 (2026-07-11T04:23:45Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-context-correction-s5-r1`.
+  - Reviewed SHA: `f58b34ff3a9e0edc373bc3403f57249968655331`.
+  - Base SHA: `b22dabcf610a9d896a47d1a395991bee5617f476`.
+  - `guard_confirmed: true` — the reviewer restored all seven public/docs/
+    package files from the base and confirmed that the fixed contract assertion
+    failed, restored the reviewed head and confirmed that it passed, then ran
+    the documentation integrity test and the complete repository gate.
+  - Verdict: **accepted**.
+  - Comments: none.
+
+The JSON envelope exited zero and matched the required schema and both pinned
+SHAs. Eight ancillary compound/`rtk`/temporary-script Bash attempts were denied;
+the required base failure, head pass, source consistency inspection, docs check,
+and final gate completed through allowed commands. The tracked review worktree
+was clean after restoration; its only untracked entry was the temporary
+`node_modules` symlink. Acceptance does not authorize a live product call, push,
+merge, release, or the paused one-port routing implementation.

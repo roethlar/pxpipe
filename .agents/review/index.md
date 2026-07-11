@@ -37,4 +37,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | context-correction-slice-3 | `de5d189` | Exact-native OpenAI Chat, Responses, Codex/Sol, and Grok | `[x]` accepted r1 at `a4a456a`; Claude guard confirmed |
 | context-correction-slice-4 | `eb6c70d` | Terminal-control atomicity, role order, and request isolation | `[x]` accepted r1 at `9309e15`; Claude guard confirmed |
 | context-correction-telemetry-privacy | `a1e3bc4` | Stop persisting private requests, errors, and host identity | `[x]` accepted r1 at `0db62b1`; Claude guard confirmed |
-| context-correction-slice-5 | `86eb64e` | Public contract, migration, and local release documentation | `[~]` pending Claude review |
+| context-correction-slice-5 | `86eb64e` | Public contract, migration, and local release documentation | `[x]` accepted r1 at `f58b34f`; Claude guard confirmed |
