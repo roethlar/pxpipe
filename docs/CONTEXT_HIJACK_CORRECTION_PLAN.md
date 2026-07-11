@@ -123,8 +123,10 @@ are true:
    remain adjacent around the image, with no placeholder or replacement prose;
 4. no caller text, block, message, or role is otherwise changed or reordered;
 5. pxpipe adds no model-readable text at all;
-6. rendering does not reflow, trim, truncate, page, normalize, or explain source
-   bytes; content needing those operations remains native;
+6. rendering does not reflow, trim, truncate, normalize, or explain source bytes;
+   deterministic segmentation into multiple unlabeled images is allowed only at
+   exact codepoint boundaries, and any unrenderable codepoint leaves the bucket
+   native;
 7. a request-wide cache-aware gate proves a strict effective-token win with the
    required safety reserve;
 8. any ambiguity, unsupported provider shape, escape sequence, missing
@@ -185,7 +187,8 @@ accepted and installed.
 Safety-qualified placement is necessary but not sufficient. Admission uses the
 complete request, not a bucket-only character estimate:
 
-- build the candidate in memory without forwarding it;
+- build one candidate in memory from every simultaneously safety-qualified bucket
+  without forwarding it;
 - use the provider's no-model token-count endpoint on the unchanged full request,
   unchanged cacheable prefix, candidate full request, and candidate cacheable
   prefix; run independent probes concurrently where possible;
@@ -202,6 +205,18 @@ complete request, not a bucket-only character estimate:
   or uncertain, keep the request byte-identical;
 - never use `priorWarm*=0` as a silent substitute for missing cache state.
 
+The four-probe request-wide result is the only runtime profitability verdict.
+Retire the existing `isCompressionProfitable`/`priorWarm*` per-bucket gates from
+active completion transforms; they are not retained as a pre-filter. If the one
+full candidate fails admission, v1 sends the complete original request. It does
+not search bucket subsets or re-probe combinations. This deliberately gives up
+some possible savings to keep one auditable decision.
+
+Cache tier comes from the caller-owned `cache_control.ttl` on the breakpoint that
+unambiguously covers every changed span. An omitted/unknown TTL, no covering
+marker, or multiple changed spans covered by different markers uses 2.0 whenever
+cache-create pricing applies.
+
 Probe rate limits, errors, or unsupported image counting fail native. They do not
 fall back to character ratios. OpenAI remains pass-through, so it does not need
 candidate probes until a same-role image representation is separately proven.
@@ -216,11 +231,17 @@ function prices five-minute creation at 1.25, one-hour creation at 2.0, and read
 at 0.10. Missing tier splits use the documented conservative fallback; no consumer
 may silently assume five-minute creation or implement a different formula.
 
-Measured results remain honest, including negative values. As defense in depth,
-any compressed request that still measures worse than its plain counterfactual
-atomically disables that provider/model/bucket/source fingerprint for the rest of
-the process, including already-overlapping requests that have not been forwarded.
-Re-entry requires a separately proven positive condition; time alone is not one.
+Measured results remain honest, including negative values. The admission math and
+provider-structure validation live in the Workers-safe core. For the owner's local
+Node service, a process-local fingerprint breaker and one in-flight lock per
+fingerprint provide defense in depth: concurrent duplicates wait or go native, and
+a measured negative disables later compression in that process. Re-entry requires
+a separately proven positive condition; time alone is not one.
+
+No cross-isolate Worker state, KV, or Durable Object is added. A Worker must satisfy
+the strict per-request probe gate or stay native; any optional isolate-local breaker
+is not a fleet-wide guarantee. The strict per-request gate, not the breaker, is the
+safety mechanism shared by Node and Worker.
 
 ## Public options and rollback
 
@@ -256,8 +277,12 @@ under `~/Dev`; Codex does not review this work.
   authenticity, source assertions, and obey/follow directives.
 - Replace bucket-only cold estimates with one request-wide cache-aware admission
   result and an explicit reason for every native fallback.
+- Retire the active per-bucket `isCompressionProfitable`/`priorWarm*` verdicts;
+  do not keep a second runtime profitability formula.
 - Centralize signed live/replay/session/statistics accounting, including five-minute
   and one-hour cache tiers.
+- Put admission math and structure validation in the Workers-safe core; add the
+  process-local breaker and per-fingerprint in-flight lock only to Node.
 - Add cold, warm, growing-prefix, restart, overlap, model/source switch,
   missing-measurement, cache-tier, and negative-feedback fixtures.
 - Prove the current implementation fails these guards.
@@ -275,6 +300,8 @@ under `~/Dev`; Codex does not review this work.
   requests.
 - Retain exact in-place `tool_result` compression and prove every unsupported
   bucket fails native.
+- Build one all-eligible candidate; if its authoritative request-wide probes fail,
+  forward the complete original request without subset search.
 
 ### Slice 3 — OpenAI safe default
 
@@ -322,7 +349,8 @@ under `~/Dev`; Codex does not review this work.
    between byte-exact prefix/suffix blocks, with no label, placeholder, boundary,
    factsheet, or reflow.
 5. Accepted Anthropic tool-result images stay inside their original `tool_result`
-   container and contain the exact source bytes without paging or truncation.
+   container and render the exact source codepoints without reflow, labels,
+   truncation, or omitted glyphs.
 6. Default OpenAI Chat and Responses context bodies are byte-exact pass-through
    until a same-container image shape is proven.
 7. Joining adjacent text parts with no implicit delimiter cannot reproduce
@@ -348,10 +376,11 @@ under `~/Dev`; Codex does not review this work.
     fixtures.
 17. Excluding a deliberate fault-injection fixture, cold-to-warm, growth, restart,
     overlap, cache-tier, and model/source-switch sequences contain no negative
-    admitted row or cumulative session. A deliberately injected live negative
-    immediately reopens the correction, atomically disables that exact compression
-    mode before another overlapping request forwards, and remains visible on the
-    dashboard.
+    admitted row or cumulative session. In Node, a deliberately injected live
+    negative immediately reopens the correction, disables that exact process-local
+    mode before another same-fingerprint request forwards, and remains visible on
+    the dashboard. Worker tests prove the per-request gate without claiming
+    cross-isolate breaker state.
 
 Every new behavior test receives a guard proof: revert the matching correction,
 observe the focused test fail, restore it, and observe it pass. Then run:
