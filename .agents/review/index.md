@@ -30,7 +30,7 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | subscription-plan | `5499612` | No-key local Fable, Sol, and Grok routing plan       | `[x]` accepted r3; implementation owner-gated |
 | subscription-routing | `80172ae..dfeb07f` | Local no-key Codex and Grok routes          | `[x]` accepted r1 at `9ef32c5`; Claude guards confirmed |
 | subscription-model-persistence | `7b7ac1c..6cc440c` | Save all three installed model selections | `[x]` accepted r1 at `7416c94`; installed from `3e07e08` |
-| one-port-subscription-plan | `22cc5b2` | Persistent one-service Codex and Grok plan, exact pass-through amendment | `[~]` pending Claude r3 after exact ownership/crash-recovery fixes |
+| one-port-subscription-plan | `cbcbfab` | Persistent one-service Codex and Grok plan, exact pass-through amendment | `[~]` pending Claude r3 after exact ownership/crash-recovery fixes |
 | context-hijack-correction-plan | `5daab97` | Remove context rewriting, invalid requests, and negative returns | `[x]` accepted r3 at `bcecfd0`; implementation owner-gated |
 | context-correction-slice-1 | `a0386b6` | Shared no-hijack, structure, admission, accounting, and Node breaker | `[x]` accepted r1 at `717464e`; Claude guard confirmed |
 | context-correction-slice-2 | `5b98406` | Anthropic exact in-place project and tool-result compression | `[x]` accepted r1 at `1ec9f28`; Claude guard confirmed |

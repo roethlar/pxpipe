@@ -3,7 +3,7 @@
 **Severity**: N/A — owner-requested plan review, not a defect finding
 **Status**: In Review — R3 closes installer ownership and crash-recovery gaps
 **Branch**: `fix/provenance-safe-compression`
-**Commit**: `22cc5b2570e6e82e87ff864433611078922ac1e8` (base
+**Commit**: `cbcbfabe62138e37610ea726eecb3e01679cc3d0` (base
 `cc79310e5476f62e09aa1dbe4ee51b6204380002`)
 
 ## Plan authority
