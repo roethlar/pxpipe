@@ -1,9 +1,9 @@
 # one-port-subscription-plan: One-service persistent subscription routing plan
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: In Review — R3 closes installer ownership and crash-recovery gaps
+**Status**: In Review — R4 closes the R3 durability, ownership, and isolation gaps
 **Branch**: `fix/provenance-safe-compression`
-**Commit**: `cbcbfabe62138e37610ea726eecb3e01679cc3d0` (base
+**Commit**: `2aeca41cc385789d4456c3473a22cb112c389e84` (base
 `cc79310e5476f62e09aa1dbe4ee51b6204380002`)
 
 ## Plan authority
@@ -134,6 +134,32 @@ fail-closed conflict state instead of overwriting a third identity, and gives
 every Grok parser check a fresh private `--leader-socket` path. The clean R2
 model verdict is recorded below but does not authorize implementation of R2.
 
+R3 was reopened by Claude and by a concurrent installer audit. Their concrete
+evidence was:
+
+- plain fsync cannot support a sudden-power-loss guarantee on macOS without
+  `F_FULLFSYNC`;
+- a nested Grok Unix-socket path can exceed macOS's fixed path limit, and cleanup
+  had not ruled out an orphan leader;
+- simultaneous installers needed a lock, and snapshots needed a preparing
+  journal before their first byte was staged;
+- receipt absence, first adoption of the verified pre-ledger service, created
+  config files/directories, and partial-uninstall receipt state were undefined;
+- surrounding anchors conflicted with allowing unrelated edits, while the
+  no-overwrite claim overstated what portable rename can guarantee against an
+  uncooperative editor's final syscall race; and
+- running parser checks against the real home could still read credentials or
+  write/spawn locally despite network denial.
+
+R4 adjudicates every item: it limits plain-fsync recovery to process/signal/OS
+restart rather than power loss; uses a byte-budgeted short private socket with
+fork denied; serializes installers with an atomically complete lock; journals
+before snapshots; enumerates first-install footprints and all file/directory/
+receipt ownership states; preflights the whole uninstall before mutation; scopes
+the final editor race honestly; and parses only byte-identical config plus staged
+native binaries under a filesystem/process/network sandbox. No R3 implementation
+is authorized.
+
 ## Reviewer comments
 
 - R1 (2026-07-11T05:07:49Z): Claude Code 2.1.207 / Sonnet 5, structured
@@ -155,6 +181,28 @@ model verdict is recorded below but does not authorize implementation of R2.
   - Must-fix: none.
   - Should-fix: none.
   - Open questions: none.
+
+- R3 (2026-07-11T05:41:08Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, read-only disposable worktree
+  `/Users/michael/Dev/pxpipe-review-one-port-plan-r3`.
+  - Reviewed SHA: `e2025475bd1e9c82dd1a6fc898ad7b8639586878`.
+  - Base SHA: `35ea0341d3e2ab3db1b5bf82313362dd2c2ac2d8`.
+  - Verdict: **reopened**.
+  - Must-fix:
+    - Plain fsync cannot prove the promised drive-cache ordering across sudden
+      power loss; require macOS `F_FULLFSYNC` or narrow the guarantee.
+  - Should-fix:
+    - Bound the private Grok Unix-socket path below macOS's limit.
+    - Serialize simultaneous installer invocations.
+    - Create the pending journal before staging snapshots.
+  - Open questions:
+    - Prove the private Grok check cannot leave a background leader.
+    - Define receipt state after any partial uninstall/conflict.
+
+The R3 envelope exited zero after 74 turns, matched the custom schema, and
+returned both pinned SHAs exactly. Eight ancillary Bash attempts were denied;
+the review completed without tracked changes, live calls, or web access. R4's
+coder adjudication above addresses every returned item plus the concurrent audit.
 
 The R2 envelope exited zero after 82 turns, matched the custom schema, and
 returned both pinned SHAs exactly. Three ancillary Bash attempts were denied;
