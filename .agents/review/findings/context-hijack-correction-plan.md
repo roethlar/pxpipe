@@ -1,9 +1,9 @@
 # context-hijack-correction-plan: Remove context rewriting and negative returns
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: Accepted r2 — one open clarification pending r3 confirmation
+**Status**: Pending final r3 after answering the r2 clarification
 **Branch**: `fix/provenance-safe-compression`
-**Commit**: `5cfcf2bbd637e1988cb0299312bf5d85ed5addbf`
+**Commit**: `5daab974a34fcf94df0b8ec039a57d911ab0957b`
 
 ## Plan authority
 
@@ -97,6 +97,14 @@ R1 adjudication:
 
 These refinements were committed at `5cfcf2b`. Fresh r2 must grade the full pinned
 plan; r1 acceptance does not authorize implementation.
+
+R2 clarification:
+
+- **ANSWERED yes** — `rendered.droppedChars > 0` or any non-empty
+  dropped-codepoint map is explicitly a render failure. The complete affected
+  source bucket stays native before economic admission; no caller may treat the
+  signal as telemetry-only. Slice 1, Slice 2, and acceptance now pin this behavior
+  at `5daab97`.
 
 ## Reviewer comments
 
