@@ -3,6 +3,10 @@
 Status: **OWNER CORRECTION INDEPENDENTLY ACCEPTED AND LOCALLY INSTALLED
 2026-07-10 — live calls and push remain separately owner-gated**.
 
+Operator workflow superseded by
+`docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md`. This file remains the historical
+implementation and review receipt for the earlier multi-process design.
+
 Plan base: `102b983` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was still `8d7ba3e` when this plan was drafted. Recheck upstream before
 implementation and prefer any upstream solution that overlaps or conflicts.
