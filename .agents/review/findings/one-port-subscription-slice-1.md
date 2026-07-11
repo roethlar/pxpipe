@@ -2,7 +2,7 @@
 
 **Severity**: HIGH — this route owns subscription credentials and destination
 selection for Codex and Grok
-**Status**: In Review
+**Status**: Accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `e11154ec883301e60d4d7642c2d7546ed2050fca` (base
 `5ad480d18a63fdba2a37640c32bdc9e55f3d6afe`)
@@ -93,5 +93,22 @@ or Node raw-target work is authorized by this review.
 
 ## Reviewer comments
 
-Pending Claude R1.
+- R1 (2026-07-11T06:25:19Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-one-port-slice1-r1`.
+  - Reviewed SHA: `9da666086a778f5f8074f7812f68ea6d98e85e30`.
+  - Base SHA: `5ad480d18a63fdba2a37640c32bdc9e55f3d6afe`.
+  - `guard_confirmed: true` — the reviewer independently restored the base
+    proxy, observed the focused integration guard fail, restored the reviewed
+    source, perturbed the nominated-credential, top-level-model, redirect, and
+    304 guards, observed their named failures, then passed all 106 focused
+    tests, typecheck, all 941 tests, and the production build.
+  - Verdict: **accepted**.
+  - Comments: none.
 
+The JSON envelope exited zero after 81 turns, matched the required schema, and
+returned both pinned SHAs exactly. Three ancillary shell forms were denied by
+the review allowlist and retried with permitted commands; the required guards
+and final gate completed. The disposable worktree was tracked-clean after
+restoration; its only untracked entry was the temporary `node_modules` symlink.
+Acceptance does not authorize installation, live product calls, push, or merge.
