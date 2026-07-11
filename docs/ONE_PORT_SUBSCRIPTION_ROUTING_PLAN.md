@@ -1,7 +1,7 @@
 # One-port subscription routing
 
-Status: **DRAFT 2026-07-10 — the owner approved the simple-use outcome;
-detailed implementation awaits independent plan review and owner approval**.
+Status: **PAUSED 2026-07-10 — the simple-use outcome remains approved, but
+`docs/CONTEXT_HIJACK_CORRECTION_PLAN.md` must be accepted and installed first**.
 
 Plan base: `e8709d5` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was `8d7ba3e` when this plan was drafted. Recheck upstream immediately
@@ -11,6 +11,10 @@ conflicts.
 This plan replaces the multi-terminal operator workflow in
 `docs/LOCAL_SUBSCRIPTION_HARNESS_PLAN.md`. That earlier plan remains the
 historical implementation and review receipt for the current router.
+
+Do not review or implement this routing plan while the context correction is
+open. Codex/Sol and Grok use the OpenAI Responses transform whose current default
+contains the same trust/priority self-assertion pattern.
 
 ## Required outcome
 

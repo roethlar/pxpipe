@@ -1,7 +1,12 @@
 # Provenance-safe Anthropic compaction without losing project governance
 
-Status: **APPROVED 2026-07-10 — implementation complete and independently
-reviewed; live A/B and merge remain owner-gated**.
+Status: **REOPENED 2026-07-10 — the installed design still acts like a context
+hijack; correction plan pending independent Claude review and owner approval**.
+
+Canonical correction:
+`docs/CONTEXT_HIJACK_CORRECTION_PLAN.md`. The implementation and reviews recorded
+below remain historical receipts, but their completion claim was falsified by the
+installed model-side test and no longer authorizes the shipped default.
 
 Checkpoint (2026-07-10, accepted implementation): Slices 1–5 are complete on
 `fix/provenance-safe-compression`. The slice-by-slice synchronous review and
@@ -11,8 +16,8 @@ Slice 5 at `fd548c8` after independently reconfirming three representative
 guards; the verdict is recorded at `c6b9437`. Local verification at the
 reviewed head: 793 tests + typecheck + build. When pnpm is off PATH, use
 `npx -y pnpm@10.21.0 run build`. The plan section 7 Fable/Sonnet live A/B matrix has
-not been run or authorized, and merge to main remains owner-gated. No further
-agent-authorized implementation or review work remains.
+not been run or authorized, and merge to main remains owner-gated. The context
+correction must be reviewed and approved before further implementation.
 
 Plan base: `b1f5a01` (`origin/main`, 2026-07-09). The plan is intentionally
 isolated from the unrelated `fix/escape-atlas-missing-glyphs` branch.
