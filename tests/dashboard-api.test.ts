@@ -206,6 +206,29 @@ describe('serveFragment', () => {
     }
   });
 
+  it('shows the installed three-model scope as selected and saved until a runtime change', async () => {
+    const prev = process.env.PXPIPE_MODELS;
+    try {
+      process.env.PXPIPE_MODELS = 'claude-fable-5,gpt-5.6-sol,grok-4.5';
+      setAllowedModelBases(null);
+
+      const saved = await (await dash.serveFragment('models', url, 1234)).text();
+      expect(saved).toContain('Fable 5 ✓');
+      expect(saved).toContain('GPT 5.6 Sol ✓');
+      expect(saved).toContain('Grok 4.5 ✓');
+      expect(saved).toContain('selection saved for restart');
+      expect(saved).not.toContain('set PXPIPE_MODELS');
+
+      dash.handleModelsToggle('grok-4.5', false);
+      const changed = await (await dash.serveFragment('models', url, 1234)).text();
+      expect(changed).toContain('runtime only · set PXPIPE_MODELS to persist');
+    } finally {
+      setAllowedModelBases(null);
+      if (prev === undefined) delete process.env.PXPIPE_MODELS;
+      else process.env.PXPIPE_MODELS = prev;
+    }
+  });
+
   it('renders header + recent + stats fragments from the same payloads as JSON', async () => {
     writeEvents(tmp, [
       ev({ status: 200, model: 'gpt-5.5', compressed: true, orig_chars: 1000, image_bytes: 200 }),

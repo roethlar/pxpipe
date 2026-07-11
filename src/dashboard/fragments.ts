@@ -134,23 +134,30 @@ export function renderModelsFragment(
     .filter((id) => !id.startsWith('claude') && !id.startsWith('gpt') && !id.startsWith('grok'))
     .map(chipFor)
     .join('');
+  const activeScope = new Set(active);
+  const configuredScope = new Set(configured);
+  const scopeMatchesStartup = activeScope.size === configuredScope.size
+    && [...activeScope].every((id) => configuredScope.has(id));
+  const persistenceHint = scopeMatchesStartup
+    ? 'selection saved for restart'
+    : 'runtime only · set PXPIPE_MODELS to persist';
   const moot = enabled ? '' : ` <span class="hint">compression is off, so this has no effect right now</span>`;
   return (
     `<div class="models">` +
     `<span class="models-label">Image Claude models</span>` +
     claudeChips +
-    `<span class="hint">everything else is sent as normal text · runtime only · persist with PXPIPE_MODELS</span>${moot}` +
+    `<span class="hint">everything else is sent as normal text · ${persistenceHint}</span>${moot}` +
     `</div>` +
     `<div class="models">` +
     `<span class="models-label">Image Grok models</span>` +
     grokChips +
     otherChips +
-    `<span class="hint">opt-in only · OpenAI Responses path · set PXPIPE_MODELS to persist</span>${moot}` +
+    `<span class="hint">opt-in only · OpenAI Responses path · ${persistenceHint}</span>${moot}` +
     `</div>` +
     `<div class="models">` +
     `<span class="models-label">Image GPT models</span>` +
     gptChips +
-    `<span class="hint">imaging only, no Anthropic cache_control · one scope for all families · set PXPIPE_MODELS (CSV of bases, or off) to persist</span>${moot}` +
+    `<span class="hint">imaging only, no Anthropic cache_control · one scope for all families · ${persistenceHint}</span>${moot}` +
     `</div>`
   );
 }
