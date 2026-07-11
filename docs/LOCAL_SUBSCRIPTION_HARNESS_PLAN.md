@@ -131,12 +131,14 @@ One focused code slice:
   Grok settings routes.
 - `tests/proxy-usage.test.ts` and/or `tests/gateway.test.ts`: pin exact
   upstream URL, transformation, model, and forwarded fake headers.
-- `README.md`: document no-key Codex and Grok local commands without making
-  either model a default.
+- `README.md`: document no-key Codex and Grok local commands without changing
+  the product's built-in Fable-only fallback.
 
-Do not change rendering, model profiles, default model scope, installer
-LaunchAgent settings, Worker configuration, package identity, or Cloudflare
-behavior.
+That original slice did not change image rendering, model profiles, the
+built-in fallback scope, installer settings, Worker configuration, package
+identity, or Cloudflare behavior. The later owner correction below supersedes
+only the installer-setting boundary and adds truthful dashboard status text;
+the other boundaries remain unchanged.
 
 ## Automated verification
 
