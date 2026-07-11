@@ -120,9 +120,13 @@ is empty after file handling. Any changed, duplicated, or ambiguous managed span
 is a conflict and stays byte-for-byte untouched.
 
 Receipt absence is allowed only for the first managed one-port install. That path
-requires no pending/conflicted transaction and no receipt-owned client footprint
-such as `pxpipe_local`, a reserved `/_pxpipe/` client URL, or an equivalent
-managed provider/table insertion. An existing pre-ledger pxpipe service is
+requires no pending/conflicted transaction and none of these exact parsed client
+footprints: Codex root `model_provider = "pxpipe_local"`, the Codex table
+`[model_providers.pxpipe_local]`, any Codex provider `base_url` equal to a
+loopback `/_pxpipe/codex` URL, or Grok
+`[endpoints].cli_chat_proxy_base_url` equal to a loopback
+`/_pxpipe/grok/v1` URL. The already common model values alone are not ownership
+evidence. An existing pre-ledger pxpipe service is
 adopted only after its release manifest, source digest, current link, plist,
 loopback binding, and ownership pass the existing installer checks; the service
 alone is not treated as prior client-config ownership. A corrupt receipt or a
@@ -137,13 +141,18 @@ or receipt mutation. Unrelated edits outside managed spans are allowed and new
 candidates are built from the latest bytes. An already-correct reinstall is a
 no-op that does not add snapshots or change mtimes.
 
-An atomic 0700 lock directory under the install-state root serializes install,
-uninstall, and recovery before any journal inspection. Its 0600 record contains
-the uid, pid, process-start signature, and operation but no config bytes. A live
-matching process makes a second invocation fail with zero mutations. A stale
-record is claimed by atomic rename before recovery; pid reuse alone cannot prove
-liveness. Creating the empty state/lock parent on a first invocation is the only
-allowed pre-lock filesystem preparation.
+A fixed 0600 lock file under the stable 0700 install-state root serializes
+install, uninstall, and recovery before any journal inspection. The contender
+first writes and fsyncs a complete private candidate containing uid, pid,
+process-start signature, and operation, then claims the fixed name with an atomic
+no-clobber hard link. There is no interval where the visible lock lacks a complete
+record. A live matching process makes a second invocation fail with zero
+mutations. A missing/corrupt or non-live record is claimed stale by atomic rename
+to a unique quarantine name before a new no-clobber link attempt; pid reuse alone
+cannot prove liveness. Creating the empty state/lock parent and candidate is the
+only allowed pre-lock filesystem preparation. Process death is injected before
+and after every lock step. The empty state root is retained across uninstall so
+the fixed lock continues to exclude contenders through the final mutation.
 
 Every mutation uses a 0700 transaction directory. The installer first commits
 and fsyncs a minimal 0600 journal in phase `preparing`, then writes byte-exact
@@ -182,8 +191,10 @@ commit the receipt; mark committed; clean the journal. Uninstall order is:
 preflight every reversal; prepare journal/snapshots; restore Codex; restore Grok;
 hash-check both; stop/remove the service definition and current link; commit the
 `absent` receipt identity; mark committed; then remove releases, snapshots,
-journal, lock, and empty install-state directories last. This ordering never
-points a client at a service already removed.
+journal, and per-transaction directories; release the lock only after the final
+mutation. The stable empty install-state/lock parent remains 0700. This ordering
+never points a client at a service already removed and never exposes final cleanup
+to a second installer.
 
 No receipt is rewritten during a partial operation. Until every install step
 succeeds, the prior receipt remains authoritative; until every uninstall step
@@ -390,8 +401,12 @@ committed and reviewed before the next begins.
 - Run `codex features list` and
   `grok inspect --json --leader-socket <fresh-short-private-socket>` under
   macOS `sandbox-exec` against byte-identical config copies in a 0700 isolated
-  home and empty working directory. Deny network, reads from the real home,
-  writes outside the private check directory, process fork, and child execution.
+  home and empty working directory. Resolve the installed Codex native executable
+  behind its Node launcher and the real Grok Mach-O, verify each reports the
+  expected installed version, copy and hash those exact binaries into the check
+  directory, and allow initial execution only of those staged paths. Deny network,
+  reads from the real home, writes outside the private check directory, process
+  fork, and every other executable path.
   The Grok socket uses a short random name directly under a temporary 0700
   `${OWNER_HOME}/.pxpipe-s/` child while the subprocess `HOME` remains isolated,
   is at most 90 UTF-8 bytes including its filename, and fails before mutation if
@@ -445,12 +460,13 @@ committed and reviewed before the next begins.
     closed. The final non-cooperating editor race is explicitly not claimed safe.
 15. Sandboxed network-denied `codex features list` and
     `grok inspect --json --leader-socket <fresh-short-private-socket>`
-    accept byte-identical TOML copies under an isolated HOME and empty cwd with
-    real-home reads, outside writes, fork, and child execution denied. The Grok
-    socket path is private and no longer than 90 UTF-8 bytes. The default leader
-    socket and credential stores are not contacted, read, created, or changed;
-    no background leader, agent, model listing, or output survives. Installed
-    files are verified by hash/mode comparison only.
+    use hash-verified staged copies of the resolved native Codex and Grok
+    executables with byte-identical TOML under an isolated HOME and empty cwd.
+    Real-home reads, outside writes, fork, and every other executable are denied.
+    The Grok socket path is private and no longer than 90 UTF-8 bytes. The default
+    leader socket and credential stores are not contacted, read, created, or
+    changed; no background leader, agent, model listing, or output survives.
+    Installed files are verified by hash/mode comparison only.
 16. Fresh-file install/uninstall restores the original bytes exactly. Inserted
     keys and table headers are removed only through their recorded parsed identity
     and exact span proofs; owner keys, comments, and trivia survive relocation and
@@ -460,14 +476,17 @@ committed and reviewed before the next begins.
     only while wholly unchanged; owner additions cause proven managed spans to be
     removed while the file remains. Created directories remain unless empty.
 18. Receipt-free first install accepts the verified pre-ledger service on this
-    Mac only when both clients lack a managed pxpipe footprint. Any footprint with
-    a missing/corrupt receipt fails before mutation.
+    Mac only when the four enumerated parsed Codex/Grok footprints are absent.
+    Matching model values alone remain unowned. Any enumerated footprint with a
+    missing/corrupt receipt fails before mutation.
 19. Reinstall with unrelated edits succeeds and preserves them. Reinstall with
     managed drift fails before journal, service, config, snapshot, or receipt
     mutation; all hashes and mtimes remain unchanged.
 20. Concurrent install/uninstall attempts prove the live pid/start lock holder
     wins and every other invocation performs zero mutations. Stale-lock recovery
-    cannot mistake pid reuse for the original process.
+    cannot mistake pid reuse for the original process. Death at every candidate,
+    hard-link, stale-quarantine, and release step leaves a recoverable complete
+    lock record; final cleanup stays excluded until the lock is released.
 21. Process death is injected after the preparing journal, each snapshot, ready
     transition, service switch, each client write, validation, receipt
     rename/removal, and journal commit. The next lock holder removes preparation
@@ -477,19 +496,21 @@ committed and reviewed before the next begins.
 22. Every uninstall reversal is preflighted before mutation. A changed or
     ambiguous managed span leaves the service, configs, receipt, hashes, and
     mtimes unchanged. Successful uninstall commits explicit receipt absence and
-    removes the transaction/state directory only after journal cleanup. Failure
-    after either client reversal restores both and leaves the installed receipt
-    unchanged; a detected race retains that receipt plus the conflicted journal.
+    removes transaction data only after journal cleanup while retaining the
+    stable 0700 lock parent. Failure after either client reversal restores both
+    and leaves the installed receipt unchanged; a detected race retains that
+    receipt plus the conflicted journal.
 23. A detected concurrent owner edit enters durable `conflicted`, retains
     snapshots, reports no contents, and blocks later mutations until a recorded
     safe identity returns. Tests separately document the unavoidable final
     non-cooperating editor race; no assertion promises impossible compare-and-swap
     behavior.
 24. Candidate parser checks use isolated copies and the fresh Grok leader socket
-    under the complete sandbox above. Tests prove the real home, default socket,
-    credential stores, network, fork, and child execution are untouched; socket
-    length is bounded, output is discarded, no orphan process remains, and
-    installed files match the parsed candidate hashes.
+    plus staged verified native binaries under the complete sandbox above. Tests
+    prove the real home, installed binaries, default socket, credential stores,
+    network, fork, and other executables are untouched; socket length is bounded,
+    output is discarded, no orphan process remains, and installed files match the
+    parsed candidate hashes.
 
 Every new behavior test receives a guard proof: temporarily remove the matching
 classifier, raw-target check, or installer/config behavior; observe the focused
