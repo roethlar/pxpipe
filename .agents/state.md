@@ -27,7 +27,9 @@ in the files linked below rather than being copied here.
   fix `c1521f8` is accepted at reviewed head `e5c4ed6`. No real client or model
   request ran. The real offline check then stopped before client execution on
   Codex's npm alias layout; exact identity fix `129ef35` is accepted at reviewed
-  head `6912f53`.
+  head `6912f53`. The staged commands next exposed missing metadata-only path
+  resolution in the sandbox. Exact rule `04861f2` made both real parsers pass in
+  a bounded diagnostic and awaits Claude review; no output or live request ran.
   Canonical status and guard evidence live in
   `docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md` and `.agents/review/index.md`.
 - The glyph-escape workstream remains separate and is not the purpose of this
@@ -35,15 +37,16 @@ in the files linked below rather than being copied here.
 
 ## Next
 
-- Package and install exact reviewed head `6912f53`, then run both sandboxed
-  offline parser checks and verify one listener plus installed source.
+- Complete Claude review of sandbox metadata fix `04861f2`, package and install
+  its exact reviewed head, then rerun both offline parsers and verify one
+  listener plus installed source.
 - Any live subscription smoke, corrected live A/B matrix, push, merge, or
   upstream contribution remains separately owner-gated.
 
 ## Blockers
 
-- No blocker remains for the corrected offline client validation. The current
-  reviewed service remains healthy.
+- Production offline validation waits for independent acceptance of the exact
+  metadata-only sandbox rule. The current reviewed service remains healthy.
 - No blocker remains for the installed no-hijack correction.
 
 ## Verification

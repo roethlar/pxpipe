@@ -37,6 +37,7 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | one-port-subscription-slice-4 | `c39745d` | Simple release instructions and offline Codex/Grok parser validation | `[x]` accepted r1 at `8c9180b`; Claude guards confirmed |
 | one-port-launchd-transition | `c1521f8` | Retry launchd's bounded non-running state while retaining final PID/listener proof | `[x]` accepted r1 at `e5c4ed6`; Claude guard confirmed |
 | one-port-codex-alias | `129ef35` | Validate Codex's installed npm alias, suffixed version, OS, and CPU | `[x]` accepted r1 at `6912f53`; Claude guards confirmed |
+| one-port-sandbox-metadata | `04861f2` | Permit only private-ancestor and absent-policy path metadata in offline sandbox | `[~]` pending Claude review |
 | context-hijack-correction-plan | `5daab97` | Remove context rewriting, invalid requests, and negative returns | `[x]` accepted r3 at `bcecfd0`; implementation owner-gated |
 | context-correction-slice-1 | `a0386b6` | Shared no-hijack, structure, admission, accounting, and Node breaker | `[x]` accepted r1 at `717464e`; Claude guard confirmed |
 | context-correction-slice-2 | `5b98406` | Anthropic exact in-place project and tool-result compression | `[x]` accepted r1 at `1ec9f28`; Claude guard confirmed |
