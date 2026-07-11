@@ -1,12 +1,20 @@
 # Stop pxpipe from rewriting trust boundaries
 
-Status: **INDEPENDENTLY ACCEPTED 2026-07-10 — implementation awaits owner
-approval**. Canonical verdict:
-`.agents/review/findings/context-hijack-correction-plan.md`.
+Status: **APPROVED AND IN IMPLEMENTATION**. The canonical plan verdict is
+`.agents/review/findings/context-hijack-correction-plan.md`; the live
+slice-by-slice state and review verdicts are owned by `.agents/review/index.md`.
 
 Plan base: `94470f7` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was `8d7ba3e` when rechecked. Recheck again before implementation and
 prefer any upstream solution that overlaps or conflicts.
+
+Pre-release recheck: upstream advanced to `8b525a1` on 2026-07-11. That commit
+does not address the correction's privacy, role-order, or negative-return
+failures. Its overlapping OpenAI/Grok path instead adds history imaging and
+model-readable identifier text, conflicting with this plan's later, explicit
+pass-through and no-generated-prose requirements. It was therefore not an
+upstream solution to adopt; its unrelated renderer, chart, and evaluation work
+remains outside this correction.
 
 This is the canonical correction to the installed provenance-safe design. It
 supersedes that design's claim of completion and pauses

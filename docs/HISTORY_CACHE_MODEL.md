@@ -1,253 +1,156 @@
-# How imaged history stays cache-safe as a conversation grows
+# History compression: current status and historical cache model
 
-This doc captures the **mental model** behind pxpipe's history-image compression:
-why turning past conversation turns into images doesn't break Anthropic's prompt
-cache, even though the conversation keeps growing and "new" content is constantly
-becoming "old."
+Cross-message history collapse is not shipped in the current safe request path.
+This document states that boundary first, then records the old cache model so
+historical code, tests, options, and telemetry are not mistaken for active
+behavior. Same-container tool-result compression is a separate bucket and may
+apply inside an older user message.
 
-It's the conceptual companion to [`CACHING_AND_SAVINGS.md`](./CACHING_AND_SAVINGS.md),
-which carries the pricing math. Where the two disagree, the **code wins**:
+## Current behavior
 
-- `src/core/history.ts` — `collapseHistory`, the quantized boundary, `blocksToText`
-- `src/core/transform.ts` — the splice, caller-marker preservation, the gates
-- `src/core/baseline.ts` — `CACHE_CREATE_RATE = 1.25`, `CACHE_READ_RATE = 0.1`
+Every prior conversation message remains in its original role, message, content
+container, and order. Ordinary conversation text remains unchanged. An eligible
+`tool_result` text span is the sole history-adjacent exception: it may become
+unlabeled images at that exact position inside the same result container.
 
----
+- Anthropic history is never collapsed, combined, or moved to another message.
+- OpenAI Chat history remains byte-exact native.
+- OpenAI Responses history remains byte-exact native, including Codex/Sol and
+  Grok traffic.
+- pxpipe does not prepend a synthetic history user message.
+- pxpipe does not serialize whole assistant, user, tool-use, or tool-result
+  turns into cross-message history pages.
+- pxpipe does not add a history introduction, guard, factsheet, page label,
+  manifest, pointer, or boundary.
+- pxpipe does not move a marker as part of history collapse. When an eligible
+  inner `tool_result` text part is replaced in place, its marker transfers only
+  to that part's final replacement image.
 
-## 0. The question this answers
+This avoids changing a message's authority or producing invalid role ordering.
+Ordinary conversation text is not silently reflowed, truncated, or exposed to
+optical misreading. The separately eligible tool-result exception retains the
+normal image-reading risk documented in the README.
 
-> If we convert old turns to images, doesn't the prefix change — and break the
-> cache? And since *new* content always eventually becomes *old*, doesn't the
-> boundary move every turn, re-imaging and re-keying the cache continuously?
+## Active code versus dormant helpers
 
-Short version: **we do image history, it is cache-safe, and "old" is defined by a
-*quantized* boundary so the re-key is a rare one-time event, not a per-turn churn.**
-The cache breakpoint ("mark") is the seam that makes the cost one-time.
+The active Anthropic orchestration in `src/core/transform.ts` considers only an
+exactly recognized project-guidance span and exact successful tool-result prose.
+It does not call `collapseHistory`.
 
----
+`src/core/history.ts`, `src/core/openai-history.ts`, history render helpers, and
+their focused tests remain in the repository for compatibility and historical
+analysis. Public options such as `collapseHistory`, `gptHistory`,
+`historyAmortizationHorizon`, and related warm-token inputs cannot reactivate
+history imaging on the shipped transforms.
 
-## 1. Yes — we image history, always-on
+`TransformInfo` and persisted event types also retain fields such as
+`collapsedTurns`, `collapsedChars`, `collapsedImages`, `historyReason`,
+`historyTextChars`, `historyImageSha`, and `cacheBoundaryKind: history` so old
+event logs remain readable. New safe-path requests do not use those fields as a
+claim that history was compressed.
 
-`collapseHistory` (history.ts) is **always-on, unconditional** (transform.ts:
-"Variant C history-image compression. ALWAYS-ON, unconditional"). It walks
-`messages[]`, finds the largest **tool-closed prefix run** of past turns,
-serializes them to text with `blocksToText` — which includes assistant
-responses, `tool_use` args, and `tool_result` content — and renders that text
-into PNG blocks inside **one prepended synthetic user message**.
+## Why the old design was retired
 
-What stays as **text** is the live tail: the last `keepTail` turns plus anything
-inside an open tool sequence (and the most-recent assistant thinking signature,
-which must round-trip bit-perfect).
+The old implementation rendered a closed prefix of prior turns, then placed the
+images inside a newly created user message. That changed the role and container
+of assistant text, tool traffic, and other history. Text inside the image could
+describe its old provenance, but that description could not restore the API
+authority that had been removed.
 
-So past assistant responses absolutely become images. The rest of this doc is
-about why that's safe.
+The same design could interact badly with literal mid-conversation `system`
+messages. Anthropic requires an ordinary system-role message to precede an
+`assistant` message or end the array; only the directive-only form with empty
+content and `output_config` may occur elsewhere. Rewriting nearby messages must
+not create an invalid sequence.
 
----
+Cache profitability did not cure either structural problem. The current rule is
+fail-native unless an image can replace an exact span inside the original role,
+message, and content container.
 
-## 2. The aging problem is real
+## Historical quantized-boundary model
 
-Every turn, the live tail grows and the oldest tail turn becomes eligible to be
-"old." So the text↔image boundary *wants* to move forward over time. The danger:
+The following describes the retired design, not current runtime behavior.
 
-> If "old" meant *"everything except the last `keepTail` turns"* — a per-turn
-> moving window — the boundary would advance by one message every turn. The
-> collapsed set would change every turn → the rendered PNG bytes would change
-> every turn → **new cache key every turn → `cache_create` (1.25×) on the whole
-> history every single turn.**
+The old planner kept a live text tail and selected a tool-closed prefix for
+history imaging. To avoid changing the rendered prefix every turn, it snapped
+the cutoff to a fixed `collapseChunk` grid:
 
-That is not hypothetical. It's the **2026-05-19 regression (bug #28)**, which the
-pricing doc cites as going to **−250% "savings."** A moving boundary is a cache
-shredder.
-
----
-
-## 3. The fix: "old" is *quantized*, not a moving window
-
-The boundary is snapped onto a fixed grid of `collapseChunk` messages
-(default **50**). From `history.ts`:
-
-```ts
-const rawCutoff = messages.length - o.keepTail;
-const cutoff = o.collapseChunk > 0
-  ? Math.min(rawCutoff,
-      Math.max(minCollapsePrefix + protectedPrefix,
-               Math.floor(rawCutoff / o.collapseChunk) * o.collapseChunk))
-  : rawCutoff;
-const boundary = findClosedPrefixBoundary(messages, cutoff);
+```text
+raw cutoff = message count - keepTail
+grid cutoff = floor(raw cutoff / collapseChunk) * collapseChunk
+boundary = nearest tool-closed point at or before the grid cutoff
 ```
 
-`Math.floor(rawCutoff / collapseChunk) * collapseChunk` is the whole trick:
-eligibility for imaging advances in **discrete jumps**, not continuously. Then
-`findClosedPrefixBoundary` snaps it back to the nearest tool-closed point so the
-image never splits an open `tool_use`/`tool_result` pair.
+With `keepTail = 4` and `collapseChunk = 50`, the selected prefix could remain
+fixed while the conversation grew from 54 to 103 messages, then jump at 104.
+The intention was a staircase: stable image bytes between chunk crossings and
+one cache creation at a crossing, instead of a moving window that changed the
+prefix on every turn.
 
-It's a **staircase, not a ramp.** With `keepTail = 4`, `collapseChunk = 50`:
+The old implementation also attempted to preserve one unambiguous caller marker
+by replanting it on a replacement image. Multiple or mid-message markers failed
+that history bucket. These rules explain historical tests and event fields; the
+current transform is simpler because it does not collapse ordinary history or
+move markers across messages. The separate same-container tool-result rule is
+not part of that retired history planner.
 
-| `messages.length` | `rawCutoff` | quantized `cutoff` | what's imaged          |
-| ----------------: | ----------: | -----------------: | ---------------------- |
-|                54 |          50 |             **50** | msgs[0..50)            |
-|                80 |          76 |             **50** | msgs[0..50) ← *same*   |
-|               103 |          99 |             **50** | msgs[0..50) ← *same*   |
-|               104 |         100 |            **100** | msgs[0..100) ← *jumps* |
+## Historical amortization gates
 
-For ~50 turns the collapsed set is a **fixed set of messages** → byte-identical
-PNG → the prefix reads warm (`cache_read`, 0.1×) the whole time. New content
-piles up in the *text* tail; it only crosses into "imaged" when the conversation
-passes the next multiple of 50.
+The retired history path used image-token estimates, text-token estimates,
+warm-cache burn terms, and an assumed reuse horizon. Its rough lifetime check
+was:
 
-`historyImageSha8` (transform.ts) logs the image hash per request precisely so
-this is verifiable from `events.jsonl`: **while the boundary holds, consecutive
-collapsed turns MUST report an identical `history_image_sha8`.** A hash that
-moves turn-over-turn is the signature of the bug returning.
-
----
-
-## 4. The one-time burn, and the gates that control it
-
-A chunk crossing changes the imaged region's bytes once → that turn pays a fresh
-`cache_create`. This is the **one-time burn**. It is:
-
-- **One-time per stable window**, not per turn — ~one create per `collapseChunk`
-  turns, amortized over the warm reads in between.
-- **Gated both ways** so it only happens when it pays back:
-
-  **Symmetric burn term** (`isCompressionProfitable`):
-  ```
-  burnImageSide = priorWarmTokens × (CACHE_CREATE_RATE − CACHE_READ_RATE)   // ≈ 1.15× the warm prefix given up
-  compress iff  imageTokens + burnImageSide  <  textTokens + burnTextSide
-  ```
-
-  **History amortization gate** (`isCompressionProfitableAmortized`):
-  ```
-  accept iff  I × (CC + CR×(N−1))  <  T × CR × N        CC = 1.25, CR = 0.10
-  ```
-  where `N = historyAmortizationHorizon` ("assume this prefix gets reused `N`
-  more times"). **Default `N = 1`**, which is deliberately conservative — at
-  `N = 1` collapse almost never wins, so a host raises `N` once it has observed
-  that its cache lives long enough to amortize the create. At `N ≈ 10` collapse
-  wins once the image is below ~0.7× the text.
-
-- **Cold-start free.** On turn 1 / a fresh conversation, `priorWarmTokens` and
-  `priorWarmImageTokens` default to `0`, zeroing the burn term entirely — there's
-  no warm cache to lose, so imaging from the start breaks nothing.
-
----
-
-## 5. The unifying principle: the cache mark is the seam
-
-Everything above collapses into one rule:
-
-> **Byte-stable content goes *before* the cache mark; per-turn-volatile content
-> goes *after* it. "One-time" is defined relative to that mark.**
-
-pxpipe never *adds* a breakpoint. Caller markers are **preserved in place or
-re-planted onto the same logical content**: the project pages ride *before*
-the caller's own live-prompt marker in the opening message, and history
-collapse re-plants the one unambiguous marker a collapsed message carried onto
-that chunk's last image (`messageCacheControls`; two markers in one message
-fail the bucket closed). So the breakpoint still lands exactly at the
-stable↔volatile seam:
-
-```
-[ PROJECT GUIDANCE image(s) + boundary ]     ← stable, no markers of their own
-[ opening reminder + live prompt ] ← caller's cache_control, unmoved
-─────────────── cache breakpoint ───────────────
-[ synthetic history message ]                ← re-planted caller marker, if the
-[ live tail, runtime-context tail ]            collapsed range carried one
+```text
+image lifetime = image tokens * (create rate + read rate * (N - 1))
+text lifetime  = text tokens  * read rate * N
 ```
 
-Two conditions make a cache burn one-time when the caller's actual marker
-placement permits it:
+It could also apply symmetric penalties when switching away from a previously
+warm text or image prefix. These were per-bucket estimates, not measurements of
+the complete candidate request. They are therefore not an active safety or
+savings verdict.
 
-1. **Everything up to the mark is byte-identical across turns** — guaranteed by
-   the quantized boundary (§3).
-2. **Bytes covered by that marker stay stable.** pxpipe does not generically
-   move volatile content after it. Only an exactly recognized opening
-   `userEmail` / `currentDate` suffix moves to the final runtime-context block.
-   Native system `<env>`, billing data, unknown host content, and the caller's
-   current message remain in their original role and position; changes there
-   can legitimately change the provider's cache key.
+Current Anthropic candidates instead require the four full/prefix token-count
+measurements and the request-wide 10% plus 256-token reserve described in
+[`CACHING_AND_SAVINGS.md`](./CACHING_AND_SAVINGS.md).
 
-When both hold, the prefix up to the mark reads warm. The separate
-`cache_prefix_sha8` measurement tracks the vouched-for project boundary without
-pretending that pxpipe controls or relocates every volatile caller byte.
+## Reading current cache telemetry
 
-### Why the leading project carrier is protected
+Because conversation messages stay in place, normal growth can legitimately
+grow or invalidate a provider cache prefix. Do not attribute that change to the
+retired history-collapse path merely because a historical field exists in the
+event schema. A current tool-result image count still describes a real
+same-container replacement, even when its result is in an older message.
 
-The opening user message that carries the project pages, their shared
-boundary, and the reconstructed host reminder is shielded from collapse by
-`roleBoundProtectedPrefix` (history.ts): when the shared project-guidance
-boundary ref and the exact opening-carrier text are present, that message —
-plus any literal `role: "system"` attachments contiguously following it —
-never enters the collapse range. If collapse swept it in, `blocksToText`
-would reduce the project pages to `[image]` placeholders and detach the
-vouched-for leading range from its native manifest. A boundary-shaped marker
-with a different ref (or one copied into a later message) cannot expand the
-head; system-role messages inside a *later* collapse candidate fail that
-collapse closed rather than being serialized as `<user>` history.
+For a current admitted Anthropic request, use the four probe fields,
+`admission_reason`, `admission_cache_tier`, and the admission effective-token
+values. Project or tool-result image counts describe only their exact source
+containers. For OpenAI, Codex/Sol, and Grok, a new request is pass-through and
+receives no compression savings.
 
----
+Historical rows with `collapsed_images`, `history_image_sha8`, or
+`history_reason: collapsed` still describe the old implementation and remain
+available for audit. They should be segmented from current safe-path data.
 
-## 6. Separate buckets preserve caller structure
+## Requirements before any future history imaging
 
-pxpipe does not swap one monolithic stable prefix. Native system blocks, tool
-definitions, unknown reminders, and literal system-role attachments stay in
-their original role by default. Independent paths then handle only the content
-they can identify safely:
+Cross-message history imaging must remain off unless a separately approved design can prove
+all of the following:
 
-1. Exact recognized project guidance may become leading labeled pages bound by
-   a native manifest and boundary.
-2. Profitable closed history and large tool results may become images under
-   their own structural checks.
-3. Tool-reference pages are experimental and off by default; enabling them
-   does not combine them with project pages.
-4. Caller cache markers stay on their logical content (preserve or re-plant,
-   never add), and history boundaries remain quantized so frozen history bytes
-   change only at chunk crossings.
+1. Each image replaces an exact source span inside the original role, message,
+   and content container.
+2. Every other caller-owned value, container, and message ordering remains
+   exact.
+3. No model-readable labels, guards, manifests, pointers, or synthetic messages
+   are added.
+4. Rendering preserves every source codepoint without reflow, truncation, or
+   dropped glyphs; terminal-control-bearing containers stay native.
+5. Caller cache-marker ownership remains exact.
+6. The complete candidate passes the targeted Anthropic system-attachment
+   ordering guard and the shared no-hijack comparison.
+7. Four full/prefix measurements prove at least 10% and 256 effective input
+   tokens of savings for the complete request.
 
-The exact recognized email/date suffix may move to the final runtime-context
-tail. Other native system and host content remains where the caller placed it.
-
----
-
-## 7. Defaults (source of truth: `HISTORY_DEFAULTS` in history.ts)
-
-| Option              | Default | Meaning                                                       |
-| ------------------- | ------: | ------------------------------------------------------------- |
-| `keepTail`          |       4 | Most-recent turns always kept as text (live tail).            |
-| `minCollapsePrefix` |      10 | Don't bother collapsing fewer than this many turns.           |
-| `collapseChunk`     |      50 | Grid the boundary snaps to → byte-stable image between steps. |
-| `protectedPrefix`   |       0 | Leading messages never collapsed (the transform passes 0; the role-bound project carrier + contiguous system attachments extend it automatically). |
-| `cols`              |     100 | Soft-wrap column hint (history renders dense single-col).     |
-
-Related (in `TransformOptions`):
-
-| Option                       |  Default | Meaning                                                  |
-| ---------------------------- | -------: | -------------------------------------------------------- |
-| `HISTORY_CHARS_PER_TOKEN`    |      2.0 | History cpt fit (Opus 4.7 / Fable 5 tokenizer).          |
-| `historyAmortizationHorizon` |        1 | `N` in the amortization gate; raise once cache is proven long-lived. |
-
-### Knob intuition
-
-- **Larger `collapseChunk`** → fewer flips/burns (cheaper caching), but more
-  un-imaged text sitting in the tail (less compression).
-- **Smaller `collapseChunk`** → more aggressive compression, but more frequent
-  burns.
-- **Larger `historyAmortizationHorizon`** → more willing to eat a create now for
-  warm reads later; only safe when the cache actually lives that long.
-
----
-
-## 8. One-paragraph summary
-
-We image historical turns always-on, but "old" is a **quantized** boundary
-(`floor((len − keepTail) / collapseChunk) × collapseChunk`, snapped to a
-tool-closed point), so the imaged region's bytes stay identical for a whole
-`collapseChunk` window and the prefix reads warm every turn. New content ages
-into the image only at chunk crossings; each crossing costs a single one-time
-`cache_create`, gated by a symmetric burn term and an amortization horizon so it
-only fires when the warm reads pay it back. The whole thing works because every
-caller `cache_control` mark stays pinned to its own logical content (preserved
-in place, or re-planted onto the image rendered from it — never added), putting
-every byte-stable thing before the seam and every per-turn-volatile thing after
-it — which is exactly the prefix-cache shape Claude Code already relies on.
+Until all seven conditions are implemented and reviewed, cross-message history
+collapse remains retired. Ordinary history is native provider input; only the
+separate exact same-container tool-result bucket can affect an older message.

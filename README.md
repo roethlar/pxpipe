@@ -1,418 +1,164 @@
 # pxpipe
 
-**Cut Claude Code's input tokens by rendering bulky context as images — the same project guidance, tool output, and history, in a fraction of the tokens.**
+pxpipe is a local proxy that can reduce selected Anthropic request context by
+replacing exact text spans with PNG images. Model responses are streamed
+unchanged.
 
-An image's token cost is fixed by its pixel dimensions, not by how much text
-is inside it. Dense content (code, JSON, tool output) packs ~3.1 chars per
-image-token vs ~1 char per text-token on real Claude Code traffic. The
-reader is the same vision channel that Anthropic's computer use already
-relies on for screenshots. pxpipe is a local proxy that uses that channel
-for context: it rewrites the bulky parts of each request into compact PNGs
-before it leaves your machine. At current Fable
-list prices that lands as a **~59–70% lower end-to-end bill** — but prices
-move and workloads differ, so the durable number is the token cut itself,
-measured per-request against a free `count_tokens` counterfactual in
-`~/.pxpipe/events.jsonl`.
+This fork is deliberately conservative: each changed span must keep its original
+API container, and a complete cache-aware measurement must prove the whole
+candidate will be cheaper. An uncertain span stays text. Any candidate-wide
+uncertainty forwards the original request bytes.
 
-This is what the model sees instead of text:
+## What it changes
 
-![example: a real `transformRequest` output: system prompt + tool docs reflowed into one dense page, instruction banner on top, ↵ marking original newlines](https://raw.githubusercontent.com/teamchong/pxpipe/main/docs/assets/example-render.png)
+For Anthropic Messages requests, two kinds of text may be eligible:
 
-*~48k chars of dense context: ≈25k tokens as text, ≈2.7k image tokens as
-this page (render from a pre-0.9 pipeline; current pages carry inert
-`PROJECT GUIDANCE` labels instead of an instruction banner). The model reads
-renders like this at 100/100 (see benchmarks).*
+- an exactly recognized project-guidance span in Claude Code's opening user
+  context; and
+- large, successful, plain-prose `tool_result` text.
 
-![chart: characters a frontier context window holds, 2018–2026 — every vendor line tops out near the ~4M chars a 1M-token window holds as text; the same Fable 5 1M window through pxpipe images holds a measured ~18M chars, 4.6× the text ceiling](https://raw.githubusercontent.com/teamchong/pxpipe/main/docs/assets/context-window-chars.png)
+An accepted image occupies the exact source span inside the original user block
+or `tool_result`. Text before and after it stays in place. pxpipe does not add
+labels, pointers, summaries, manifests, instructions, paging notices, or other
+model-readable prose. It does not reflow, trim, normalize, or truncate the
+source.
 
-*Eight years of context growth, in characters. Every text line tops out near
-~4M chars (a 1M-token window at ~4 chars/token); the orange point is the
-**same Fable 5 1M window** read through pxpipe images — ~18M chars at the
-measured 18.3 chars/vision-token, **4.6×** the text ceiling. The density and
-multiplier are measured from a live render at generation time, not
-hand-typed: regenerate with `npx tsx scripts/gen-context-chart.ts`
-([source](scripts/gen-context-chart.ts)).*
+These parts always remain native text:
 
-## Demo
+- system content and Claude Code host metadata, including email and date fields;
+- tool definitions;
+- ordinary conversation text and the current request;
+- error results, recognized structured data, logs, precision-sensitive patterns,
+  terminal control sequences, unsupported shapes, and any text the renderer
+  cannot preserve exactly.
 
-**Fable 5 (the default, 100/100 reader) — plain left, pxpipe right:**
+An unsafe or unrenderable source span stays text; another independent safe span
+may still be considered. Before forwarding any changed Anthropic request,
+pxpipe checks the complete candidate for the observed system-attachment ordering
+rule and asks the provider to count the complete original request, original
+cacheable prefix, candidate request, and candidate prefix. Compression proceeds
+only when that candidate clears both a 10% and a 256-effective-token safety
+reserve. Missing or failed measurements, an invalid system-attachment order, or
+an uneconomic complete candidate restores the complete original body.
 
-https://github.com/user-attachments/assets/1c8ee63a-fcd7-4958-917b-da788d718349
+OpenAI Chat Completions and Responses requests are byte-for-byte pass-through.
+That includes Codex/Sol and Grok traffic. Their routing and telemetry still work,
+but pxpipe does not rewrite those request bodies or claim savings for them.
+Selecting Sol or Grok in the dashboard does not change that behavior.
 
-pxpipe counts an exact token **10/10** across 39 imaged filler files
-(matches `grep` line-for-line), gets the multi-step ledger arithmetic right,
-and ends the session at **$6.06** with context to spare (73.5k/1M) vs
-**$42.21** at 96% full. One caveat visible in the clip: the pxpipe arm
-needed a nudge to match the requested one-line output format.
+Anthropic history is never collapsed, moved, or wrapped in a synthetic message.
+An eligible `tool_result` span can still be replaced in place even when it is in
+an older user message; its containing message, role, block, and surrounding text
+do not move.
 
-**Opus 4.8 (disabled by default) — same layout:**
-
-https://github.com/user-attachments/assets/f4e50137-31b5-426f-a6ed-b83f829b4a2c
-
-Text needles read fine on both arms; the imaged phrase-count doesn't read on
-Opus — and pxpipe **says so instead of fabricating a number**. That misread
-rate is why Opus is opt-in.
-
-## Try it (30 seconds)
-
-```bash
-npx pxpipe-proxy                                  # proxy on 127.0.0.1:47821
-ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude  # point Claude Code at it
-```
-
-Dashboard at <http://127.0.0.1:47821/>: tokens saved, every text→image
-conversion side by side, kill switch, live model chips. Responses stream
-normally — pxpipe compresses the *request* only, never the model's output.
-Recent turns stay text; recognized project guidance, bulky tool results, and
-older history are imaged. The base system prompt and tool definitions stay
-native.
-
-### Install this fork locally on macOS
+## Install this fork locally on macOS
 
 The public `npx pxpipe-proxy` command installs the published release, not this
-fork. Build a private, loopback-only macOS service bundle instead:
+fork. The corrected fork branch is not published yet, so do not install it from
+a remote clone until its final commit is pushed. From the reviewed local
+checkout, build a verified per-user service bundle directly into a stable
+directory:
 
 ```bash
-git clone --branch fix/provenance-safe-compression --single-branch https://github.com/roethlar/pxpipe.git
-cd pxpipe
-npx -y pnpm@10.21.0 install --frozen-lockfile
-npx -y pnpm@10.21.0 run package:macos-local -- --output "$HOME/Dev/pxpipe-deploy"
+npx -y -p pnpm@10.21.0 pnpm install --frozen-lockfile
+npx -y -p pnpm@10.21.0 pnpm run package:macos-local -- --output "$HOME/Dev/pxpipe-deploy"
 "$HOME/Dev/pxpipe-deploy/install.sh"
 ```
 
-The installer verifies the adjacent package and checksum, installs under the
-current user, and starts pxpipe at login on `127.0.0.1:47821`. It does not use
-Cloudflare, sudo, or the public package registry. This local package saves
-`claude-fable-5,gpt-5.6-sol,grok-4.5` as its compression scope, so all three
-stay selected after restart. Start Claude Code with:
+The package builder requires a clean source tree, runs type checking, tests, and
+the production build, and writes the archive, checksum manifest, and installer
+directly to `~/Dev/pxpipe-deploy`. It refuses output under `/private` or inside
+the source worktree.
+
+The installer verifies the adjacent archive and checksum, installs under the
+current user, and starts a login service on `127.0.0.1:47821`. It uses no sudo,
+public package registry, or Cloudflare deployment. Node 18 or newer is required.
+The installer preconfigures Fable, Sol, and Grok in the persistent startup
+scope; only the safe Anthropic path currently rewrites request bodies. A
+dashboard change is runtime-only unless it matches that saved startup scope.
+
+Start Claude Code through the local service:
 
 ```bash
 ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude
 ```
 
-Rebuild the bundle and rerun its installer to update. Remove the service and
-installed program (while preserving logs and events) with:
+The dashboard is at <http://127.0.0.1:47821/>. Rebuild the bundle and rerun the
+installer to update. Uninstall the service and program while preserving logs and
+events with:
 
 ```bash
 "$HOME/Dev/pxpipe-deploy/install.sh" --uninstall
 ```
 
-### Manually route Codex or Grok subscriptions locally
+Installation and local health checks do not call any model.
 
-No API key is required: both CLIs can forward their existing browser login.
-The installed login service already saves Fable, Sol, and Grok as eligible for
-compression. These manual subscription checks still set `PXPIPE_MODELS`
-explicitly because each temporary proxy starts from an empty environment.
-Codex and Grok need separate proxy processes because their identical request
-paths go to different subscription services. Leave the installed login
-service on `47821` alone.
+## Codex and Grok subscription routing
 
-The commands below are manual one-call connectivity examples. They spend
-subscription quota, do not enforce the acceptance smoke's no-tools rule, and
-do not prove that context handling is correct. The separately owner-gated
-acceptance smoke adds a fixed temporary repository and checks the recorded
-path, model, result, and positive image count.
+Codex and Grok request bodies are safe pass-through, but the installed service
+does not yet provide the promised one-port subscription routing. The rejected
+multi-terminal workaround is not a supported setup. The already approved
+follow-on must make one saved client configuration sufficient for plain
+`codex` and plain `grok`; it remains paused until this correction is installed
+and passes its local checks.
 
-For an isolated manual run, start each child from a clean environment so an
-unrelated exported key cannot replace the subscription login. This helper passes only
-the reviewed non-secret fields; define it in each terminal:
+## Savings and telemetry
 
-```bash
-PXPIPE_SMOKE_ROOT="$HOME/Library/Caches/pxpipe-subscription-smoke"
-PXPIPE_INSTALLED_CLI="$HOME/Library/Application Support/pxpipe/current/bin/cli.js"
-PXPIPE_TEST_MODELS="claude-fable-5,gpt-5.6-sol,grok-4.5"
-mkdir -p "$PXPIPE_SMOKE_ROOT/tmp"
-rm -f "$PXPIPE_SMOKE_ROOT/no-config.json"
+The dashboard and `~/.pxpipe/events.jsonl` record signed, cache-aware results.
+A request receives a savings counterfactual only when Anthropic compression
+actually ran and every required full-request and prefix measurement succeeded.
+Negative results remain visible; they are never clamped or hidden.
+New rows keep hashes, counts, status, timing, and usage—not request bodies,
+upstream error bodies, caller email/date values, workspace paths, or exception
+text.
 
-pxpipe_clean_env() {
-  [ "${TERM+x}" = x ] && set -- "TERM=$TERM" "$@"
-  [ "${LC_ALL+x}" = x ] && set -- "LC_ALL=$LC_ALL" "$@"
-  [ "${LANG+x}" = x ] && set -- "LANG=$LANG" "$@"
-  [ "${SHELL+x}" = x ] && set -- "SHELL=$SHELL" "$@"
-  [ "${LOGNAME+x}" = x ] && set -- "LOGNAME=$LOGNAME" "$@"
-  [ "${USER+x}" = x ] && set -- "USER=$USER" "$@"
-  /usr/bin/env -i \
-    HOME="$HOME" PATH="$PATH" TMPDIR="$PXPIPE_SMOKE_ROOT/tmp" "$@"
-}
-```
+The corrected design has not run its separately authorized live A/B matrix, so
+this README makes no current end-to-end savings claim. Historical evaluations
+under [`eval/`](eval/) describe earlier renderers and should not be treated as
+measurements of this corrected default.
 
-For Codex/Sol, run this proxy in one terminal:
+## Library use
 
-```bash
-pxpipe_clean_env \
-  HOST=127.0.0.1 PORT=47832 \
-  PXPIPE_CONFIG="$PXPIPE_SMOKE_ROOT/no-config.json" \
-  PXPIPE_MODELS="$PXPIPE_TEST_MODELS" \
-  PXPIPE_LOG="$PXPIPE_SMOKE_ROOT/codex-events.jsonl" \
-  ANTHROPIC_UPSTREAM=http://127.0.0.1:9 \
-  OPENAI_UPSTREAM=https://chatgpt.com/backend-api/codex \
-  node "$PXPIPE_INSTALLED_CLI"
-```
-
-Then, after defining the same helper in a second terminal, use Codex's stored
-ChatGPT login over HTTP (the local proxy does not accept Codex WebSockets):
-
-```bash
-pxpipe_clean_env codex -a never -m gpt-5.6-sol \
-  -c 'model_provider="pxpipe_local"' \
-  -c 'model_providers.pxpipe_local.name="pxpipe local"' \
-  -c 'model_providers.pxpipe_local.base_url="http://127.0.0.1:47832"' \
-  -c 'model_providers.pxpipe_local.wire_api="responses"' \
-  -c 'model_providers.pxpipe_local.requires_openai_auth=true' \
-  -c 'model_providers.pxpipe_local.supports_websockets=false' \
-  -c 'model_providers.pxpipe_local.request_max_retries=0' \
-  -c 'model_providers.pxpipe_local.stream_max_retries=0' \
-  exec --ignore-user-config --ephemeral --sandbox read-only \
-  'Reply exactly PXPIPE_SMOKE_OK; do not use tools.'
-```
-
-For Grok 4.5, run this proxy instead:
-
-```bash
-pxpipe_clean_env \
-  HOST=127.0.0.1 PORT=47833 \
-  PXPIPE_CONFIG="$PXPIPE_SMOKE_ROOT/no-config.json" \
-  PXPIPE_MODELS="$PXPIPE_TEST_MODELS" \
-  PXPIPE_LOG="$PXPIPE_SMOKE_ROOT/grok-events.jsonl" \
-  ANTHROPIC_UPSTREAM=http://127.0.0.1:9 \
-  OPENAI_UPSTREAM=https://cli-chat-proxy.grok.com \
-  node "$PXPIPE_INSTALLED_CLI"
-```
-
-Then point Grok's existing subscription session at it:
-
-```bash
-pxpipe_clean_env \
-  GROK_CLI_CHAT_PROXY_BASE_URL=http://127.0.0.1:47833/v1 \
-  grok -p 'Reply exactly PXPIPE_SMOKE_OK; do not use tools.' \
-  -m grok-4.5 --verbatim --output-format json --permission-mode plan \
-  --max-turns 1 --no-subagents --disable-web-search --no-memory
-```
-
-Stop the temporary proxy with Ctrl-C and remove
-`~/Library/Caches/pxpipe-subscription-smoke` when finished. These commands do
-not persist model opt-ins or modify either harness's login/configuration. The
-Grok JSON includes a `sessionId`; remove that bounded smoke session with
-`grok sessions delete <sessionId>`.
-
-## The honest part
-
-- **It is lossy.** Exact 12-char hex strings in dense imaged content:
-  **13/15** on Fable 5, **0/15** on Opus — and misses are *silent
-  confabulations*, not errors. Byte-exact values (IDs, hashes, secrets)
-  must stay text; recent turns do. A dedicated verbatim-risk guard is not
-  built yet.
-- **Escape hatch:** subagents on non-allowlisted models pass through as
-  text — route byte-exact work there
-  (`CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-4-6`, or `model: sonnet` in
-  agent frontmatter).
-- **Real work:** SWE-bench Lite pilot **10/10 both arms** at −65% request
-  size; SWE-bench Pro **14/19 ON vs 15/19 OFF** at −60%, verdicts agree
-  18/19, and the single split re-resolved 3/3 on replication — run-to-run
-  variance, not compression. Small n; receipts in `eval/`.
-- **Workload-dependent.** Wins on token-dense content (~1 char/token),
-  loses money on sparse prose (~3.5 chars/token); a profitability gate
-  (calibrated on N=391 production rows) images only where the math wins.
-- **Client-dependent, not product-name-dependent.** Savings track uncached
-  bulk the client still re-sends as text. Claude Code re-sends system + tools
-  + history on `/anthropic/messages` and typically lands ~60–70%. Codex on
-  `/v1/responses` is supported; when the prompt is already ~98%
-  `cached_tokens`, only the static slab (and rare history collapses) remain
-  to image, so Saved can honestly sit near 1%. The same Responses path saves
-  tens of percent when history collapse fires, and an OpenAI client that
-  re-sends the full transcript as plain text each turn is in the same high-
-  savings class as Claude Code. Details and measured splits:
-  [docs/CACHING_AND_SAVINGS.md](docs/CACHING_AND_SAVINGS.md#openai-responses-path-codex-and-friends).
-- **Model scope:** the built-in fallback is
-  `PXPIPE_MODELS=claude-fable-5`. The local macOS installer deliberately saves
-  Fable, Sol, and Grok as the owner's explicit scope; standalone runs keep the
-  Fable-only fallback. Opus 4.7/4.8 and GPT 5.5 remain opt-in only (dashboard
-  chips or `PXPIPE_MODELS`). The exact Sol id still matters when selected:
-  sibling variants such as `gpt-5.6-terra` do not inherit Sol's allowlist or
-  render profile.
-  `PXPIPE_MODELS=off` disables imaging. Everything else passes through
-  byte-identical. On the GPT path, tool definitions stay native JSON and no
-  Anthropic `cache_control` markers are used.
-- **Per-model rendering:** opt-in `gpt-5.6-sol` currently uses a 126-column,
-  6×11 JetBrains Mono profile; Claude keeps its 312-column 5×8 Spleen profile. These
-  are selected by exact model id, including history pages and profitability
-  math. **Sol recall caveat:** raw-image calls scored 0/4 exact with four
-  inventions at both current 6×11 and old shared 5×8; 6×11 passed gist/guard,
-  while 5×8 also missed gist. Production's verbatim fact-sheet remains a text
-  fallback for extracted identifiers. An effective 9×12 Sol retune is rendered
-  but not yet model-tested, so the current Sol geometry is operational—not
-  recall-validated. [Sol receipts](eval/sol-profile/RESULTS.md) and
-  [profile evidence](docs/MODEL_RENDER_PROFILES.md).
-- **Grok (opt-in): measured 9×12 + factsheet.** Off by default. Pure-image
-  exact OCR at 5×8 fails (0/4 IDs); the densest tested pure-image arm that
-  cleared 4/4 with zero confabulation was effective 9×12 / 84 columns at ~30%
-  fixture savings. The fact-sheet remains attached as defense in depth.
-  [eval/grok-density/FACTSHEET_RESULTS.md](eval/grok-density/FACTSHEET_RESULTS.md).
-
-## Benchmarks (reproducible)
-
-Measured with novel random-number problems the model cannot have memorized:
-
-| test | N | text | pxpipe (image) | tokens |
-|---|---:|---:|---:|---|
-| novel arithmetic, `claude-fable-5` | 100 | 100% | **100%** | **−38%** |
-| novel arithmetic, `claude-opus-4-8` | 100 | 100% | 93% | −38% |
-| gist recall A/B (decisions, values, paths, names, negations; with distractors; 15k-45k char sessions), Fable 5 | 98/arm | 98/98 | **98/98** | - |
-| state tracking (value mutated 3x, final/first/count), Fable 5 | 18/arm | 18/18 | **18/18** | - |
-| confabulation on never-stated facts (lower is better), Fable 5 | 16/arm | 0/16 | **0/16** | - |
-| verbatim 12-char hex recall, dense render, Opus | 15 | 15/15 | **0/15** | - |
-| verbatim 12-char hex recall, dense render, Fable 5 | 15 | - | **13/15** | - |
-
-SWE-bench run totals, receipts, and caveats:
-[`eval/swe-bench/`](eval/swe-bench/) ·
-[`eval/swe-bench-pro/`](eval/swe-bench-pro/) ·
-[`eval/needle-haystack/`](eval/needle-haystack/) ·
-[`eval/gist-recall/`](eval/gist-recall/) · analysis in
-[`FINDINGS.md`](FINDINGS.md). (GSM8K scored 96% imaged, but it's in training
-data — memorized answers survive misreads — so we lead with the novel-number
-evals.)
-
-## How it works
-
-```
-model id ──► render profile ──► wrap/reflow bulk context ──► PNG[] + exact-token factsheet
-```
-
-The proxy intercepts `/v1/messages`, rewrites eligible bulk into image
-blocks, splices them back cache-friendly (static prefix preserved, prompt
-caching keeps working), and forwards. Claude uses 1568×728 pages; GPT 5.6 Sol
-uses 764px-wide portrait strips; opt-in Grok uses effective 9×12 cells. A
-per-request estimator uses that same resolved profile, so sparse prose stays
-text. Events log to `~/.pxpipe/events.jsonl`.
-
-## Library use (no proxy)
+The renderer is available independently:
 
 ```ts
-import { renderTextToImages, transformAnthropicMessages } from "pxpipe-proxy";
+import { renderTextToImages } from "pxpipe-proxy";
 
-const { pages } = await renderTextToImages(toolResultText);     // pages[i].png: Uint8Array
-const { body, applied, info } = await transformAnthropicMessages({
-  body: requestBytes,
-  model: "claude-fable-5",
-});
+const { pages } = await renderTextToImages(text);
 ```
 
-`options.keepSharp(block)` pins blocks as text; `options.emitRecoverable`
-returns the originals of imaged blocks. Pure-JS runtime (Node and
-edge/Workers); `@napi-rs/canvas` is build-time only. Full API:
-`src/core/index.ts`.
+The exported Anthropic transform cannot perform the authenticated provider
+measurements required for admission, so a standalone transform call returns the
+original request. Use the local proxy for admitted compression. The exported
+OpenAI Chat and Responses transforms also return the original bytes by design.
 
 ## Development
 
 ```bash
-pnpm install && pnpm test
-pnpm run build                # regenerates dist/
+pnpm install
+pnpm run typecheck && pnpm test && pnpm run build
 ```
 
-## FAQ
-
-**Is the headline end-to-end, or only on the requests you touched?**
-End-to-end, the whole bill. Most compression tools report savings only on
-the input slice they touched, which flatters the number. The end-to-end
-denominator is *every* production request: the small ones pxpipe correctly
-left untouched, all cache writes and reads, and all output tokens (which the
-proxy never compresses). On a 13,709-request snapshot that was 59% ($100 →
-~$41); a later 8,904-compressed-request trace measured ~70%. Compressed-only
-runs higher (~72–74%) and is quoted separately, never as the headline. The
-exact figure is workload-dependent — reproduce it on your own log.
-
-**How is the math measured?**
-Both sides of the same request, at the same moment. For every `/v1/messages`
-POST the proxy fires a free `count_tokens` probe on the original uncompressed
-body (the counterfactual) in parallel with the real forward, and reads
-Anthropic's actually-billed usage block off the response. Both land in the
-same row of `~/.pxpipe/events.jsonl`, so there is no turn-count or
-run-to-run confound. Dollar conversion uses Fable 5 list ratios: input ×1.0,
-cache write ×1.25, cache read ×0.1, output ×5. Cache pricing is applied
-identically to both sides, so the caching discount cancels and cannot be
-double-counted as "savings". Re-derive it yourself from the events log: the
-formula and field names are documented in `src/core/baseline.ts`.
-
-**What does it actually compress?**
-Three kinds of *input* blocks, each behind a profitability gate:
-
-1. large `tool_result` bodies (file reads, command output, logs) above
-   ~6k chars of token-dense content
-2. older collapsed history: turns behind the live tail get re-rendered as
-   image pages, recent turns always stay text
-3. recognized repository project guidance (CLAUDE.md + imported AGENTS.md)
-   from Claude Code's opening context — rendered as labeled pages that a
-   native system manifest vouches for
-   (`docs/TRANSFORM_INFO.md` has the trust model)
-
-Outside those three image paths, content stays text: your messages, recent
-turns, the model's output, sparse prose, and anything too small to win. One
-non-image rewrite remains for an exactly recognized Claude Code opening:
-`userEmail` and `currentDate` move from the opening host-context block to a
-final data-only block, with a native system note describing that position.
-Unknown opening shapes stay untouched. Models outside the allowlist pass
-through entirely — the built-in default scope is Fable 5 only. Sol, Opus 4.8,
-GPT 5.5, and Grok are deliberately opt-in via the dashboard or
-`PXPIPE_MODELS`, never silently imaged. Sol joined that list after both its
-6×11 profile and the old shared 5×8 profile scored 0/4 exact with four
-confabulations in direct raw-image calls.
-
-**Has it ever failed for real, outside the benchmarks?**
-Yes, once in weeks of daily use: the model recalled a person's name from
-imaged chat history and got it confidently wrong. No error, just a
-plausible wrong name. That is the documented failure mode: exact strings
-in imaged content are not byte-safe. Coding sessions tolerate this because
-the agent re-reads files before editing; pure chat recall has no such check.
-This failure mode is measured, not anecdotal:
-[the legibility audit](docs/LEGIBILITY-AUDIT-2026-07-01.md) quantifies
-exact-string recall off rendered pages (blind reads top out at 63% on dense
-identifiers, with every miss predicted by a glyph-confusability matrix) and
-documents the shipped mitigations — page geometry clamped to the API's
-resample cap so billed pixels actually reach the vision encoder, and exact
-identifiers (SHAs, numbers) riding alongside as text.
-
-**Why are misses silent confabulations instead of read errors?**
-Because model vision is not OCR: the image becomes patch embeddings, never
-discrete characters, so there is no per-glyph confidence to fail loudly
-on. When pixels underdetermine a glyph, the language prior fills the gap
-with something plausible. Mechanism and receipts:
-[docs/NOT-OCR.md](docs/NOT-OCR.md).
-
-**Didn't DeepSeek-OCR show this doesn't hold up in practice?**
-No: it proved the channel works, using an encoder/decoder pair trained for
-the job. The skepticism dates from October 2025, when no stock production
-model could read dense renders; that changed with Fable 5 (0/15 verbatim
-hex on Opus 4.8 vs 13/15 on Fable 5, same pages). Timeline and per-model
-numbers: [docs/NOT-OCR.md](docs/NOT-OCR.md).
-
-**Why does the README read like an AI wrote it?**
-Because one did. Most of this repo's commits — the code and the docs — were
-authored by Opus/Fable agent sessions running behind pxpipe itself, reading
-their own collapsed history as image pages while they worked.
+The package manager is pnpm. Do not create an npm lockfile.
 
 ## Limitations
 
-- Lossy (above); verbatim recall from images is unreliable.
-- PNG encoding adds latency to large requests before they leave.
-- ASCII/Latin-1 well tested; CJK works but conservatively.
+- Images are lossy for model recall even when the source was rendered exactly.
+  Recognized precision-sensitive patterns stay text, but the heuristic cannot
+  identify every exact value, and any detail inside an eligible image can still
+  be misread.
+- Candidate rendering and up to four provider token-count calls add latency
+  before an accepted Anthropic request is forwarded.
+- OpenAI-compatible requests currently receive routing and telemetry only; they
+  receive no context compression.
+- The supported package and installer are local macOS service tooling. They do
+  not publish, deploy, push, or make live model calls.
+- Older releases may already have raw 4xx samples in `~/.pxpipe/events.jsonl`
+  or `~/.pxpipe/4xx-bodies/`. This release creates no new samples and does not
+  silently delete existing owner data.
 
-## Roadmap
-
-Rendering research is parked as of 2026-07-05: verbatim misreads are
-capacity-bound, not trick-bound, so no font/color/layout change fixes
-exact-string recall at profitable density. The why is in
-[docs/NOT-OCR.md](docs/NOT-OCR.md); the dated analysis and the three
-documented follow-up threads (glyph-style A/B with banked pages, runtime
-canary + re-fetch, surrogate-reader pre-flight) are in
-[FINDINGS.md](FINDINGS.md), 2026-07-05 entry. Watch condition: re-run the
-resolution sweep per model release; readable density moved ~4x in glyph
-area from Opus 4.8 to Fable 5, and a model that reads production cells
-near 100% means savings rise for free.
-
-Still open, unchanged: whether imaged bulk stretches effective context (~2x
-the real content in the same 1M window), and whether a smaller active
-context improves long-task accuracy. Hypotheses, not claims — they ship as
-numbers with an n or they get cut.
+Technical telemetry fields and fallback reasons are documented in
+[`docs/TRANSFORM_INFO.md`](docs/TRANSFORM_INFO.md).
 
 ## License
 

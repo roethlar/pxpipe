@@ -6,72 +6,74 @@ behavioral changes, patch = fixes).
 
 ## Unreleased
 
-The provenance-safe structural change is implemented and covered by automated
-checks. Release remains gated on the separately owner-authorized live matrix in
-`docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` §7.
+The corrected default is implemented and covered by automated checks. Its live
+A/B matrix, fork push, and any upstream merge remain separate owner-authorized
+actions; none is implied by this entry or by a local installation.
 
-### Security — provenance boundary (#97, #37)
-- The Anthropic transform no longer flattens the native system prompt and tool
-  definitions into a user-message image. Recognized repository guidance gets
-  role-bound `PROJECT GUIDANCE` pages and an exact native-system manifest;
-  unknown host-context shapes stay native. Independent history and tool-result
-  compression retain their own guards.
-- The self-asserted “Context relocated by pxpipe from the system prompt” wrapper
-  is gone. Exactly recognized `userEmail` / `currentDate` data moves to a final
-  data-only runtime block vouched for by a native-system manifest. Other native
-  system content remains in place.
-- Anthropic tool definitions stay native by default. Experimental tool imaging
-  has an independent manifest, reference, gate, and digest-bound stubs; it is
-  never silently enabled. The retained `compressReminders` compatibility option
-  does not activate a generic reminder-imaging pass.
-- Cache markers are never added or multiplied. Project pages leave the caller’s
-  live-prompt marker in place; guarded tool-result and history paths can transfer
-  one existing marker only within its owning content.
-- Literal `role: "system"` attachments are modeled and protected byte-exact;
-  they cannot be serialized into user-role history images.
+### Security — no context impersonation
 
-### Added
-- `compressProjectGuidance` (on by default for recognized Anthropic project
-  guidance).
-- Per-bucket provenance telemetry, including modes, source sizes, references,
-  dispositions, fallback reasons, and `cache_prefix_sha8` /
-  `cache_boundary_kind`. New fields are optional so old event rows remain
-  readable.
-- `eval/provenance-ab/`, an owner-gated live comparison harness that records
-  redacted outcomes, fingerprints, model evidence, judgments, and aggregate
-  token counts without storing prompts or transcripts in the matrix.
+- Anthropic system content, host metadata, tool definitions, conversation
+  history, and live requests now remain in their original roles, messages, and
+  order. Email and date fields are no longer relocated beside user prose.
+- The proxy no longer emits model-readable banners, manifests, pointers,
+  factsheets, labels, paging notices, summaries, authority claims, or behavioral
+  guards.
+- Recognized project guidance can only be replaced at its exact original span
+  inside the opening user context. Eligible successful plain-prose
+  `tool_result` text can only be replaced inside its original result container.
+  Prefixes, suffixes, surrounding blocks, cache markers, and relative order are
+  preserved.
+- Rendering is exact: no reflow, trimming, normalization, truncation, or dropped
+  codepoints. Recognized structured data, logs, precision-sensitive patterns,
+  errors, ANSI/terminal control sequences, unsupported shapes, oversized
+  candidates, and render failures stay native.
+- A final system-attachment ordering check rejects the complete candidate if it
+  would reproduce the reported invalid Anthropic system-message sequence.
 
 ### Changed
-- `gpt-5.6-sol` is now opt-in rather than silently enabled. Its exact profile
-  remains available when selected, and sibling 5.6 variants do not inherit it.
-- Complete per-model render profiles now drive font atlas, cell spacing,
-  geometry, style, history pages, and profitability math. Sol uses a 6×11
-  JetBrains Mono atlas; opt-in Grok uses the measured effective 9×12 arm plus
-  the factsheet.
-- Dashboard exposes the GPT model row and `?` controls now show accessible
-  hover/focus tooltips.
 
-### Migration notes
-- No operator configuration change is required. `PXPIPE_DISABLE=1` and the
-  dashboard kill switch still forward the original request while retaining
-  usage accounting.
-- Worker settings `COMPRESS_PROJECT_GUIDANCE`, `COMPRESS_TOOLS`, and
-  `COMPRESS_REMINDERS` are applied only when explicitly set, preserving each
-  provider’s defaults. Anthropic tools remain native by default.
-- Event readers should prefer `cache_prefix_sha8 ?? system_sha8` for cache
-  identity; bundled readers already do. OpenAI behavior is unchanged.
+- Anthropic admission now measures the complete original request, original
+  cacheable prefix, candidate request, and candidate prefix. A candidate must be
+  at least 10% and 256 effective input tokens cheaper after cache pricing; a
+  missing or failed probe restores the exact original body.
+- One all-eligible candidate is evaluated per request. pxpipe does not search
+  for a profitable subset after a failed measurement.
+- OpenAI Chat Completions and Responses transforms are byte-exact pass-through.
+  This includes Codex/Sol and Grok. Routing and telemetry remain active, but an
+  unchanged request reports no compression and receives no savings credit.
+- Sequential request guards prove that model identifiers, system text, request
+  bytes, hashes, and input order do not leak between Sonnet, Fable, Sol, or Grok
+  requests.
 
-### Known limitations / evidence
-- A direct `gpt-5.6-sol` raw-image pilot tested **both** the new JetBrains
-  6×11/126-column profile and the old Spleen 5×8/152-column profile. Each scored
-  0/4 exact identifiers with four unsupported invented values; 6×11 passed
-  gist/guard, while 5×8 failed gist and passed the guard. One earlier paid setup
-  attempt exhausted 512 output tokens as hidden reasoning and is recorded but
-  excluded from scoring. The production fact-sheet still carries extracted
-  identifiers verbatim. Sol is therefore removed from the built-in default
-  scope while its exact profile remains available for explicit opt-in. A
-  Sol-only effective 9×12/84-column candidate is locally rendered but has no
-  model result yet. See `eval/sol-profile/RESULTS.md`.
+### Telemetry
+
+- Live dashboard rows, event replay, session summaries, and aggregate statistics
+  use one signed cache-aware accounting function.
+- Savings are credited only when compression ran and all required full-request
+  and prefix measurements succeeded. Negative measured results remain visible;
+  they are not hidden, clamped, or relabeled.
+- Native fallback reasons distinguish disabled compression, unsupported
+  same-container images, missing measurement, render loss, structure rejection,
+  image limits, and failed economic admission.
+- New events retain status, timing, usage, and a short request hash but never
+  persist request bodies, upstream error bodies, arbitrary exception text, or
+  host/workspace identity. Error responses still reach the client unchanged.
+
+### Local package and migration
+
+- The fork can be built directly into `~/Dev/pxpipe-deploy` as a verified macOS
+  per-user service bundle. The installer binds to `127.0.0.1`, requires no sudo,
+  and performs no public publish or cloud deployment.
+- The installed service may continue to persist Fable, Sol, and Grok as selected
+  models. Sol and Grok selection does not reactivate OpenAI request rewriting;
+  their current path is routing plus telemetry only.
+- Legacy public transform flags remain source-compatible but cannot reactivate
+  cross-role tool, reminder, history, or OpenAI imaging.
+- `PXPIPE_DISABLE=1`, the dashboard kill switch, unsupported models, and failed
+  safety checks continue to forward the original request bytes.
+- Older JSONL rows and `~/.pxpipe/4xx-bodies/` sidecars are not silently deleted.
+  They remain visible to the existing cleanup path; current releases create no
+  new raw request samples.
 
 ## 0.8.0 — 2026-07-03
 

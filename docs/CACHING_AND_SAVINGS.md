@@ -1,313 +1,209 @@
-# Prompt-Caching Alignment And Honest Savings Math
+# Prompt caching and honest savings
 
-This doc answers two questions:
+This document explains the cache-aware gate that decides whether an Anthropic
+candidate may be forwarded and the shared accounting used after the response.
+The code sources are `src/core/admission.ts`, `src/core/measurement.ts`,
+`src/core/baseline.ts`, and `src/core/proxy.ts`.
 
-1. How pxpipe stays aligned with Anthropic prompt caching when it rewrites bulky context into images.
-2. How pxpipe reports savings without counting the provider cache discount as a pxpipe win.
+## Current scope
 
-Source of truth in code: `src/core/transform.ts` for the cache-aligned rewrite and `src/core/baseline.ts` for the accounting.
+Only exact same-container Anthropic project-guidance and successful
+tool-result replacements can reach admission. System content, tools, metadata,
+ordinary conversation text, reminders, and live user text remain native.
+History is never collapsed or moved, although an eligible `tool_result` span in
+an older user message may still be replaced in place. OpenAI Chat and Responses,
+including Codex/Sol and Grok, are byte-exact pass-through and receive no new
+compression savings.
 
----
+Older per-bucket estimates, warm-cache burn inputs, history amortization, and
+OpenAI image formulas remain for source compatibility or historical rows. They
+do not decide a current request.
 
-## Anthropic Prompt Cache Basics
+## Anthropic cache rates
 
-Anthropic prompt caching is prefix-based:
+Anthropic prompt caching is prefix-based. Caller-owned `cache_control` markers
+define cacheable prefixes in provider order: tools, then system, then messages.
+pxpipe uses these relative input rates:
 
-- The cache key is derived from the exact rendered prompt bytes up to each `cache_control` breakpoint.
-- Render order is `tools` -> `system` -> `messages`.
-- A breakpoint is a `"cache_control": {"type": "ephemeral"}` marker on a content block.
-- The response usage block reports `input_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`.
-- Total prompt tokens for the actual request are `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`.
+| input bucket | rate |
+|---|---:|
+| ordinary uncached input | `1.0` |
+| five-minute cache creation | `1.25` |
+| one-hour cache creation | `2.0` |
+| cache read | `0.10` |
 
-Pricing relative to base input rate:
+An omitted or unrecognized creation tier is priced conservatively at `2.0`.
+pxpipe never silently substitutes the five-minute rate.
 
-| bucket | meaning | rate |
-|---|---|---:|
-| `input_tokens` | uncached input | `1.0x` |
-| `cache_creation_input_tokens` (`cc`) | cache write | `1.25x` |
-| `cache_read_input_tokens` (`cr`) | cache read | `0.1x` |
-| output | model reply | `5x` input on Fable 5 |
+## Cache-marker ownership
 
-A stable prefix is cheap after it is cached, but a prefix that changes every turn repeatedly pays the write premium. pxpipe's cache-alignment work exists to keep the image prefix stable.
+pxpipe neither creates nor removes a cache marker. If exact image replacement
+splits a marked text container into several parts, the original marker moves
+only to the final replacement part. A marker on an outer `tool_result` remains
+on that outer block. The normalized marker count must remain identical.
 
----
+The changed-span scanner determines which caller marker covers every changed
+span. A span after the final marker is cold. An unknown source position fails
+native. If changed spans have different markers or tiers, cache creation uses
+the conservative one-hour rate rather than inventing a cheaper split.
 
-## Cache-Aligned Rewrite
+## The four measurements
 
-Claude Code sends a large stable prefix: project guidance in the opening user-context reminder, accumulated tool results, and older history. It also sends a small per-turn tail: the current user message and volatile runtime context.
+The proxy builds the complete candidate without forwarding it, then asks
+Anthropic's no-model token-count endpoint for four independent values:
 
-pxpipe rewrites only the bulky, provenance-recognized parts into images (see `docs/TRANSFORM_INFO.md` for the buckets and the native-manifest trust model). The volatile parts stay as text so they do not pollute the image cache key.
+- `O`: unchanged full-request tokens;
+- `Op`: unchanged cacheable-prefix tokens;
+- `C`: candidate full-request tokens;
+- `Cp`: candidate cacheable-prefix tokens.
 
-The key invariant:
+`Op` and `Cp` use provider-countable normalized prefix bodies, not arbitrary raw
+JSON truncation. When a tools or system breakpoint would otherwise leave no
+message, the measurement body adds a synthetic user `x`; an orphan tool call is
+closed with a synthetic `tool_result: "ok"`. These strings go only to the
+no-model counting endpoint and never enter the forwarded model request.
 
-> pxpipe never adds a cache-control marker and never increases the marker count. Caller markers survive: a marker carried by compressed tool_result content moves onto the last image rendered from that same logical content, and history collapse re-plants the one unambiguous end-of-message marker a collapsed message carried. Multiple markers in one message — or a single marker anywhere but its message's final content position — fail that bucket closed rather than letting the breakpoint's scope drift.
+A request with no cache marker has an exact prefix value of zero and does not
+need a prefix network call. Every other logical slot is measured independently,
+even when two normalized bodies happen to be byte-equal. Independent calls run
+concurrently, and admission waits for all of them.
 
-The transformed request shape is:
+Parse failure, malformed measurement, rate limit, unsupported image counting,
+or any missing value returns the exact original request. There is no character
+ratio fallback.
 
-```text
-system:
-  ...original native system blocks, byte-exact, markers untouched...
-  <pxpipe_project_guidance_manifest>  ← vouches for the leading pages
-  <pxpipe_runtime_context_manifest>   ← vouches for the moved runtime tail
+## Admission pricing and reserve
 
-messages[0] user:
-  image block ×N                      ← PROJECT GUIDANCE pages, no markers
-  [End of rendered project guidance ref=…]
-  opening reminder (claudeMd span → inert placeholder;
-                    recognized userEmail/currentDate suffix → runtime tail;
-                    all other siblings verbatim)
-  live prompt + caller's own cache_control   ← unmoved
-  ...
-messages[last] user:
-  ...original content...
-  PXPIPE RUNTIME CONTEXT block        ← volatile tail, after every marker
-```
-
-The project pages land *before* the caller's existing live-prompt marker, so the provider caches the image prefix under the caller's own breakpoint — pxpipe spends none of the 4-breakpoint budget. Images must be placed in a user message because Anthropic does not accept images in the `system` field.
-
----
-
-## Gate And One-Time Burn
-
-The raw compression gate compares image token cost with text token cost. For Anthropic, image cost is estimated from pixel area and text cost comes from the configured chars/token estimate for the relevant bucket.
-
-Switching modes can also burn a warm cache. If a text prefix is warm and pxpipe flips to images, the first image turn may pay a cache write. If an image prefix is warm and pxpipe flips back to text, the text path may pay the write. The symmetric burn terms model that cost:
-
-```text
-burnImageSide = priorWarmTokens      * (1.25 - 0.10)
-burnTextSide  = priorWarmImageTokens * (1.25 - 0.10)
-
-compress iff imageTokens + burnImageSide < textTokens + burnTextSide
-```
-
-This is separate from dashboard savings. The gate decides whether to transform. The dashboard reports what the transformed request actually cost against the measured text counterfactual.
-
----
-
-## Savings Accounting
-
-The cache discount is provider behavior, not pxpipe savings. To avoid counting cache as savings, both sides use the same observed cache state:
-
-- If the actual request has `cr > 0`, the imagined text baseline is priced warm too.
-- If the actual request has `cr === 0`, the imagined text baseline is priced cold too.
-
-pxpipe does not infer a warm text baseline from wall-clock TTL alone. The text request does not actually exist, so cache warmth for that counterfactual is based only on the real request's server-reported cache read.
-
-For each `/v1/messages` request, pxpipe records three measurements:
-
-1. Actual upstream usage from the transformed request: `input_tokens`, `cc`, `cr`, and output.
-2. `baseline_tokens`: `/count_tokens` on the original body before compression.
-3. `baseline_cacheable_tokens`: `/count_tokens` on the original body truncated at the last `cache_control` marker.
-
-The actual input cost is:
+The unchanged request receives the cheapest defensible treatment for content
+already inside its cacheable prefix:
 
 ```text
-actual_eff = input_tokens + cc * 1.25 + cr * 0.10
+original_effective = Op * 0.10 + (O - Op)
 ```
 
-The text baseline first splits the measured text tokens:
+If the normalized prefix is unchanged, the candidate prefix is also priced as a
+read. If the candidate changed it, the covering caller marker selects the
+five-minute or one-hour creation rate:
 
 ```text
-cacheable = min(baseline_cacheable_tokens, baseline_tokens)
-coldTail  = baseline_tokens - cacheable
+candidate_effective = Cp * candidate_prefix_rate + (C - Cp)
+signed_savings      = original_effective - candidate_effective
+relative_savings    = signed_savings / original_effective
 ```
 
-If the actual request is cold (`cr === 0`):
+The complete candidate is admitted only when:
 
 ```text
-baseline_eff = cacheable * 1.25 + coldTail
+signed_savings >= 256
+relative_savings >= 0.10
 ```
 
-If the actual request is warm (`cr > 0`):
+Both reserves are required. This is deliberately stricter than comparing only
+the text and images in one bucket: it includes every changed byte, every image,
+the cold tail, and the cost of replacing a warm text prefix with a newly created
+image prefix.
+
+One candidate contains all simultaneously eligible buckets. If it fails, the
+complete original request is sent. The proxy does not search subsets or re-probe
+combinations.
+
+## Admission telemetry
+
+The JSONL event maps the four measurements and verdict to these fields:
+
+| field | meaning |
+|---|---|
+| `baseline_tokens` | `O`, unchanged full request |
+| `baseline_cacheable_tokens` | `Op`, including an explicit zero for a marker-free request |
+| `candidate_tokens` | `C`, candidate full request |
+| `candidate_cacheable_tokens` | `Cp`, including an explicit zero for a marker-free request |
+| `baseline_probe_status` | `ok`, `partial`, or `failed` |
+| `admission_reason` | admitted or the fail-native reason; contains no caller text |
+| `admission_cache_tier` | `none`, `5m`, `1h`, or `conservative_1h` |
+| `admission_original_effective_tokens` | admission-priced unchanged request |
+| `admission_candidate_effective_tokens` | admission-priced candidate request |
+| `admission_signed_savings_tokens` | signed admission delta |
+| `admission_relative_savings` | admission delta divided by unchanged effective input |
+| `baseline_cache_create_rate` | `1.25` or `2`, used by later counterfactual accounting |
+| `admission_fingerprint` | hash-only Node coordination identity |
+
+Only `baseline_probe_status: ok` represents complete four-measurement evidence.
+A native row may retain rejection evidence, but its transform counts are zero
+and it receives no savings credit.
+
+## Actual response accounting
+
+Admission predicts whether the candidate is safe to send. The dashboard and
+reports separately account for what the provider actually billed. Actual
+Anthropic effective input is:
 
 ```text
-reused = min(prevCacheable, cacheable)
-grown  = cacheable - reused
-
-baseline_eff = reused * 0.10 + grown * 1.25 + coldTail
+actual_effective = uncached_input
+                 + cache_create_5m * 1.25
+                 + cache_create_1h * 2.0
+                 + unknown_cache_create * 2.0
+                 + cache_read * 0.10
 ```
 
-`prevCacheable` is used only after `cr > 0` proves a warm read. It refines how much of the text baseline was reused vs newly grown. If there is no completed same-session prior with the same static-prefix hash, pxpipe assumes full reuse for the text baseline: `prevCacheable = cacheable`. That is conservative for savings because it makes the text baseline cheaper.
+For the unchanged-text counterfactual, actual `cache_read_tokens > 0` is the
+only proof that this turn was warm. A completed prior row with the same exact
+prefix identity may refine how much of the text prefix was reused and how much
+grew. Without such a prior, a proven-warm turn assumes full reuse, which makes
+the text counterfactual cheaper and therefore keeps the claimed saving
+conservative. A cold turn prices the complete cacheable text prefix at its
+creation rate.
 
-Replay uses request start time (`ts - duration_ms`) to avoid overlapping requests refining each other's `prevCacheable` split before the earlier request had completed.
+The shared `accountAnthropicInput` function is used by live updates, replay,
+session summaries, and statistics. It credits a counterfactual only when all of
+these are true:
 
-The savings number is then:
+- the request was actually compressed;
+- provider usage is present;
+- the full and prefix measurements are valid;
+- `baseline_probe_status` is `ok`.
 
-```text
-savings_eff = baseline_eff - actual_eff
-```
+Otherwise baseline cost equals actual cost and saved input is zero. Valid
+negative results are preserved rather than floored.
 
-This can be negative when imaging actually costs more under the same cache state. Negative rows are not hidden or floored.
+## Node coordination and negative results
 
-Rows without a trustworthy cacheable-prefix probe contribute zero savings rather than guessing. Uncompressed rows also contribute zero savings.
+The local Node service adds one in-flight lease per hash-only compression
+fingerprint. An overlapping duplicate waits or goes native instead of racing an
+unmeasured candidate. If later observed accounting is negative, the process-local
+breaker prevents another matching candidate from being forwarded. Time alone
+does not reset that result.
 
----
-
-## Worked Examples
-
-Assume a request whose original text baseline is `30,000` input tokens. Of those, `28,000` are before the cache-control marker, so `coldTail = 2,000`. pxpipe renders that prefix to `3,000` image tokens.
-
-### Warm Request
-
-The actual request reports `input_tokens = 2,000`, `cc = 1,000`, `cr = 3,000`. A prior completed row shows `prevCacheable = 27,000`.
-
-```text
-Text baseline:
-  reused = min(27000, 28000) = 27000
-  grown  = 28000 - 27000     = 1000
-  baseline_eff = 27000*0.10 + 1000*1.25 + 2000
-               = 2700 + 1250 + 2000 = 5950
-
-Actual image request:
-  actual_eff = 2000 + 1000*1.25 + 3000*0.10
-             = 2000 + 1250 + 300 = 3550
-
-Savings = 5950 - 3550 = 2400
-```
-
-The cache read discount applies to both sides. The win is that the warm image prefix is `3,000` tokens while the warm text prefix would have been `27,000` reused text tokens plus `1,000` grown text tokens.
-
-### Cold Request
-
-The actual request reports `input_tokens = 2,000`, `cc = 3,000`, `cr = 0`.
-
-```text
-Text baseline:
-  baseline_eff = 28000*1.25 + 2000
-               = 35000 + 2000 = 37000
-
-Actual image request:
-  actual_eff = 2000 + 3000*1.25
-             = 2000 + 3750 = 5750
-
-Savings = 37000 - 5750 = 31250
-```
-
-Both sides are cold. pxpipe is not credited for cache; it is credited because the cold image write is much smaller than the cold text write.
-
----
-
-## Reproducing The Dashboard Math
-
-Every row in `~/.pxpipe/events.jsonl` carries the fields needed to reproduce the input-side savings:
-
-- `baseline_tokens`
-- `baseline_cacheable_tokens`
-- `input_tokens`
-- `cache_create_tokens`
-- `cache_read_tokens`
-- `first_user_sha8`
-- `cache_prefix_sha8` (new rows)
-- `system_sha8` (historical fallback)
-- `ts`
-- `duration_ms`
-
-Walk rows in completion order. Define each row's prefix identity as `cache_prefix_sha8 ?? system_sha8`: the exact pxpipe-vouched prefix digest takes precedence, while old JSONL rows remain readable through the legacy system hash. For each session (`first_user_sha8`), keep the latest completed row's `baseline_cacheable_tokens`, prefix identity, and completion timestamp. For the current row:
-
-1. Set `warm = cache_read_tokens > 0`.
-2. If `warm` and the previous row completed before this request started and has the same preferred prefix identity, use its `baseline_cacheable_tokens` as `prevCacheable`.
-3. If `warm` but no usable prior exists, use this row's `cacheable` as `prevCacheable`.
-4. If not `warm`, use `prevCacheable = 0`.
-5. Compute `baseline_eff`, `actual_eff`, and `baseline_eff - actual_eff` with the formulas above.
-
-The live dashboard and replay path both use `deriveBaselineWarmth`, `computeBaselineInputEff`, and `computeActualInputEff` from `src/core/baseline.ts`, so the UI and session summaries use the same math.
-
----
-
-## Summary
-
-pxpipe stays cache-aligned by keeping transformed prefixes deterministic and
-preserving caller cache-marker ownership. Project pages and their boundary are
-inserted before the untouched live-prompt marker; history replacement may
-re-plant one existing marker on the replacement block, but the transform never
-adds or multiplies markers. Savings are measured by comparing the real
-transformed request with a `/count_tokens` text counterfactual under the same
-observed cache state. If the actual request read cache, both sides are warm. If
-it did not, both sides are cold. Therefore the provider cache discount is not
-counted as pxpipe savings; the reported savings are only the token reduction
-from text to images.
-
----
+This coordination is defense in depth. The four-measurement admission gate is
+the portable safety rule and is also the rule used by the Worker-safe core.
 
 ## OpenAI / Responses Path (Codex And Friends)
 
-Codex is supported. The wire protocol is `/v1/responses` (and, when present,
-chat-completions-shaped OpenAI paths). pxpipe images the same two buckets as
-on Anthropic: the static slab (system + tool docs + large stable context) and,
-when the closed history prefix clears a token floor and the profitability gate,
-older history.
+OpenAI Chat Completions and Responses requests are currently byte-exact native.
+This includes Codex/Sol and Grok traffic. The proxy still routes the request,
+forwards authentication, records status and usage, and can read historical
+OpenAI event rows, but a new unchanged row has:
 
-The savings number is still "text counterfactual under the same observed cache
-state minus the imaged request." OpenAI usage reports `cached_tokens` as a
-subset of `input_tokens` (not a separate cache-create / cache-read pair). The
-math lives in `src/core/openai-savings.ts`:
+- `compressed: false`;
+- zero transformed characters and images;
+- no candidate probes;
+- no compression counterfactual or token-saving credit.
 
-```text
-actual_eff   = uncached + cached * cache_read_rate(model)
-baseline_eff = actual_eff + (baseline_imaged_tokens - image_tokens)
-               * (cache_read_rate(model) if cached > 0 else 1.0)
-```
+The old `openai-savings` and vision-cost helpers exist for compatibility with
+historical compressed rows and offline evaluation. They do not make the current
+OpenAI request path eligible for imaging. A low or zero OpenAI saving is not a
+gate-tuning problem: pass-through is the required behavior until a same-role,
+same-container image shape is proven.
 
-`cache_read_rate` is model-based on the shared Responses path (Claude 0.1,
-gpt-5 0.1, Grok 0.25). The provider cache discount is applied to both sides, so
-it is never counted as a pxpipe win.
+## Historical behavior
 
-### What actually drives savings
+Previous releases used per-bucket character estimates, `priorWarmTokens`,
+`priorWarmImageTokens`, and a quantized history amortization model to decide
+whether to image selected content. They also reported savings for OpenAI-shaped
+image requests. Those mechanisms did not prove the cost of the complete changed
+request and are no longer active admission rules.
 
-Savings track **how much uncached bulk the client still re-sends as text**, not
-the product name and not the path alone.
-
-| Client shape | What the proxy sees each turn | Typical result |
-|---|---|---|
-| Claude Code on `/anthropic/messages` | Large system + tools + history re-sent as text; Anthropic cache markers on a stable prefix | High savings once imaged (~60–70% on dense traffic) |
-| Codex / OpenAI Responses with a warm prompt cache | Most of the prompt already `cached_tokens`; only the static slab and rare history collapses are imageable | Low % when history does not collapse; the % is honest |
-| Same Responses path, history collapse fires | Closed prefix large enough and profitable → many history images | Meaningful savings (measured gpt-5 collapsed warm rows ~40%) |
-| OpenAI client that re-sends the full transcript as plain text every turn (classic chat-completions style, cold or no useful cache) | Large uncached bulk every request | Same class of win as Claude Code: the gate has real text to beat |
-
-Measured on local `/v1/responses` rows (same endpoint, different models):
-
-| Family | Cached share of input | History collapse | Computed saved |
-|---|---:|---|---:|
-| claude (Codex → Opus) | ~98% | was blocked by a row-count gate bug; should collapse after the ↵ fix | was ~1% slab-only; re-measure on live Codex |
-| grok | high on warm multi-turn | **collapsed** after ↵ gate fix | ~**35%** on collapsed Responses rows (n=35 post-fix); fixture image+factsheet ~70% |
-| gpt-5 | ~73% | often | ~34% overall; ~42% on collapsed warm rows |
-
-Render profiles are selected by exact model id, not by the shared Responses
-path. Opt-in `gpt-5.6-sol` uses 126 columns with a 6×11 JetBrains Mono atlas;
-Claude uses 312 columns with the 5×8 Spleen atlas. Grok remains opt-in and uses the
-densest tested exact-safe image arm, effective **9×12** / 84 columns, plus the
-factsheet. See [eval/grok-density/RESULTS.md](../eval/grok-density/RESULTS.md)
-and [FACTSHEET_RESULTS.md](../eval/grok-density/FACTSHEET_RESULTS.md).
-
-Those profile and savings numbers are not recall evidence. The Sol raw-image
-pilot separately tested both 6×11/126 and old 5×8/152: each scored 0/4 exact
-with four confabulations, and 5×8 also missed gist. Sol is therefore off by
-default; production's fact-sheet remains an important exact-token fallback for
-operators who explicitly opt in. The locally rendered Sol 9×12 retune remains
-untested. See
-[`eval/sol-profile/RESULTS.md`](../eval/sol-profile/RESULTS.md).
-
-So "Codex shows 1% on Opus" is not "Codex unsupported." It is "this session's
-prompt was already ~98% cached text, history collapse did not fire, and only
-the static slab was imaged." The same Codex path saves tens of percent when
-history collapse fires (gpt-5 above) or when the client re-sends uncached bulk.
-
-### Dashboard columns
-
-On OpenAI-shaped rows the dashboard fills **As text / Sent / Saved** only when
-the request was compressed and both `image_tokens` and `baseline_imaged_tokens`
-were recorded. Uncompressed rows (gate said `not_profitable`, model not
-allowlisted, etc.) correctly show `—`. Path selects the accounting shape
-(OpenAI vs Anthropic usage fields); model id selects rates and render profile.
-
-### Practical reading of a low Saved %
-
-1. Check `path`. `/anthropic/messages` and `/v1/responses` are different
-   clients even when the model id is `claude-opus-4-8`.
-2. Check `cached_tokens / input_tokens`. Near 100% means there is little left
-   for imaging to beat under honest same-cache accounting.
-3. Check `history_reason`. `collapsed` is where large Codex/OpenAI savings
-   come from; `not_profitable` / `below_min_tokens` / `prefix_too_short` mean
-   only the slab (or nothing) was imaged.
-4. Do not compare a Claude Code session's 70% to a warm Codex session's 1%
-   as a regression. Different wire, different uncached bulk.
+Historical JSONL rows remain readable. Their fields must not be treated as
+evidence that current OpenAI traffic or collapsed history is being compressed. See
+[`HISTORY_CACHE_MODEL.md`](./HISTORY_CACHE_MODEL.md) for the retired history
+design and [`TRANSFORM_INFO.md`](./TRANSFORM_INFO.md) for the current wire
+contract.

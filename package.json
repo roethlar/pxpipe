@@ -1,7 +1,7 @@
 {
   "name": "pxpipe-proxy",
   "version": "0.8.0-provenance-safe.1",
-  "description": "Token-saving proxy for Claude Code: renders bulky context (system prompt, tool docs, old history) as dense PNGs to cut input tokens. Runs on Node and Cloudflare Workers.",
+  "description": "Safety-first local proxy that replaces selected same-container Anthropic text spans with images only after a measured token win.",
   "type": "module",
   "bin": {
     "pxpipe": "bin/cli.js"
