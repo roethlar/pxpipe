@@ -1,9 +1,9 @@
 # context-hijack-correction-plan: Remove context rewriting and negative returns
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: Reopened after accepted r1 — three LOW refinements pending
+**Status**: Pending r2 after adopting all three LOW r1 refinements
 **Branch**: `fix/provenance-safe-compression`
-**Commit**: `489292a42d336e3f99661d3ea2407ab9636b680b`
+**Commit**: `5cfcf2bbd637e1988cb0299312bf5d85ed5addbf`
 
 ## Plan authority
 
@@ -75,6 +75,28 @@ owner reported a new live Anthropic role-order 400. The plan was revised at
 `489292a` to cover provider-structure validation, the reproduced history-collapse
 cause, cache-tier pricing, shared signed accounting, overlap, and fault-injection
 guards. No partial reviewer output is treated as a verdict.
+
+R1 adjudication:
+
+- **ADOPTED should-fix 1** — the four-probe request-wide result is now the only
+  runtime profitability verdict. Active per-bucket
+  `isCompressionProfitable`/`priorWarm*` gates are retired, not retained as a
+  second pre-filter.
+- **ADOPTED should-fix 2** — admission math and structural validation live in the
+  Workers-safe core. The owner's local Node service owns the process-local breaker
+  and per-fingerprint in-flight lock. Worker has no claimed cross-isolate state and
+  relies on the strict per-request gate or stays native.
+- **ADOPTED should-fix 3** — v1 builds one candidate from all safety-qualified
+  buckets. If its authoritative full-request probes fail, the complete original
+  request is forwarded; there is no subset search.
+- **ANSWERED open question 1** — shared core admission, Node-only process breaker;
+  no KV or Durable Object.
+- **ANSWERED open question 2** — cache tier comes from the unambiguous covering
+  caller `cache_control.ttl`; absent, unknown, uncovered, or mixed coverage uses
+  conservative 2.0 cache-create pricing.
+
+These refinements were committed at `5cfcf2b`. Fresh r2 must grade the full pinned
+plan; r1 acceptance does not authorize implementation.
 
 ## Reviewer comments
 
