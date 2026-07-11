@@ -3,7 +3,7 @@
 **Severity**: N/A — owner-requested plan review, not a defect finding
 **Status**: Pending Claude review — implementation remains owner-gated
 **Branch**: `fix/provenance-safe-compression`
-**Commit**: `26c82cc8012004dfea7c085bbae6dd142e3ce75c`
+**Commit**: `489292a42d336e3f99661d3ea2407ab9636b680b`
 
 ## Plan authority
 
@@ -36,6 +36,10 @@ receipts, and the machine-local incident report together. Check:
 - whether the 10% plus 256-effective-token reserve, missing-measurement fallback,
   and negative-feedback breaker can prevent the reported negative return without
   hiding it;
+- whether five-minute and one-hour cache creation are priced separately and one
+  shared signed function keeps live, replay, session, and statistics totals equal;
+- whether final provider-structure validation rejects the reproduced invalid
+  Anthropic system-before-synthetic-user sequence and restores the original body;
 - whether the current stale-model and hook-order evidence justifies only guards,
   not speculative cache or ordering code;
 - whether the five slices and guard proofs are complete, independently reviewable,
@@ -66,9 +70,17 @@ SHA, incomplete termination, or a failed command is not acceptance.
 
 ## Coder adjudication
 
-Pending review.
+The pre-r1 dispatch at reviewed SHA `dd0c5a3` was stopped before a verdict when the
+owner reported a new live Anthropic role-order 400. The plan was revised at
+`489292a` to cover provider-structure validation, the reproduced history-collapse
+cause, cache-tier pricing, shared signed accounting, overlap, and fault-injection
+guards. No partial reviewer output is treated as a verdict.
 
 ## Reviewer comments
 
-Pending review. Record the Claude version, reviewed/base SHA, verdict, UTC
-timestamp, and all comments before acting on them.
+- Pre-r1 (2026-07-11T01:03:01Z): Claude Code 2.1.206 / Sonnet 5 was dispatched
+  against `dd0c5a3` with base `94470f7`, then deliberately terminated before any
+  verdict because new owner evidence made the plan stale. Outcome: **no verdict;
+  fail closed**.
+- Fresh r1 pending. Record the Claude version, reviewed/base SHA, verdict, UTC
+  timestamp, and all comments before acting on them.

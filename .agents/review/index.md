@@ -30,4 +30,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | subscription-routing | `80172ae..dfeb07f` | Local no-key Codex and Grok routes          | `[x]` accepted r1 at `9ef32c5`; Claude guards confirmed |
 | subscription-model-persistence | `7b7ac1c..6cc440c` | Save all three installed model selections | `[x]` accepted r1 at `7416c94`; installed from `3e07e08` |
 | one-port-subscription-plan | `41fd638` | Persistent one-service Codex and Grok plan | `[~]` paused behind context correction |
-| context-hijack-correction-plan | `26c82cc` | Remove context rewriting and negative returns | `[~]` pending Claude review |
+| context-hijack-correction-plan | `489292a` | Remove context rewriting, invalid requests, and negative returns | `[~]` pending fresh Claude review |
