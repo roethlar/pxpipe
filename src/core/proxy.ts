@@ -23,6 +23,11 @@ import {
 } from './admission.js';
 import { accountAnthropicInput } from './baseline.js';
 import type { Usage } from './types.js';
+import {
+  classifyReservedRoute,
+  resolveSubscriptionBase,
+  serializedQuerySuffix,
+} from './subscription-routing.js';
 
 export interface CompressionCoordinationInput {
   readonly provider: 'anthropic';
@@ -63,6 +68,10 @@ export interface ProxyConfig {
   apiKey?: string;
   /** OpenAI API base for GPT chat completions, no trailing slash. */
   openAIUpstream?: string;
+  /** Fixed ChatGPT subscription base for reserved local Codex routes. */
+  codexUpstream?: string;
+  /** Fixed Grok subscription base for reserved local Grok routes. */
+  grokUpstream?: string;
   /** Override or supply an OpenAI API key. If unset, we forward Authorization. */
   openAIApiKey?: string;
   /** Pass a function to inject dynamic values per-request (e.g. live charsPerToken);
@@ -109,6 +118,22 @@ function readModelField(body: Uint8Array): string | null {
     const head = new TextDecoder().decode(body.subarray(0, 8192));
     const m = /"model"\s*:\s*"([^"]{1,80})"/.exec(head);
     return m ? m[1]! : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Reserved pass-through telemetry may inspect only an own top-level model. */
+function readOwnTopLevelModelField(body: Uint8Array): string | null {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(body)) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(record, 'model')) return null;
+    const model = record.model;
+    return typeof model === 'string' && model.length > 0 && model.length <= 80
+      ? model
+      : null;
   } catch {
     return null;
   }
@@ -455,6 +480,10 @@ const STRIP_REQ_HEADERS = new Set([
   'connection',
   'keep-alive',
   'proxy-connection',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
   'transfer-encoding',
   'upgrade',
   'content-length', // we recompute
@@ -465,17 +494,51 @@ const STRIP_REQ_HEADERS = new Set([
 const STRIP_RES_HEADERS = new Set([
   'connection',
   'keep-alive',
+  'proxy-connection',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
   'transfer-encoding',
+  'upgrade',
   'content-encoding', // we don't re-encode
   'content-length',   // body may differ after streaming
 ]);
 
+function connectionNominatedHeaders(src: Headers): Set<string> {
+  const nominated = new Set<string>();
+  for (const value of src.get('connection')?.split(',') ?? []) {
+    const name = value.trim().toLowerCase();
+    if (name) nominated.add(name);
+  }
+  return nominated;
+}
+
 function filterHeaders(src: Headers, strip: Set<string>): Headers {
+  const dynamic = new Set(strip);
+  for (const name of connectionNominatedHeaders(src)) dynamic.add(name);
   const out = new Headers();
   src.forEach((v, k) => {
-    if (!strip.has(k.toLowerCase())) out.append(k, v);
+    if (!dynamic.has(k.toLowerCase())) out.append(k, v);
   });
   return out;
+}
+
+function isReservedCredentialHeader(name: string): boolean {
+  return name === 'authorization'
+    || name === 'chatgpt-account-id'
+    || name.startsWith('x-xai-')
+    || name.startsWith('x-grok-');
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 300
+    || status === 301
+    || status === 302
+    || status === 303
+    || status === 305
+    || status === 307
+    || status === 308;
 }
 
 const PASSTHROUGH_PREFIXES = [
@@ -642,12 +705,15 @@ export function parseGatewayHeaders(spec: string | undefined): Record<string, st
 
 /** Build the proxy fetch handler. */
 export function createProxy(config: ProxyConfig = {}) {
-  const routes = resolveUpstreams(config);
-  const upstream = routes.anthropic;
-  const openAIUpstream = routes.openai;
-  const passthroughUpstream = config.provider === 'cloudflare-ai-gateway'
-    ? (config.gatewayBaseUrl ?? '').replace(/\/+$/, '')
-    : upstream;
+  let routes: ReturnType<typeof resolveUpstreams> | undefined;
+  try {
+    routes = resolveUpstreams(config);
+  } catch {
+    // Reserved subscription routes resolve independently. Generic requests
+    // receive a fixed local configuration error inside the handler.
+  }
+  const codexUpstream = resolveSubscriptionBase(config.codexUpstream);
+  const grokUpstream = resolveSubscriptionBase(config.grokUpstream);
   const gatewayHeaders = config.gatewayHeaders ?? {};
   const applyGatewayHeaders = (h: Headers): Headers => {
     for (const [k, v] of Object.entries(gatewayHeaders)) h.set(k, v);
@@ -662,6 +728,8 @@ export function createProxy(config: ProxyConfig = {}) {
     // Hash-only request correlation; request bytes never enter telemetry.
     let reqBodySha8: string | undefined;
     let compressionLease: ProxyCompressionLease | undefined;
+    let info: TransformInfo | undefined;
+    let requestModel: string | undefined;
 
     const fire = (
       status: number,
@@ -722,6 +790,109 @@ export function createProxy(config: ProxyConfig = {}) {
       void finalize();
     };
 
+    const localFailure = (
+      status: number,
+      error: string,
+      allow?: string,
+    ): Response => {
+      fire(status, undefined, error);
+      const headers = new Headers({ 'content-type': 'application/json' });
+      if (allow) headers.set('allow', allow);
+      return new Response(JSON.stringify({ error }), { status, headers });
+    };
+
+    const reservedRoute = classifyReservedRoute(url.pathname, req.method);
+    if (reservedRoute.kind !== 'none') {
+      const query = serializedQuerySuffix(req.url);
+      if (!query.ok || reservedRoute.kind === 'invalid') {
+        return localFailure(404, 'reserved_route_not_found');
+      }
+      if (reservedRoute.kind === 'method_not_allowed') {
+        return localFailure(405, 'reserved_method_not_allowed', reservedRoute.allow);
+      }
+
+      const nominated = connectionNominatedHeaders(req.headers);
+      let nominatedCredential = false;
+      req.headers.forEach((_value, name) => {
+        const normalized = name.toLowerCase();
+        if (nominated.has(normalized) && isReservedCredentialHeader(normalized)) {
+          nominatedCredential = true;
+        }
+      });
+      if (nominatedCredential) {
+        return localFailure(401, 'reserved_authorization_required');
+      }
+
+      const outHeaders = filterHeaders(req.headers, STRIP_REQ_HEADERS);
+      const authorization = outHeaders.get('authorization');
+      if (!authorization || authorization.trim() === '') {
+        return localFailure(401, 'reserved_authorization_required');
+      }
+
+      const resolvedBase = reservedRoute.vendor === 'codex'
+        ? codexUpstream
+        : grokUpstream;
+      if (!resolvedBase.ok) {
+        return localFailure(503, 'reserved_upstream_unavailable');
+      }
+
+      let bodyOut: BodyInit | null = null;
+      if (reservedRoute.hasBody) {
+        const bodyIn = new Uint8Array(await req.arrayBuffer());
+        requestModel = readOwnTopLevelModelField(bodyIn) ?? undefined;
+        const native = await transformOpenAIResponses(bodyIn, { compress: false });
+        bodyOut = native.body as unknown as BodyInit;
+        info = native.info;
+        if (native.body.byteLength > 0) reqBodySha8 = await sha8Bytes(native.body);
+      }
+
+      const upstreamUrl = resolvedBase.base + reservedRoute.upstreamPath + query.suffix;
+      let upstreamRes: Response;
+      try {
+        upstreamRes = await fetch(upstreamUrl, {
+          method: req.method,
+          headers: outHeaders,
+          body: bodyOut,
+          redirect: 'manual',
+        });
+      } catch {
+        return localFailure(502, 'upstream_error');
+      }
+      if (isRedirectStatus(upstreamRes.status)) {
+        try {
+          await upstreamRes.body?.cancel();
+        } catch {
+          // The redirect still fails closed even when its unused body cannot cancel.
+        }
+        return localFailure(502, 'reserved_upstream_redirect');
+      }
+
+      const firstByteMs = Date.now() - t0;
+      const { response: teed, usagePromise, measurementPromise, stopReasonPromise } =
+        teeForUsage(upstreamRes);
+      void Promise.all([
+        usagePromise.catch(() => undefined),
+        measurementPromise.catch(() => undefined),
+        stopReasonPromise.catch(() => undefined),
+      ]).then(([usage, measurement, stopReason]) =>
+        fire(upstreamRes.status, info, undefined, firstByteMs, usage, measurement, stopReason),
+      );
+      return new Response(teed.body, {
+        status: upstreamRes.status,
+        statusText: upstreamRes.statusText,
+        headers: filterHeaders(upstreamRes.headers, STRIP_RES_HEADERS),
+      });
+    }
+
+    if (!routes) {
+      return localFailure(500, 'generic_configuration_invalid');
+    }
+    const upstream = routes.anthropic;
+    const openAIUpstream = routes.openai;
+    const passthroughUpstream = config.provider === 'cloudflare-ai-gateway'
+      ? (config.gatewayBaseUrl ?? '').replace(/\/+$/, '')
+      : upstream;
+
     // Transform only known shapes; everything else passes through.
     const providerPrefixed = isProviderPrefixedPath(url.pathname);
     const isMessages = req.method === 'POST' && isAnthropicMessagesPath(url.pathname);
@@ -736,8 +907,6 @@ export function createProxy(config: ProxyConfig = {}) {
     const upstreamBase = providerPrefixed ? passthroughUpstream : isOpenAIPath ? openAIUpstream : upstream;
 
     let bodyOut: BodyInit | null = null;
-    let info: TransformInfo | undefined;
-    let requestModel: string | undefined;
 
     if (isMessages || isOpenAIChat || isOpenAIResponses) {
       const bodyIn = new Uint8Array(await req.arrayBuffer());
