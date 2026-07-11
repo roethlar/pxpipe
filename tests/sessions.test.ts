@@ -97,7 +97,10 @@ describe('aggregateSessions', () => {
   it('credits sidecar bytes to the right session', async () => {
     const sidecar = writeSidecar(tmp, 'sample.json.gz', 1024);
     writeEvents(tmp, [
-      ev({ first_user_sha8: 'aaaaaaaa', req_body_sample_path: sidecar }),
+      ev({
+        first_user_sha8: 'aaaaaaaa',
+        req_body_sample_path: sidecar,
+      } as Partial<TrackEvent> & { req_body_sample_path: string }),
       ev({ first_user_sha8: 'bbbbbbbb' }),
     ]);
     const { sessions, sidecarsBySession } = await aggregateSessions(tmp);

@@ -2712,8 +2712,9 @@ export async function buildAnthropicCandidate(
   let req: MessagesRequest;
   try {
     req = JSON.parse(new TextDecoder().decode(body));
-  } catch (e) {
-    info.reason = `parse_error: ${(e as Error).message}`;
+  } catch {
+    // JSON.parse error messages may quote malformed input. Keep diagnostics fixed.
+    info.reason = 'parse_error';
     return exactNativeResult(body, info);
   }
 

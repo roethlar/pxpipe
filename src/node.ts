@@ -26,7 +26,6 @@ import {
 import { readExportTextFile } from './export-collect.js';
 import {
   toTrackEvent,
-  TRACK_BODY_INLINE_MAX,
   type Tracker,
   type TrackEvent,
 } from './core/tracker.js';
@@ -545,43 +544,6 @@ class FileTracker implements Tracker {
   }
 }
 
-// ---- 4xx body sidecar writer ---------------------------------------------
-
-/**
- * For oversized 4xx body samples that won't fit inline in the JSONL row, we
- * write them to a sidecar file at `<dir>/${ts}-${sha8}.json.gz`. The path
- * lands in the event as `req_body_sample_path`. Survives log rotation and
- * stays out of the streaming dashboard.
- *
- * Failure mode: directory unwritable or write fails → returns undefined and
- * the body sample is silently dropped (we still keep the sha8 and error_body
- * for diagnostics; the request itself was never blocked by this).
- */
-async function maybeWriteBodySidecar(
-  bytesGz: Uint8Array,
-  sha8: string | undefined,
-  dir: string,
-): Promise<string | undefined> {
-  try {
-    // Lazy mkdir — only when we actually need to write.
-    fs.mkdirSync(dir, { recursive: true });
-  } catch {
-    return undefined;
-  }
-  // Filename: timestamp + sha8 keeps collisions effectively impossible and
-  // makes the file naturally sortable. Sha8 fallback covers the edge case
-  // where the hash wasn't computed (zero-byte body, etc.).
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const tag = sha8 ?? 'nohash';
-  const filePath = path.join(dir, `${ts}-${tag}.json.gz`);
-  try {
-    await fs.promises.writeFile(filePath, bytesGz);
-    return filePath;
-  } catch {
-    return undefined;
-  }
-}
-
 // ---- pxpipe export -------------------------------------------------------
 
 function printExportHelp(): void {
@@ -914,18 +876,14 @@ async function main(): Promise<void> {
   const tracker: Tracker = new FileTracker(opts.eventsFile);
   const compressionBreaker = new ProcessCompressionBreaker();
 
-  // Sidecar dir for oversized 4xx request-body samples. Lives next to the
-  // events.jsonl so a single `rm -rf` cleans up both. Lazy-mkdir'd on first
-  // sidecar write (see maybeWriteBodySidecar).
-  const bodySidecarDir = path.join(path.dirname(opts.eventsFile), '4xx-bodies');
-
   // Live dashboard state — populated on every request via onRequest below,
   // served via the route interception in front of the proxy handler. The
   // SessionsPaths handle lets the dashboard surface session/disk/stats data
   // without reaching back into module-scope globals.
   const dashboard = new DashboardState({
     eventsFile: opts.eventsFile,
-    sidecarDir: bodySidecarDir,
+    // Retain visibility and cleanup for sidecars written by older releases.
+    sidecarDir: path.join(path.dirname(opts.eventsFile), '4xx-bodies'),
   });
   // Seed the "recent requests" table from the JSONL log so a process restart
   // doesn't reset what you can see in the UI. Best-effort; ignored on error.
@@ -996,16 +954,6 @@ async function main(): Promise<void> {
         `[${new Date().toISOString()}] ${e.method} ${e.path} → ${e.status} (${e.durationMs}ms) ${tag}${usageTag}`,
       );
 
-      // Surface upstream 4xx error bodies inline so a regression in the
-      // request shape is obvious without having to grep events.jsonl. The
-      // tracker JSONL already has the full ~2 KiB capture.
-      if (e.errorBody) {
-        const trimmed = e.errorBody.length > 400
-          ? e.errorBody.slice(0, 400) + '…'
-          : e.errorBody;
-        console.warn(`[pxpipe ${e.status}] upstream body: ${trimmed}`);
-      }
-
       // Canary: surface unknown tag-shaped blocks so a Claude Code release
       // that adds a new dynamic tag is caught within hours.
       if (e.info?.unknownStaticTags && e.info.unknownStaticTags.length > 0) {
@@ -1013,23 +961,6 @@ async function main(): Promise<void> {
           `[pxpipe warn] unknown tag(s) in static slab: ${e.info.unknownStaticTags.join(', ')}  ` +
             `— may need to add to DYNAMIC_BLOCK_TAGS (per-turn) or KNOWN_STATIC_TAGS (static) in src/core/transform.ts`,
         );
-      }
-
-      // If the proxy captured a gzipped 4xx body that won't fit inline in
-      // the JSONL row, write it to a sidecar file and put the path on the
-      // event instead. Threshold: gz_bytes * 4/3 > inline cap (b64 expansion).
-      if (e.reqBodyGz && e.reqBodyGz.byteLength * 4 > TRACK_BODY_INLINE_MAX * 3) {
-        const writtenPath = await maybeWriteBodySidecar(
-          e.reqBodyGz,
-          e.reqBodySha8,
-          bodySidecarDir,
-        );
-        if (writtenPath) {
-          e.reqBodySamplePath = writtenPath;
-          e.reqBodyGz = undefined; // tracker will pick up the path instead
-        }
-        // If write failed: leave reqBodyGz; the tracker will silently drop
-        // it (still too big to inline). We never lose the sha8 / error_body.
       }
 
       // Persistent JSONL event for offline analysis (pxpipe stats etc.).

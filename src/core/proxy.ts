@@ -80,7 +80,8 @@ export interface ProxyEvent {
   /** Top-level request model when present. Used for telemetry/dashboard labels only. */
   model?: string;
   status: number;
-  /** Wall-clock ms from request start to event fire (≈ end of upstream body). */
+  /** Wall-clock ms from request start to event fire. Successful response scans reach EOF;
+   *  error events fire after upstream headers because their bodies remain client-only. */
   durationMs: number;
   /** Wall-clock ms from request start to upstream response headers. */
   firstByteMs?: number;
@@ -94,21 +95,12 @@ export interface ProxyEvent {
    *  "length", "content_filter", …) is normalized into the same field. */
   stopReason?: string;
   error?: string;
-  /** First ~2 KiB of the upstream 4xx body (not captured on 2xx or 5xx). */
-  errorBody?: string;
   /** sha256[0..8] of the transformed outgoing body — set on every /v1/messages POST for correlation. */
   reqBodySha8?: string;
-  /** Gzipped transformed body, populated only on 4xx. Node may write to sidecar (see reqBodySamplePath). */
-  reqBodyGz?: Uint8Array;
-  /** Set by the Node host instead of reqBodyGz when the body was written to a sidecar file. */
-  reqBodySamplePath?: string;
   /** Ground-truth char counts from the response stream, independent of usage.output_tokens.
-   *  Absent when the body couldn't be scanned (5xx, unknown content-type). See OutputMeasurement. */
+   *  Absent when the body isn't scanned (error response, unknown content-type). See OutputMeasurement. */
   measurement?: OutputMeasurement;
 }
-
-/** Max chars of 4xx error body captured on ProxyEvent — enough for Anthropic's full error JSON. */
-const ERROR_BODY_MAX = 2048;
 
 /** Read the top-level `model` field from a /v1/messages body without parsing the full JSON.
  *  Returns null when not found — callers treat null as outside supported scope (fail-closed). */
@@ -120,16 +112,6 @@ function readModelField(body: Uint8Array): string | null {
   } catch {
     return null;
   }
-}
-
-/** Gzip via CompressionStream — available in Node 18+ and Cloudflare Workers. */
-async function gzipBytes(body: Uint8Array): Promise<Uint8Array> {
-  // Cast: TS doesn't model Response(Uint8Array) even though it works in both runtimes.
-  const stream = new Response(body as BufferSource).body!.pipeThrough(
-    new CompressionStream('gzip'),
-  );
-  const buf = await new Response(stream).arrayBuffer();
-  return new Uint8Array(buf);
 }
 
 /** sha256[0..8] hex of a byte buffer. */
@@ -314,7 +296,7 @@ function measureFromMessageJson(j: unknown): OutputMeasurement {
     } else if (b?.type === 'tool_use') {
       try {
         m.toolUseChars += JSON.stringify(b.input ?? {}).length;
-      } catch {
+      } catch (error) {
         /* circular / unserialisable input — leave the counter as-is */
       }
     }
@@ -347,14 +329,13 @@ function readStopReasonFromJson(j: unknown): string | undefined {
 }
 
 /**
- * Tee the response body to extract usage + output measurement without blocking the client.
- * Streams are scanned to EOF (final output_tokens is in message_delta; redacted_thinking
- * blocks can appear anywhere). 4xx bodies are capped at ERROR_BODY_MAX. 5xx is skipped.
+ * Tee successful response bodies to extract usage + output measurement without blocking
+ * the client. Streams are scanned to EOF (final output_tokens is in message_delta;
+ * redacted_thinking blocks can appear anywhere). Error responses remain untouched.
  */
 function teeForUsage(res: Response): {
   response: Response;
   usagePromise: Promise<Usage | undefined>;
-  errorBodyPromise: Promise<string | undefined>;
   measurementPromise: Promise<OutputMeasurement | undefined>;
   stopReasonPromise: Promise<string | undefined>;
 } {
@@ -363,53 +344,15 @@ function teeForUsage(res: Response): {
     return {
       response: res,
       usagePromise: Promise.resolve(undefined),
-      errorBodyPromise: Promise.resolve(undefined),
       measurementPromise: Promise.resolve(undefined),
       stopReasonPromise: Promise.resolve(undefined),
     };
   }
-  // 4xx: tee for the error body but skip usage scanning entirely.
-  if (res.status >= 400 && res.status < 500) {
-    const [forClient, forUs] = res.body.tee();
-    const errorBodyPromise = (async (): Promise<string | undefined> => {
-      const reader = forUs.getReader();
-      const decoder = new TextDecoder();
-      let out = '';
-      try {
-        while (out.length < ERROR_BODY_MAX) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          out += decoder.decode(value, { stream: true });
-        }
-        out += decoder.decode();
-        // Drain the rest so the tee buffer doesn't hold the stream open.
-        while (true) {
-          const { done } = await reader.read();
-          if (done) break;
-        }
-      } catch {
-        /* client may have aborted */
-      }
-      return out.length > ERROR_BODY_MAX ? out.slice(0, ERROR_BODY_MAX) : out;
-    })();
-    return {
-      response: new Response(forClient, {
-        status: res.status,
-        statusText: res.statusText,
-        headers: res.headers,
-      }),
-      usagePromise: Promise.resolve(undefined),
-      errorBodyPromise,
-      measurementPromise: Promise.resolve(undefined),
-      stopReasonPromise: Promise.resolve(undefined),
-    };
-  }
-  // 5xx: skip both (the host already synthesizes an error message).
-  if (res.status >= 500) {
+  // Never read or retain upstream error bodies. The caller receives the original stream.
+  if (res.status >= 400) {
     return {
       response: res,
       usagePromise: Promise.resolve(undefined),
-      errorBodyPromise: Promise.resolve(undefined),
       measurementPromise: Promise.resolve(undefined),
       stopReasonPromise: Promise.resolve(undefined),
     };
@@ -498,7 +441,6 @@ function teeForUsage(res: Response): {
       headers: res.headers,
     }),
     usagePromise: scanResult.then((s) => s.usage),
-    errorBodyPromise: Promise.resolve(undefined),
     measurementPromise: scanResult.then((s) => s.measurement),
     stopReasonPromise: scanResult.then((s) => s.stopReason),
   };
@@ -717,8 +659,7 @@ export function createProxy(config: ProxyConfig = {}) {
     const url = new URL(req.url);
     const path = url.pathname + url.search;
 
-    // reqBodyBytes: kept for lazy gzip on 4xx. reqBodySha8: computed eagerly for correlation.
-    let reqBodyBytes: Uint8Array | undefined;
+    // Hash-only request correlation; request bytes never enter telemetry.
     let reqBodySha8: string | undefined;
     let compressionLease: ProxyCompressionLease | undefined;
 
@@ -728,21 +669,10 @@ export function createProxy(config: ProxyConfig = {}) {
       error?: string,
       firstByteMs?: number,
       usage?: Usage,
-      errorBody?: string,
       measurement?: OutputMeasurement,
       stopReason?: string,
     ): void => {
-      const is4xx = status >= 400 && status < 500;
-      // Gzip body lazily (only on 4xx). Async IIFE keeps fire() synchronous.
       const finalize = async (): Promise<void> => {
-        let reqBodyGz: Uint8Array | undefined;
-        if (is4xx && reqBodyBytes && reqBodyBytes.byteLength > 0) {
-          try {
-            reqBodyGz = await gzipBytes(reqBodyBytes);
-          } catch {
-            // Non-fatal — drop body sample.
-          }
-        }
         if (compressionLease) {
           let signedSavingsTokens: number | undefined;
           if (info?.compressed && usage) {
@@ -784,9 +714,7 @@ export function createProxy(config: ProxyConfig = {}) {
           info,
           usage,
           error,
-          errorBody,
           reqBodySha8,
-          reqBodyGz,
           measurement,
           stopReason,
         });
@@ -925,12 +853,11 @@ export function createProxy(config: ProxyConfig = {}) {
         if (!modelOk) r.info.reason = 'unsupported_model';
         bodyOut = r.body as unknown as BodyInit; // TS narrows Uint8Array away from BodyInit
         info = r.info;
-        reqBodyBytes = r.body;
         if (r.body.byteLength > 0) reqBodySha8 = await sha8Bytes(r.body);
-      } catch (e) {
+      } catch {
         compressionLease?.finish();
         compressionLease = undefined;
-        fire(502, undefined, `transform_error: ${(e as Error).message}`);
+        fire(502, undefined, 'transform_error');
         return new Response(JSON.stringify({ error: 'pxpipe transform failed' }), {
           status: 502,
           headers: { 'content-type': 'application/json' },
@@ -963,8 +890,8 @@ export function createProxy(config: ProxyConfig = {}) {
         // duplex is required by spec when sending a stream as body
         ...(bodyOut instanceof ReadableStream ? { duplex: 'half' } : {}),
       } as RequestInit);
-    } catch (e) {
-      fire(502, info, `upstream_error: ${(e as Error).message}`);
+    } catch {
+      fire(502, info, 'upstream_error');
       return new Response(JSON.stringify({ error: 'pxpipe upstream unreachable' }), {
         status: 502,
         headers: { 'content-type': 'application/json' },
@@ -973,18 +900,17 @@ export function createProxy(config: ProxyConfig = {}) {
 
     const firstByteMs = Date.now() - t0;
 
-    // Tee: client gets one side; scanner reads the other for usage/measurement/error body.
-    const { response: teed, usagePromise, errorBodyPromise, measurementPromise, stopReasonPromise } =
+    // Successful responses are teed for usage/measurement; errors stay client-only.
+    const { response: teed, usagePromise, measurementPromise, stopReasonPromise } =
       teeForUsage(upstreamRes);
 
-    // Fire event in background once all four resolve (all share the same stream read).
+    // Fire event in background once response-derived diagnostics resolve.
     void Promise.all([
       usagePromise.catch(() => undefined),
-      errorBodyPromise.catch(() => undefined),
       measurementPromise.catch(() => undefined),
       stopReasonPromise.catch(() => undefined),
-    ]).then(([usage, errorBody, measurement, stopReason]) =>
-      fire(upstreamRes.status, info, undefined, firstByteMs, usage, errorBody, measurement, stopReason),
+    ]).then(([usage, measurement, stopReason]) =>
+      fire(upstreamRes.status, info, undefined, firstByteMs, usage, measurement, stopReason),
     );
 
     return new Response(teed.body, {

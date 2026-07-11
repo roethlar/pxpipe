@@ -1,11 +1,10 @@
 /**
  * Runtime-agnostic event sink for pxpipe.
  * Per-request JSONL record — same shape on Node (file) and Workers (console.log).
- * Never emits raw text; only sizes, counts, durations, env fields, and sha256 prefixes.
+ * Never emits raw text or host identity; only sizes, counts, durations, and hashes.
  */
 
 import type { ProxyEvent } from './proxy.js';
-import { bytesToBase64 } from './png.js';
 
 /** Canonical bucket keys emitted by current transforms. Deriving the union from
  * this allow-list keeps runtime projection and persisted typing in lockstep. */
@@ -179,7 +178,7 @@ export interface TrackEvent {
   /** Exact vouched boundary represented by cache_prefix_sha8. */
   cache_boundary_kind?: CacheBoundaryKind;
 
-  // From TransformInfo.env:
+  // Legacy fields retained so readers can consume old rows. toTrackEvent never emits them.
   cwd?: string;
   is_git_repo?: boolean;
   git_branch?: string;
@@ -248,18 +247,9 @@ export interface TrackEvent {
 
   // Errors:
   error?: string;
-  /** First ~2 KiB of the upstream 4xx response body. */
-  error_body?: string;
   /** sha256[0..8] of the TRANSFORMED outgoing body — correlates payloads without persisting them. */
   req_body_sha8?: string;
-  /** Gzipped+base64 TRANSFORMED body for 4xx, inlined when ≤ TRACK_BODY_INLINE_MAX. Node host writes sidecar for larger bodies. */
-  req_body_sample_b64?: string;
-  /** Node host only: path to gzipped sidecar when inline cap exceeded. Workers drop oversized samples. */
-  req_body_sample_path?: string;
 }
-
-/** Max inline base64 body per JSONL row (32 KiB). Larger goes to sidecar (Node) or is dropped (Workers). */
-export const TRACK_BODY_INLINE_MAX = 32 * 1024;
 
 /** Hosts implement this to persist events. */
 export interface Tracker {
@@ -323,7 +313,6 @@ function projectBucketChars(value: unknown): TrackBucketChars | undefined {
 /** Convert a ProxyEvent to its flat persisted shape. Shared in core so Node/Worker hosts stay in sync. */
 export function toTrackEvent(ev: ProxyEvent): TrackEvent {
   const info = ev.info;
-  const env = info?.env;
   const u = ev.usage;
   const out: TrackEvent = {
     ts: new Date().toISOString(),
@@ -334,18 +323,11 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
   };
   if (ev.model) out.model = ev.model;
   if (ev.firstByteMs !== undefined) out.first_byte_ms = ev.firstByteMs;
-  if (ev.error) out.error = ev.error;
-  if (ev.errorBody) out.error_body = ev.errorBody;
-  if (ev.reqBodySha8) out.req_body_sha8 = ev.reqBodySha8;
-  // Body sample: sidecar path (Node) > inline base64 if it fits > drop (Workers, oversized).
-  if (ev.reqBodySamplePath) {
-    out.req_body_sample_path = ev.reqBodySamplePath;
-  } else if (ev.reqBodyGz && ev.reqBodyGz.byteLength > 0) {
-    const b64 = bytesToBase64(ev.reqBodyGz);
-    if (b64.length <= TRACK_BODY_INLINE_MAX) {
-      out.req_body_sample_b64 = b64;
-    }
+  // Proxy diagnostics are fixed codes. Never project arbitrary exception text.
+  if (ev.error === 'transform_error' || ev.error === 'upstream_error') {
+    out.error = ev.error;
   }
+  if (ev.reqBodySha8) out.req_body_sha8 = ev.reqBodySha8;
 
   if (info) {
     const provenance = info as ProvenanceTelemetryInfo;
@@ -550,14 +532,6 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
     ) {
       out.admission_fingerprint = info.admissionFingerprint;
     }
-  }
-  if (env) {
-    if (env.cwd) out.cwd = env.cwd;
-    if (env.isGitRepo !== undefined) out.is_git_repo = env.isGitRepo;
-    if (env.gitBranch) out.git_branch = env.gitBranch;
-    if (env.platform) out.platform = env.platform;
-    if (env.osVersion) out.os_version = env.osVersion;
-    if (env.today) out.today = env.today;
   }
   if (u) {
     if (u.input_tokens !== undefined) out.input_tokens = u.input_tokens;

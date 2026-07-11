@@ -16,11 +16,11 @@
  * paths — but it's best-effort: missing or unreadable files just leave the
  * synthetic ID standing alone.
  *
- * ## File layout we manage
+ * ## File layout we manage/read
  *
  * - `~/.pxpipe/events.jsonl` — append-only JSONL written by FileTracker
- * - `~/.pxpipe/4xx-bodies/${iso-ts}-${sha8}.json.gz` — gzipped failure
- *   bodies referenced from JSONL rows via `req_body_sample_path`
+ * - legacy `~/.pxpipe/4xx-bodies/` sidecars, read only so old data can be
+ *   measured and pruned; current releases do not create them
  */
 
 import * as fs from 'node:fs';
@@ -36,6 +36,15 @@ import {
 } from './core/baseline.js';
 
 // ---- Types -----------------------------------------------------------------
+
+interface LegacyTrackEventFields {
+  req_body_sample_path?: unknown;
+}
+
+function legacySidecarPath(ev: TrackEvent): string | undefined {
+  const value = (ev as TrackEvent & LegacyTrackEventFields).req_body_sample_path;
+  return typeof value === 'string' ? value : undefined;
+}
 
 export interface SessionSummary {
   /** The synthetic session ID = first_user_sha8 (or '<unknown>' if missing). */
@@ -85,8 +94,7 @@ export function defaultPaths(): SessionsPaths {
   const home = os.homedir();
   const eventsFile =
     process.env.PXPIPE_LOG ?? path.join(home, '.pxpipe', 'events.jsonl');
-  // The sidecar directory is `4xx-bodies` next to the events file, matching
-  // what src/node.ts writes.
+  // Keep the historical location so older sidecars remain visible/prunable.
   const sidecarDir = path.join(path.dirname(eventsFile), '4xx-bodies');
   return { eventsFile, sidecarDir };
 }
@@ -239,14 +247,15 @@ export async function aggregateSessions(
     if (typeof ev.cache_read_tokens === 'number') {
       s.cacheReadTokens += ev.cache_read_tokens;
     }
-    if (ev.req_body_sample_path) {
+    const sidecarPath = legacySidecarPath(ev);
+    if (sidecarPath) {
       let set = sidecarsBySession.get(id);
       if (!set) {
         set = new Set();
         sidecarsBySession.set(id, set);
       }
-      set.add(ev.req_body_sample_path);
-      const size = sidecarSizes.get(ev.req_body_sample_path);
+      set.add(sidecarPath);
+      const size = sidecarSizes.get(sidecarPath);
       if (typeof size === 'number') s.sidecarBytes += size;
     }
   }

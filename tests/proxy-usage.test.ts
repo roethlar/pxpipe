@@ -570,21 +570,29 @@ describe('proxy usage extraction', () => {
     expect(captured).toBeDefined();
     expect(captured!.status).toBe(529);
     expect(captured!.usage).toBeUndefined();
-    // 5xx: we synthesize our own message upstream, so no errorBody capture.
-    expect(captured!.errorBody).toBeUndefined();
+    expect(captured).not.toHaveProperty('errorBody');
+    expect(captured).not.toHaveProperty('reqBodyGz');
+    expect(captured).not.toHaveProperty('reqBodySamplePath');
   });
 
-  it('captures upstream error body for 4xx responses (up to 2 KiB)', async () => {
-    const upstreamErr = {
+  it('keeps a 4xx body client-only while emitting status and a request hash', async () => {
+    const requestMarker = 'private-request-marker-do-not-persist';
+    const responseMarker = 'private-response-marker-do-not-persist';
+    const requestBody = JSON.stringify({
+      model: 'claude-fable-5',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: requestMarker }],
+    });
+    const upstreamBody = JSON.stringify({
       type: 'error',
       error: {
         type: 'invalid_request_error',
-        message: 'messages.5.content.0.tool_use_id: unknown tool_use id',
+        message: responseMarker,
       },
-    };
+    });
     const restore = mockUpstream(
       () =>
-        new Response(JSON.stringify(upstreamErr), {
+        new Response(upstreamBody, {
           status: 400,
           headers: { 'content-type': 'application/json' },
         }),
@@ -592,7 +600,7 @@ describe('proxy usage extraction', () => {
 
     let captured: ProxyEvent | undefined;
     const proxy = createProxy({
-      transform: {},
+      transform: { compress: false },
       onRequest: (e) => {
         captured = e;
       },
@@ -602,10 +610,9 @@ describe('proxy usage extraction', () => {
       new Request('http://localhost/v1/messages', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: SAMPLE_REQ_BODY,
+        body: requestBody,
       }),
     );
-    // Drain the client side so the tee can complete.
     const clientBody = await res.text();
     await new Promise((r) => setTimeout(r, 20));
     restore();
@@ -613,106 +620,18 @@ describe('proxy usage extraction', () => {
     expect(captured).toBeDefined();
     expect(captured!.status).toBe(400);
     expect(captured!.usage).toBeUndefined();
-    expect(captured!.errorBody).toBe(JSON.stringify(upstreamErr));
-    // Client must still receive the full body unchanged.
-    expect(clientBody).toBe(JSON.stringify(upstreamErr));
-  });
-
-  it('caps the captured 4xx error body at ~2 KiB', async () => {
-    const huge = 'x'.repeat(10_000);
-    const restore = mockUpstream(
-      () =>
-        new Response(huge, {
-          status: 400,
-          headers: { 'content-type': 'text/plain' },
-        }),
-    );
-
-    let captured: ProxyEvent | undefined;
-    const proxy = createProxy({
-      transform: {},
-      onRequest: (e) => {
-        captured = e;
-      },
-    });
-
-    const res = await proxy(
-      new Request('http://localhost/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: SAMPLE_REQ_BODY,
-      }),
-    );
-    await res.text();
-    await new Promise((r) => setTimeout(r, 20));
-    restore();
-
-    expect(captured).toBeDefined();
-    expect(captured!.errorBody).toBeDefined();
-    expect(captured!.errorBody!.length).toBe(2048);
-  });
-
-  /** Decompress a gzip Uint8Array back to bytes — mirror of proxy's gzipBytes. */
-  async function gunzipBytes(buf: Uint8Array): Promise<Uint8Array> {
-    const stream = new Response(buf as BufferSource).body!.pipeThrough(
-      new DecompressionStream('gzip'),
-    );
-    return new Uint8Array(await new Response(stream).arrayBuffer());
-  }
-
-  it('captures the FULL gzipped transformed body on 4xx + sets reqBodySha8', async () => {
-    // Pair with errorBody so a future debugger can reconstruct
-    // "we sent X, Anthropic said Y" from the JSONL alone. We gzip the body
-    // so even a 170 KiB transformed payload fits inline once base64'd
-    // (typical PNG-heavy bodies compress to <10% of source).
-    const restore = mockUpstream(
-      () =>
-        new Response(JSON.stringify({ error: { type: 'bad' } }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' },
-        }),
-    );
-
-    let captured: ProxyEvent | undefined;
-    const proxy = createProxy({
-      transform: {},
-      onRequest: (e) => {
-        captured = e;
-      },
-    });
-
-    const res = await proxy(
-      new Request('http://localhost/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: SAMPLE_REQ_BODY,
-      }),
-    );
-    await res.text();
-    await new Promise((r) => setTimeout(r, 20));
-    restore();
-
-    expect(captured).toBeDefined();
-    expect(captured!.status).toBe(400);
-
-    // Hash lands on every event, not just 4xx.
     expect(captured!.reqBodySha8).toMatch(/^[0-9a-f]{8}$/);
-
-    // Gzipped body is present, has the gzip magic header, and decompresses
-    // back to the transformed JSON we sent upstream.
-    expect(captured!.reqBodyGz).toBeDefined();
-    expect(captured!.reqBodyGz![0]).toBe(0x1f);
-    expect(captured!.reqBodyGz![1]).toBe(0x8b);
-
-    const decoded = new TextDecoder().decode(
-      await gunzipBytes(captured!.reqBodyGz!),
-    );
-    const parsed = JSON.parse(decoded);
-    expect(parsed.model).toBe('claude-3-5-haiku-latest');
-    expect(parsed.messages[0].role).toBe('user');
+    expect(captured).not.toHaveProperty('errorBody');
+    expect(captured).not.toHaveProperty('reqBodyGz');
+    expect(captured).not.toHaveProperty('reqBodySamplePath');
+    expect(JSON.stringify(captured)).not.toContain(requestMarker);
+    expect(JSON.stringify(captured)).not.toContain(responseMarker);
+    // Removing diagnostics must not alter what the caller receives.
+    expect(res.status).toBe(400);
+    expect(clientBody).toBe(upstreamBody);
   });
 
-  it('does NOT gzip the request body on 2xx (but still sets reqBodySha8)', async () => {
+  it('keeps only reqBodySha8 on a successful request', async () => {
     const restore = mockUpstream(
       () =>
         new Response(JSON.stringify({
@@ -749,8 +668,64 @@ describe('proxy usage extraction', () => {
     expect(captured!.status).toBe(200);
     // Hash lands on every event.
     expect(captured!.reqBodySha8).toMatch(/^[0-9a-f]{8}$/);
-    // But the gzipped body itself is only captured on 4xx.
-    expect(captured!.reqBodyGz).toBeUndefined();
+    expect(captured).not.toHaveProperty('errorBody');
+    expect(captured).not.toHaveProperty('reqBodyGz');
+    expect(captured).not.toHaveProperty('reqBodySamplePath');
+  });
+
+  it('uses a fixed transform error code without echoing exception text', async () => {
+    const privateMarker = 'private-transform-exception-marker';
+    let captured: ProxyEvent | undefined;
+    const proxy = createProxy({
+      transform: () => {
+        throw new Error(privateMarker);
+      },
+      onRequest: (event) => {
+        captured = event;
+      },
+    });
+
+    const response = await proxy(new Request('http://localhost/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-fable-5',
+        messages: [{ role: 'user', content: 'synthetic' }],
+      }),
+    }));
+    await response.text();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(response.status).toBe(502);
+    expect(captured?.error).toBe('transform_error');
+    expect(JSON.stringify(captured)).not.toContain(privateMarker);
+  });
+
+  it('uses a fixed upstream error code without echoing exception text', async () => {
+    const privateMarker = 'private-upstream-exception-marker';
+    const restore = mockUpstream(() => {
+      throw new Error(privateMarker);
+    });
+    let captured: ProxyEvent | undefined;
+    const proxy = createProxy({
+      transform: { compress: false },
+      onRequest: (event) => {
+        captured = event;
+      },
+    });
+
+    const response = await proxy(new Request('http://localhost/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: SAMPLE_REQ_BODY,
+    }));
+    await response.text();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    restore();
+
+    expect(response.status).toBe(502);
+    expect(captured?.error).toBe('upstream_error');
+    expect(JSON.stringify(captured)).not.toContain(privateMarker);
   });
 
   it('reqBodySha8 is identical across two requests with the same body', async () => {

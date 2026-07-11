@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { toTrackEvent, JsonLogTracker, noopTracker, type TrackEvent } from '../src/core/tracker.js';
 import type { ProxyEvent } from '../src/core/proxy.js';
+import { buildAnthropicCandidate } from '../src/core/transform.js';
 
 describe('toTrackEvent', () => {
   it('flattens ProxyEvent + TransformInfo + Usage into a single record', () => {
@@ -23,14 +24,6 @@ describe('toTrackEvent', () => {
         claudeMdSha8: 'cafebabe',
         firstUserSha8: 'deadbeef',
         unknownStaticTags: ['recent_files'],
-        env: {
-          cwd: '/Users/me/code/pp',
-          isGitRepo: true,
-          gitBranch: 'main',
-          platform: 'darwin',
-          osVersion: 'Darwin 25.0.0',
-          today: '2026-05-18',
-        },
       },
       usage: {
         input_tokens: 42,
@@ -57,14 +50,60 @@ describe('toTrackEvent', () => {
     expect(out.claude_md_sha8).toBe('cafebabe');
     expect(out.first_user_sha8).toBe('deadbeef');
     expect(out.unknown_static_tags).toEqual(['recent_files']);
-    expect(out.cwd).toBe('/Users/me/code/pp');
-    expect(out.git_branch).toBe('main');
-    expect(out.is_git_repo).toBe(true);
     expect(out.input_tokens).toBe(42);
     expect(out.cache_read_tokens).toBe(100);
     expect(out.cache_create_tokens).toBe(0);
     // ts is ISO8601
     expect(out.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('does not persist legacy host and workspace identity fields', () => {
+    const secrets = {
+      cwd: '/Users/private-owner/secret-project',
+      gitBranch: 'private-customer-branch',
+      platform: 'private-host-platform',
+      osVersion: 'private-host-version',
+      today: '2099-12-31',
+    };
+    const out = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 10,
+      info: {
+        compressed: false,
+        env: { ...secrets, isGitRepo: true },
+      } as NonNullable<ProxyEvent['info']>,
+    });
+
+    expect(out).not.toHaveProperty('cwd');
+    expect(out).not.toHaveProperty('is_git_repo');
+    expect(out).not.toHaveProperty('git_branch');
+    expect(out).not.toHaveProperty('platform');
+    expect(out).not.toHaveProperty('os_version');
+    expect(out).not.toHaveProperty('today');
+    const persisted = JSON.stringify(out);
+    for (const value of Object.values(secrets)) expect(persisted).not.toContain(value);
+  });
+
+  it('does not echo malformed request bytes through parse diagnostics', async () => {
+    const privateMarker = 'S3CR3T';
+    const body = new TextEncoder().encode(privateMarker);
+    const candidate = await buildAnthropicCandidate(body);
+
+    expect(candidate.body).toBe(body);
+    expect(candidate.info.reason).toBe('parse_error');
+    expect(JSON.stringify(candidate.info)).not.toContain(privateMarker);
+
+    const tracked = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 400,
+      durationMs: 10,
+      info: candidate.info,
+    });
+    expect(tracked.reason).toBe('parse_error');
+    expect(JSON.stringify(tracked)).not.toContain(privateMarker);
   });
 
   it('captures the nested cache_creation split and server_tool_use counters', () => {
@@ -582,7 +621,7 @@ describe('noopTracker', () => {
   });
 });
 
-describe('toTrackEvent body-sample mapping', () => {
+describe('toTrackEvent privacy projection', () => {
   const baseEv = {
     method: 'POST',
     path: '/v1/messages',
@@ -590,45 +629,52 @@ describe('toTrackEvent body-sample mapping', () => {
     durationMs: 100,
   };
 
-  it('inlines small gzipped bodies as req_body_sample_b64', () => {
-    const small = new Uint8Array(64).fill(0x1f);
-    const out = toTrackEvent({
+  it('drops every legacy raw body field while retaining status and request hash', () => {
+    const responseMarker = 'private-upstream-error-body';
+    const requestMarker = 'private-full-request-body';
+    const inline = toTrackEvent({
       ...baseEv,
       reqBodySha8: 'deadbeef',
-      reqBodyGz: small,
-    } as ProxyEvent);
-    expect(out.req_body_sha8).toBe('deadbeef');
-    expect(out.req_body_sample_b64).toBeDefined();
-    expect(out.req_body_sample_b64!.length).toBeLessThanOrEqual(128);
-    expect(out.req_body_sample_path).toBeUndefined();
+      errorBody: responseMarker,
+      reqBodyGz: new TextEncoder().encode(requestMarker),
+    } as unknown as ProxyEvent);
+    const sidecar = toTrackEvent({
+      ...baseEv,
+      reqBodySha8: 'deadbeef',
+      reqBodySamplePath: `/tmp/${requestMarker}.json.gz`,
+    } as unknown as ProxyEvent);
+
+    for (const out of [inline, sidecar]) {
+      expect(out.status).toBe(400);
+      expect(out.req_body_sha8).toBe('deadbeef');
+      expect(out).not.toHaveProperty('error_body');
+      expect(out).not.toHaveProperty('req_body_sample_b64');
+      expect(out).not.toHaveProperty('req_body_sample_path');
+      const persisted = JSON.stringify(out);
+      expect(persisted).not.toContain(responseMarker);
+      expect(persisted).not.toContain(requestMarker);
+    }
   });
 
-  it('drops oversized gzipped bodies that lack a sidecar path', () => {
-    // 40 KiB of gz bytes → ~53 KiB base64 → exceeds the 32 KiB cap, and we
-    // didn't pre-write a sidecar → must silently drop the inline body
-    // (Workers path). req_body_sha8 still lands.
-    const big = new Uint8Array(40 * 1024).fill(0x42);
-    const out = toTrackEvent({
+  it('persists only fixed proxy error codes', () => {
+    const privateMarker = 'private-exception-message';
+    const raw = toTrackEvent({
       ...baseEv,
-      reqBodySha8: 'cafef00d',
-      reqBodyGz: big,
+      error: privateMarker,
     } as ProxyEvent);
-    expect(out.req_body_sha8).toBe('cafef00d');
-    expect(out.req_body_sample_b64).toBeUndefined();
-    expect(out.req_body_sample_path).toBeUndefined();
-  });
+    const transform = toTrackEvent({
+      ...baseEv,
+      error: 'transform_error',
+    } as ProxyEvent);
+    const upstream = toTrackEvent({
+      ...baseEv,
+      error: 'upstream_error',
+    } as ProxyEvent);
 
-  it('prefers reqBodySamplePath over inlining when both are set', () => {
-    const someGz = new Uint8Array(64).fill(0x1f);
-    const out = toTrackEvent({
-      ...baseEv,
-      reqBodySha8: 'feedface',
-      reqBodyGz: someGz,
-      reqBodySamplePath: '/tmp/4xx-bodies/x.json.gz',
-    } as ProxyEvent);
-    // Sidecar path wins; we don't double-encode inline.
-    expect(out.req_body_sample_path).toBe('/tmp/4xx-bodies/x.json.gz');
-    expect(out.req_body_sample_b64).toBeUndefined();
+    expect(raw.error).toBeUndefined();
+    expect(JSON.stringify(raw)).not.toContain(privateMarker);
+    expect(transform.error).toBe('transform_error');
+    expect(upstream.error).toBe('upstream_error');
   });
 
   it('sets req_body_sha8 on 2xx events too (correlation across statuses)', () => {
@@ -638,8 +684,8 @@ describe('toTrackEvent body-sample mapping', () => {
       reqBodySha8: '01234567',
     } as ProxyEvent);
     expect(out.req_body_sha8).toBe('01234567');
-    // No body sample fields for 2xx.
-    expect(out.req_body_sample_b64).toBeUndefined();
-    expect(out.req_body_sample_path).toBeUndefined();
+    expect(out).not.toHaveProperty('error_body');
+    expect(out).not.toHaveProperty('req_body_sample_b64');
+    expect(out).not.toHaveProperty('req_body_sample_path');
   });
 });
