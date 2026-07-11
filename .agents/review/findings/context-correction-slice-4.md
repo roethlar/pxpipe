@@ -4,7 +4,7 @@
 printable sibling eligible for imaging, while future order or shared-state
 regressions could recreate the reported Anthropic 400 or leak one model's
 request identity into the next.
-**Status**: In progress — pending independent review
+**Status**: Verified — independently accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `eb6c70d20f8e2d11fee31ca8884460247399a49f` (base: parent
 `acf04d08d61fea5db361658ce2ebdd54eb0a21a1`)
@@ -128,4 +128,24 @@ Empty.
 
 ## Reviewer comments
 
-Pending independent Claude review.
+- R1 (2026-07-11T03:44:57Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-context-correction-s4-r1`.
+  - Reviewed SHA: `9309e15c2c4cc1b4398e16e59591530d1a7a55f8`.
+  - Base SHA: `acf04d08d61fea5db361658ce2ebdd54eb0a21a1`.
+  - `guard_confirmed: true` — the reviewer independently restored the base
+    transform/tracker, observed the multipart terminal-container and
+    terminal-only telemetry guards fail for the expected reasons, restored the
+    reviewed head and observed them pass, ran the role/order and sequential
+    four-model isolation guards, and completed typecheck, all tests, and the
+    production build.
+  - Verdict: **accepted**.
+  - Comments: none.
+
+The JSON envelope exited zero, matched the required schema, and returned both
+pinned SHAs exactly. Four ancillary compound/diagnostic Bash attempts were denied
+by the review allowlist; none was a required revert, focused guard, restore, or
+final gate command. The disposable worktree was tracked-clean after restoration;
+its only untracked entry was the temporary `node_modules` symlink. Acceptance does
+not authorize installation, live product calls, push, merge, or the paused routing
+work.
