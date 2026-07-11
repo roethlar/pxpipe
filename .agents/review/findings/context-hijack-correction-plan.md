@@ -1,7 +1,7 @@
 # context-hijack-correction-plan: Remove context rewriting and negative returns
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: Pending r2 after adopting all three LOW r1 refinements
+**Status**: Accepted r2 — one open clarification pending r3 confirmation
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `5cfcf2bbd637e1988cb0299312bf5d85ed5addbf`
 
@@ -161,3 +161,26 @@ plan; r1 acceptance does not authorize implementation.
 
 The structured envelope completed successfully with the pinned SHAs and no
 permission denials. Coder adjudication is recorded in the next revision before r2.
+
+- R2 (2026-07-11T01:27:46Z): Claude Code 2.1.207 / Sonnet 5, structured output,
+  pxpipe bypassed, fresh read-only disposable worktree under `~/Dev`.
+  - Reviewed SHA: `48df87eea9eaa069934f3729045719f321ff3d73`.
+  - Base SHA: `94470f73c1390fd7c405027ac5bd9a7123d725cf`.
+  - Verdict: **accepted**.
+  - Must-fix: none.
+  - Should-fix: none.
+  - Open question (verbatim):
+    "docs/CONTEXT_HIJACK_CORRECTION_PLAN.md:126-129 (rule 6, 'any unrenderable
+    codepoint leaves the bucket native') vs src/core/render.ts:779-782 and its
+    callers in src/core/transform.ts:1638-1645,1874-1885,2034-2036
+    (project-guidance, tool-reference, and default-eligible tool-result image
+    paths): those call sites already compute rendered.droppedChars/droppedCodepoints
+    per glyph miss but today only add it to telemetry (info.droppedChars,
+    droppedCodepointsTop) and still apply/accept the image unconditionally. Should
+    Slice 1/2 explicitly require gating admission on that existing droppedChars
+    signal (treat droppedChars>0 as a render failure under rule 8) rather than
+    leaving 'render failure' to be interpreted as only hard/thrown rendering
+    errors?"
+
+The r2 envelope completed successfully with the pinned SHAs and no permission
+denials. The open question is answered durably before a final narrow r3.
