@@ -1,9 +1,9 @@
 # one-port-subscription-plan: One-service persistent subscription routing plan
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: In Review — R2 amendment closes the independently evidenced gaps
+**Status**: In Review — R3 closes installer ownership and crash-recovery gaps
 **Branch**: `fix/provenance-safe-compression`
-**Commit**: `1940744a0ae9b608bf2297578c0a99e88e8f888c` (base
+**Commit**: `22cc5b2570e6e82e87ff864433611078922ac1e8` (base
 `cc79310e5476f62e09aa1dbe4ee51b6204380002`)
 
 ## Plan authority
@@ -112,8 +112,27 @@ R2 addresses them by:
 - making reinstall/uninstall surgical around managed keys so unrelated later
   owner edits survive.
 
-The amended plan is ready for a fresh Claude review. No implementation is
-authorized by the R1 verdict.
+That amendment was sent for R2. No implementation was authorized by the R1
+verdict.
+
+R2 also returned a clean verdict, but a concurrent installer audit found five
+observable gaps after dispatch:
+
+- value-only receipt ownership could erase a later inline comment or table
+  trivia during uninstall;
+- reinstall did not say what happens when an owner changes a managed key;
+- ERR/INT/TERM rollback did not cover process death or power loss between
+  service/config/receipt mutations;
+- whole-file rollback and the no-overwrite promise conflicted when an owner edit
+  raced rollback; and
+- `grok inspect --json` could attach to the owner's running default Grok leader
+  instead of remaining an isolated parser check.
+
+R3 records exact owned source spans, fails reinstall before mutation on managed
+drift, journals every mutation durably for next-run recovery, retains a
+fail-closed conflict state instead of overwriting a third identity, and gives
+every Grok parser check a fresh private `--leader-socket` path. The clean R2
+model verdict is recorded below but does not authorize implementation of R2.
 
 ## Reviewer comments
 
@@ -127,7 +146,18 @@ authorized by the R1 verdict.
   - Should-fix: none.
   - Open questions: none.
 
-The envelope exited zero, matched the custom plan-review schema, and returned
-both pinned SHAs exactly. Three ancillary Bash attempts were denied; the
-review completed without file changes, live calls, or web access. The coder's
-post-dispatch evidence above reopens the plan despite the clean model verdict.
+- R2 (2026-07-11T05:27:16Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, read-only disposable worktree
+  `/Users/michael/Dev/pxpipe-review-one-port-plan-r2`.
+  - Reviewed SHA: `35ea0341d3e2ab3db1b5bf82313362dd2c2ac2d8`.
+  - Base SHA: `cc79310e5476f62e09aa1dbe4ee51b6204380002`.
+  - Verdict: **accepted**.
+  - Must-fix: none.
+  - Should-fix: none.
+  - Open questions: none.
+
+The R2 envelope exited zero after 82 turns, matched the custom schema, and
+returned both pinned SHAs exactly. Three ancillary Bash attempts were denied;
+the review completed without tracked changes, live calls, or web access. The
+coder's concurrent evidence above reopens R2 and sends the exact R3 amendment
+for a fresh review.
