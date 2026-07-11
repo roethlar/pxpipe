@@ -33,7 +33,7 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | one-port-subscription-plan | `2aeca41` | Persistent one-service Codex and Grok plan, exact pass-through amendment | `[x]` accepted r4 at `e882aff`; implementation authorized |
 | one-port-subscription-slice-1 | `e11154e` | Exact core Codex/Grok reserved routing and pass-through | `[x]` accepted r1 at `9da6660`; Claude guards confirmed |
 | one-port-subscription-slice-2 | `5afc19a` | Raw Node routing and hostile-environment isolation | `[x]` accepted r1 at `07441c2`; Claude guards confirmed |
-| one-port-subscription-slice-3 | `44c121e` | Transactional one-port installer and exact client configuration | `[~]` pending Claude review |
+| one-port-subscription-slice-3 | `44c121e` | Transactional one-port installer and exact client configuration | `[x]` accepted r1 at `9923abd`; Claude guards confirmed |
 | context-hijack-correction-plan | `5daab97` | Remove context rewriting, invalid requests, and negative returns | `[x]` accepted r3 at `bcecfd0`; implementation owner-gated |
 | context-correction-slice-1 | `a0386b6` | Shared no-hijack, structure, admission, accounting, and Node breaker | `[x]` accepted r1 at `717464e`; Claude guard confirmed |
 | context-correction-slice-2 | `5b98406` | Anthropic exact in-place project and tool-result compression | `[x]` accepted r1 at `1ec9f28`; Claude guard confirmed |

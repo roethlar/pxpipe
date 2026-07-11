@@ -3,7 +3,7 @@
 **Severity**: HIGH — installation must not lose owner configuration, strand a
 mixed service/client state, or route subscription traffic through unverified
 local files
-**Status**: Pending review
+**Status**: Accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `44c121e438435582a63f07823dd521af013d9bde` (base
 `0ae2263ccf117ad384b1220c9a333b1f36c44f91`)
@@ -138,4 +138,41 @@ reach the same failure.
 
 ## Reviewer comments
 
-Pending Claude review.
+- R1 (2026-07-11T10:50:03Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-one-port-slice3-r1`.
+  - Reviewed SHA: `9923abd4742153841b94f0e6a99390d40f0683c8`.
+  - Base SHA: `0ae2263ccf117ad384b1220c9a333b1f36c44f91`.
+  - `guard_confirmed: true`.
+  - Verdict: **accepted**; no material finding.
+  - TOML proof: weakening insertion-order validation let a pure root-key reorder
+    pass an isolated proof; restoration rejected it and all 39 config tests
+    passed.
+  - Transaction proof: moving receipt durability from parent fsync to rename
+    made the handled-boundary guard report `changed`; restoration rolled back
+    correctly and all 44 state tests passed.
+  - Service proof: bypassing prior-port draining removed all expected old-port
+    polls; restoration returned all 64 app tests green.
+  - Package proof: bypassing the captured manifest hash accepted a semantically
+    identical but byte-different manifest in an isolated proof; restoration
+    rejected it and all 27 package tests passed.
+  - Final reviewer gate: 174 focused installer tests, typecheck, all 1,112
+    tests across 57 files, production build, and version smoke check passed.
+    Tracked status was clean; only the pre-existing `node_modules` symlink was
+    untracked.
+
+The JSON envelope exited zero after 107 turns, matched the required schema,
+returned both pinned SHAs exactly, and used no web search or fetch. Seven
+ancillary shell forms were denied by the review environment; no required proof
+or final gate was lost, and the attempted `/tmp` helper-script command created
+no artifact. The reviewer reported that corepack made one incidental fetch of
+the pinned pnpm 10.21.0 tool because `pnpm` was initially off PATH; it fetched no
+project dependency and contacted no product/model endpoint beyond the Claude
+review itself. This tooling-bootstrap deviation did not alter the reviewed tree
+or the guard evidence. Future dispatches should use the recorded npx pnpm
+fallback directly.
+
+One inert exported helper, `installerEntryPath`, was noted as unused and
+untested. Claude correctly treated it as non-blocking because it has no caller
+or reachable behavior; removing dead code is not part of this slice's accepted
+contract.
