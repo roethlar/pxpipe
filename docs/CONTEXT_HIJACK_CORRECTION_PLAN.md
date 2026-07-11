@@ -83,6 +83,18 @@ would-have-been-warm text prefix at its real cache-read rate or include the comp
 request's cache rebuild. The dashboard correctly reports the resulting negative;
 the fix must change admission, not hide or clamp the metric.
 
+The owner then supplied a live upstream 400 from the same installed service:
+`messages.1: role 'system' must precede an 'assistant' message or end the array`.
+The service recorded the same compressed request twice with history collapse
+active, ten turns collapsed, and three images. Current history code protects the
+literal system attachment at index 1, then replaces the following history with a
+synthetic user message. The accepted test explicitly checks that arrangement but
+never validates Anthropic's role-order rule. Compression-off subsequently worked.
+
+Therefore every candidate also needs a final provider-structure validation before
+forwarding. A transform that makes a previously valid role sequence invalid must
+discard the complete candidate and send the original body.
+
 ## What the report does not prove
 
 Do not manufacture fixes for unsupported causes:
@@ -179,7 +191,9 @@ complete request, not a bucket-only character estimate:
   prefix; run independent probes concurrently where possible;
 - include every changed byte and image in those measurements;
 - for source inside a cacheable prefix, price unchanged text at the 0.10 cache-read
-  rate and a newly changed image prefix at the 1.25 cache-create rate;
+  rate and a newly changed image prefix at its real cache-create rate: 1.25 for
+  five-minute entries and 2.0 for one-hour entries; an absent or unrecognized tier
+  uses the conservative 2.0 rate;
 - for source after the final cache marker, compare both sides at the ordinary cold
   input rate;
 - require the transformed effective input to be at least 10% and 256 effective
@@ -191,10 +205,21 @@ complete request, not a bucket-only character estimate:
 Probe rate limits, errors, or unsupported image counting fail native. They do not
 fall back to character ratios. OpenAI remains pass-through, so it does not need
 candidate probes until a same-role image representation is separately proven.
+The independent probes run concurrently, but admission now waits for them before
+forwarding, adding roughly one token-count round trip to a compressed request.
+That latency is an explicit cost of the strict no-loss gate.
+
+Use one shared signed accounting function for live dashboard updates, log replay,
+session summaries, and statistics. A row contributes a counterfactual only when
+compression actually ran and every required full/prefix probe succeeded. The
+function prices five-minute creation at 1.25, one-hour creation at 2.0, and reads
+at 0.10. Missing tier splits use the documented conservative fallback; no consumer
+may silently assume five-minute creation or implement a different formula.
 
 Measured results remain honest, including negative values. As defense in depth,
 any compressed request that still measures worse than its plain counterfactual
-disables that provider/model/bucket/source fingerprint for the rest of the process.
+atomically disables that provider/model/bucket/source fingerprint for the rest of
+the process, including already-overlapping requests that have not been forwarded.
 Re-entry requires a separately proven positive condition; time alone is not one.
 
 ## Public options and rollback
@@ -221,6 +246,8 @@ under `~/Dev`; Codex does not review this work.
 
 - Add provider-neutral helpers/tests that inventory every model-visible block added
   or moved by a transform.
+- Add final provider-structure validation that rejects a candidate before
+  forwarding and restores the exact original body.
 - Pin the original role, message index, container, text, and ordering for all
   instruction-bearing and host-context regions.
 - Add a regression fixture for adjacent text blocks showing that block identity is
@@ -229,8 +256,10 @@ under `~/Dev`; Codex does not review this work.
   authenticity, source assertions, and obey/follow directives.
 - Replace bucket-only cold estimates with one request-wide cache-aware admission
   result and an explicit reason for every native fallback.
-- Add cold, warm, growing-prefix, restart, missing-measurement, and negative
-  feedback fixtures.
+- Centralize signed live/replay/session/statistics accounting, including five-minute
+  and one-hour cache tiers.
+- Add cold, warm, growing-prefix, restart, overlap, model/source switch,
+  missing-measurement, cache-tier, and negative-feedback fixtures.
 - Prove the current implementation fails these guards.
 
 ### Slice 2 — Anthropic safe default
@@ -266,6 +295,9 @@ under `~/Dev`; Codex does not review this work.
 - Add two sequential synthetic requests with different models and system text;
   prove no bytes or hashes from the first appear in the second.
 - Add mixed user/system/hook attachment fixtures and prove exact input order.
+- Reproduce the reported literal-system sequence and prove history cannot leave a
+  non-directive system message before a synthetic user message. Final validation
+  must fail the whole candidate native if any future transform breaks this rule.
 - Do not add a request cache or an ordering rewrite.
 
 ### Slice 5 — documentation, package, and local installation
@@ -299,19 +331,27 @@ under `~/Dev`; Codex does not review this work.
    are not imaged after a dropped escape byte.
 9. Sequential Sonnet/Fable and Sol/Grok fixtures use only their own model, system,
    and request bytes.
-10. Message and block order is identical before and after every native fallback.
-11. Compression-off is byte-for-byte identical.
-12. Routing, authentication forwarding, dashboard selection, and existing
+10. A non-directive Anthropic `system` message still precedes an `assistant`
+    message or ends the array after every accepted transform; the exact reported
+    system-before-synthetic-user candidate fails wholly native.
+11. Message and block order is identical before and after every native fallback.
+12. Compression-off is byte-for-byte identical.
+13. Routing, authentication forwarding, dashboard selection, and existing
     non-transform proxy behavior remain green.
-13. Telemetry contains no source text or personal data and never reports savings
+14. Telemetry contains no source text or personal data and never reports savings
     for a byte-identical request.
-14. Every admitted compressed request beats its complete unchanged counterfactual
+15. Live, replay, session, and statistics consumers return identical signed
+    accounting for the same fixture stream, including 1.25 five-minute creation,
+    2.0 one-hour creation, 0.10 reads, and failed-probe exclusion.
+16. Every admitted compressed request beats its complete unchanged counterfactual
     by at least 10% and 256 effective tokens under cold, warm, growth, and restart
     fixtures.
-15. Cold-to-warm, growth, and restart verification sequences contain no negative
-    compressed row or cumulative session. Any later live negative immediately
-    reopens the correction, disables that exact compression mode on the next
-    request, and remains visible on the dashboard.
+17. Excluding a deliberate fault-injection fixture, cold-to-warm, growth, restart,
+    overlap, cache-tier, and model/source-switch sequences contain no negative
+    admitted row or cumulative session. A deliberately injected live negative
+    immediately reopens the correction, atomically disables that exact compression
+    mode before another overlapping request forwards, and remains visible on the
+    dashboard.
 
 Every new behavior test receives a guard proof: revert the matching correction,
 observe the focused test fail, restore it, and observe it pass. Then run:
