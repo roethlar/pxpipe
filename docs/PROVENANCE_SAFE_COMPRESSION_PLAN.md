@@ -1,7 +1,7 @@
 # Provenance-safe Anthropic compaction without losing project governance
 
 Status: **REOPENED 2026-07-10 — the installed design still acts like a context
-hijack; correction plan pending independent Claude review and owner approval**.
+hijack; its correction plan is independently accepted and awaits owner approval**.
 
 Canonical correction:
 `docs/CONTEXT_HIJACK_CORRECTION_PLAN.md`. The implementation and reviews recorded

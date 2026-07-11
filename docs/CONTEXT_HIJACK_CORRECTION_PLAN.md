@@ -1,7 +1,8 @@
 # Stop pxpipe from rewriting trust boundaries
 
-Status: **DRAFT 2026-07-10 — owner approved the correction direction; detailed
-implementation awaits independent Claude review and owner approval**.
+Status: **INDEPENDENTLY ACCEPTED 2026-07-10 — implementation awaits owner
+approval**. Canonical verdict:
+`.agents/review/findings/context-hijack-correction-plan.md`.
 
 Plan base: `94470f7` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was `8d7ba3e` when rechecked. Recheck again before implementation and

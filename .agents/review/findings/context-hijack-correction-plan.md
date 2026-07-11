@@ -1,7 +1,7 @@
 # context-hijack-correction-plan: Remove context rewriting and negative returns
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: Pending final r3 after answering the r2 clarification
+**Status**: Verified — implementation remains owner-gated
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `5daab974a34fcf94df0b8ec039a57d911ab0957b`
 
@@ -192,3 +192,17 @@ permission denials. Coder adjudication is recorded in the next revision before r
 
 The r2 envelope completed successfully with the pinned SHAs and no permission
 denials. The open question is answered durably before a final narrow r3.
+
+- R3 (2026-07-11T01:31:15Z): Claude Code 2.1.207 / Sonnet 5, structured output,
+  pxpipe bypassed, fresh read-only disposable worktree under `~/Dev`.
+  - Reviewed SHA: `bcecfd04e3b3cda9f7b26de10c2bdb8c400baced`.
+  - Base SHA: `94470f73c1390fd7c405027ac5bd9a7123d725cf`.
+  - Verdict: **accepted**.
+  - Must-fix: none.
+  - Should-fix: none.
+  - Open questions: none.
+
+The structured envelope completed successfully with the pinned SHAs and no
+permission denials. The correction plan is ready for owner judgment; this verdict
+does not authorize implementation, installation, live product calls, push, or
+merge.
