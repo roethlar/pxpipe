@@ -102,10 +102,23 @@ subscription/model request, push, or merge is authorized by this review.
 
 ## Known gaps
 
-- The production validator has not rerun with this committed rule; that is the
-  immediate post-acceptance check.
 - If `/etc/codex` later exists, its contents remain denied and validation fails
   closed until that distinct managed-policy case is explicitly designed.
+
+## Post-acceptance local deployment
+
+- Exact reviewed head `33bb29ec398dcc2176c6195f1bfb6093d4da641a` was
+  packaged directly into `/Users/michael/Dev/pxpipe-deploy`. Generation receipt
+  `08872daf291fab4aab5a3d126c0b02707e9b09813b4a4d6645076cf50eb65f55`
+  matched its own hash, source commit, five component hashes, manifest, and root
+  launcher.
+- The installer completed and recorded the same source. Launchd owns the one
+  listener on exact `127.0.0.1:47821`; the root health check passes.
+- The production offline validator reported that both Codex and Grok parsers
+  passed. It retained no parser output and made no prompt or model request.
+- Both client configuration hashes and modes match the installed receipt. The
+  LaunchAgent contains only the five fixed local model, port, and credential-free
+  vendor-base fields. The private validator directory has no remaining child.
 
 ## Reviewer comments
 

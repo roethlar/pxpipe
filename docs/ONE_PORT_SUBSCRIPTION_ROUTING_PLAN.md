@@ -21,7 +21,12 @@ the private child and absent `/etc/codex` root. Exact metadata fix `04861f2` is
 accepted at Claude-reviewed head `33bb29e` after independent narrow-scope,
 red/green, inert-executable, and full-suite proofs. The same rule made both real
 parsers pass diagnostically without retaining output. No live model request
-ran. Package, install, and production offline validation are next.
+ran. Exact reviewed head `33bb29e` is now packaged in the durable deploy
+directory, installed, healthy on one IPv4-loopback listener, and passed both
+production offline parser checks. Package and installed receipts, all component
+and client-file hashes and modes, the fixed credential-free service environment,
+and scratch cleanup were verified. A live subscription smoke remains a separate
+owner gate.
 
 Plan base: `cc79310` on `fix/provenance-safe-compression`. The corrected local
 package source `59e2b9a` is installed and passed its no-network capture.
