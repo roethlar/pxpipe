@@ -1,7 +1,8 @@
 # one-port-subscription-plan: One-service persistent subscription routing plan
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: In Review — amended after the installed no-hijack correction
+**Status**: Reopened after R1 — coder audit found required client routes and
+installer/query gaps the reviewer missed
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `1bf3f5ebd2522336903959152ffb20751ce72b53` (base
 `cc79310e5476f62e09aa1dbe4ee51b6204380002`)
@@ -78,9 +79,43 @@ reviewed SHA, or a failed command is not acceptance.
 
 ## Coder adjudication
 
-Empty pending review.
+R1's clean verdict is recorded, but it is not sufficient evidence to implement.
+Concurrent read-only audits produced new concrete failures:
+
+- The installed Codex 0.144.1 native binary contains the dedicated compact
+  endpoint and literal `/responses/compact`. The plan would return 404 for
+  `POST /_pxpipe/codex/responses/compact`, breaking Codex remote compaction.
+- Grok 0.2.93 names exact cli-chat-proxy auxiliaries `/models-v2`,
+  `/login-config`, and `/subagents/bundle`; the plan would 404 them without
+  deciding which plain-Grok startup/refresh paths are required.
+- Preserving existing modes conflicts with saying all existing config files and
+  directories become owner-only. On this Mac, an existing Grok config is 0644
+  and both existing config directories are 0755; silently changing owner files
+  would exceed the requested minimal edit.
+- `URL.search` drops a trailing empty `?`, so the implementation rule must name
+  the exact serialized query suffix rather than assume the current path helper
+  is byte-exact.
+- The current fixed request-header strip set omits standard hop-by-hop names and
+  headers nominated by `Connection`; the plan promises those are removed.
+- Eager generic gateway resolution can throw before a reserved route is seen,
+  contradicting the hostile-generic-setting bypass requirement.
+
+These are observable compatibility/security gaps, not style preferences. The
+plan is reopened for an R2 amendment and fresh Claude review.
 
 ## Reviewer comments
 
-Pending review. Record the Claude version, reviewed/base SHA, verdict, UTC
-timestamp, and all comments before acting on them.
+- R1 (2026-07-11T05:07:49Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, read-only disposable worktree
+  `/Users/michael/Dev/pxpipe-review-one-port-plan-r1`.
+  - Reviewed SHA: `13db4e5198f85ddb99a50a79e53fd7baae882f1c`.
+  - Base SHA: `cc79310e5476f62e09aa1dbe4ee51b6204380002`.
+  - Verdict: **accepted**.
+  - Must-fix: none.
+  - Should-fix: none.
+  - Open questions: none.
+
+The envelope exited zero, matched the custom plan-review schema, and returned
+both pinned SHAs exactly. Three ancillary Bash attempts were denied; the
+review completed without file changes, live calls, or web access. The coder's
+post-dispatch evidence above reopens the plan despite the clean model verdict.
