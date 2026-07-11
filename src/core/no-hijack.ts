@@ -843,7 +843,17 @@ function prepareReplacement(
 
 function applyPatches(candidate: unknown, patches: readonly NormalizationPatch[]): unknown {
   const normalized = cloneJson(candidate);
-  const nested = patches.filter((patch) => patch.kind !== 'message');
+  const nested = patches
+    .filter((patch) => patch.kind !== 'message')
+    .sort((a, b) => {
+      if (a.messageIndex !== b.messageIndex) return b.messageIndex - a.messageIndex;
+      if (a.candidateBlockIndex !== b.candidateBlockIndex) {
+        return b.candidateBlockIndex - a.candidateBlockIndex;
+      }
+      const aStart = a.kind === 'tool_part' ? a.candidateStart : -1;
+      const bStart = b.kind === 'tool_part' ? b.candidateStart : -1;
+      return bStart - aStart;
+    });
   for (const patch of nested) {
     const message = messageAt(normalized, patch.messageIndex);
     const blocks = contentArray(message);

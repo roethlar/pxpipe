@@ -1,9 +1,9 @@
 /**
  * END-TO-END savings-MATH contract through the REAL proxy.
  *
- * The GPT cases retain the image-vs-text gate checks. Anthropic candidates now
- * have a stricter shell: requests that fail the no-hijack contract stay native,
- * are not probed, and must not report hypothetical savings.
+ * The GPT cases retain the image-vs-text gate checks. Safe Anthropic candidates
+ * must pass all four provider measurements; any probe failure stays native and
+ * must not report hypothetical savings.
  *
  *   fake api  = the upstream output plus a count_tokens tripwire
  *   our input = pxpipe's decision, read off the forwarded bytes and event
@@ -193,16 +193,16 @@ describe('savings math — GPT, cross-checked against the real o200k tokenizer',
 
 // ===========================================================================
 describe('Anthropic safety shell — native fallback accounting', () => {
-  it('rejects an unsafe candidate byte-exact before probes and reports no savings', async () => {
+  it('keeps a safe candidate byte-exact when all four probes fail and reports no savings', async () => {
     const body = antBody({ slabChars: 80_000 });
     const { event, out, probeCalls } = await driveAndCapture('/v1/messages', body);
 
     expect(out).toBe(body);
-    expect(probeCalls).toBe(0);
+    expect(probeCalls).toBe(4);
     expect(event.info?.compressed).toBe(false);
-    expect(event.info?.reason).toBe('candidate_contract_invalid');
-    expect(event.info?.admissionReason).toBe('candidate_contract_invalid');
-    expect(event.info?.baselineProbeStatus).toBeUndefined();
+    expect(event.info?.reason).toBe('original_full_probe_failed');
+    expect(event.info?.admissionReason).toBe('original_full_probe_failed');
+    expect(event.info?.baselineProbeStatus).toBe('failed');
     expect(event.info?.baselineTokens).toBeUndefined();
     expect(event.info?.baselineCacheableTokens).toBeUndefined();
     expect(event.info?.candidateTokens).toBeUndefined();

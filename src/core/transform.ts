@@ -31,6 +31,7 @@ import {
   DENSE_CONTENT_COLS,
   DENSE_RENDER_STYLE,
   ANTHROPIC_SLAB_COLS,
+  renderTextToPngsExact,
   renderTextToPngsWithCharLimit,
 } from './render.js';
 import { factSheetText } from './factsheet.js';
@@ -49,6 +50,12 @@ import {
 import type { GptHistoryOptions } from './openai-history.js';
 import { CACHE_CREATE_RATE, CACHE_READ_RATE } from './baseline.js';
 import { schemaHasStructure, stripSchemaDescriptions } from './schema-strip.js';
+import {
+  applyAnthropicExactImageReplacements,
+  type AnthropicChangedSpanLocation,
+  type AnthropicExactImageOperation,
+} from './anthropic-exact.js';
+import type { ExactSpanImageReplacement } from './no-hijack.js';
 
 /** Per-block descriptor passed to `TransformOptions.keepSharp`. */
 export interface KeepSharpBlock {
@@ -443,7 +450,14 @@ export function isCompressionProfitableAmortized(
 /** Increment a passthrough-reason counter on `info`. Lazily allocates `passthroughReasons`. */
 function bumpPassthrough(
   info: TransformInfo,
-  reason: 'below_threshold' | 'not_profitable' | 'kept_sharp',
+  reason:
+    | 'below_threshold'
+    | 'not_profitable'
+    | 'kept_sharp'
+    | 'exact_identifier'
+    | 'too_many_images'
+    | 'render_error'
+    | 'unsupported_shape',
 ): void {
   if (!info.passthroughReasons) info.passthroughReasons = {};
   info.passthroughReasons[reason] = (info.passthroughReasons[reason] ?? 0) + 1;
@@ -625,7 +639,15 @@ export interface TransformInfo {
   /** Top dropped codepoints by frequency (`U+HHHH` → count), at most 20 entries. */
   droppedCodepointsTop?: Record<string, number>;
   /** Why blocks passed through without compression. Only present when count > 0. */
-  passthroughReasons?: { below_threshold?: number; not_profitable?: number; kept_sharp?: number };
+  passthroughReasons?: {
+    below_threshold?: number;
+    not_profitable?: number;
+    kept_sharp?: number;
+    exact_identifier?: number;
+    too_many_images?: number;
+    render_error?: number;
+    unsupported_shape?: number;
+  };
   /** Slab gate diagnostics — imageTokens, textTokens, burn terms, and verdict.
    *  Lets hosts measure flap-prevention efficacy and tune amortization horizon. */
   gateEval?: {
@@ -2233,158 +2255,376 @@ function recordContextPartitionTelemetry(
   }
 }
 
+export interface AnthropicCandidateResult {
+  readonly body: Uint8Array;
+  readonly info: TransformInfo;
+  /** Every permitted caller-text replacement, bound to original and candidate coordinates. */
+  readonly replacements: readonly ExactSpanImageReplacement[];
+  /** Original caller containers used to prove cache ownership for each changed span. */
+  readonly changedSpans: readonly AnthropicChangedSpanLocation[];
+}
+
+interface ExactRenderedBucket {
+  readonly images: readonly ImageBlock[];
+  readonly pngs: readonly Uint8Array[];
+  readonly dims: readonly { width: number; height: number }[];
+  readonly pixels: number;
+  readonly imageBytes: number;
+}
+
+function exactNativeResult(
+  body: Uint8Array,
+  info: TransformInfo,
+): AnthropicCandidateResult {
+  return { body, info, replacements: [], changedSpans: [] };
+}
+
+async function renderExactBucket(
+  text: string,
+  o: Required<TransformOptions>,
+): Promise<ExactRenderedBucket | undefined> {
+  try {
+    const pages = await renderTextToPngsExact(text, { cols: o.cols });
+    if (
+      pages.length === 0
+      || pages.map((page) => page.sourceText).join('') !== text
+      || pages.some((page) =>
+        page.droppedChars !== 0 || page.droppedCodepoints.size !== 0)
+    ) {
+      return undefined;
+    }
+    const images = pages.map((page): ImageBlock => ({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: bytesToBase64(page.png),
+      },
+    }));
+    return {
+      images,
+      pngs: pages.map((page) => page.png),
+      dims: pages.map((page) => ({ width: page.width, height: page.height })),
+      pixels: pages.reduce((sum, page) => sum + page.width * page.height, 0),
+      imageBytes: pages.reduce((sum, page) => sum + page.png.byteLength, 0),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function hasOnlyExactKeys(value: object, allowed: readonly string[]): boolean {
+  const names = new Set(allowed);
+  return Object.keys(value).every((key) => names.has(key));
+}
+
+function hasSupportedExactCacheControl(value: Record<string, unknown>): boolean {
+  const marker = value.cache_control;
+  if (marker === undefined) return true;
+  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return false;
+  const record = marker as Record<string, unknown>;
+  return hasOnlyExactKeys(record, ['type', 'ttl'])
+    && record.type === 'ephemeral'
+    && (record.ttl === undefined || record.ttl === '5m' || record.ttl === '1h');
+}
+
+function isExactToolResultBlock(value: unknown): value is ToolResultBlock {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.type === 'tool_result'
+    && typeof record.tool_use_id === 'string'
+    && record.tool_use_id.length > 0
+    && hasOnlyExactKeys(record, ['type', 'tool_use_id', 'content', 'is_error', 'cache_control'])
+    && (record.is_error === undefined || typeof record.is_error === 'boolean')
+    && hasSupportedExactCacheControl(record);
+}
+
+function isExactTextBlock(value: unknown): value is TextBlock {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.type === 'text'
+    && typeof record.text === 'string'
+    && hasOnlyExactKeys(record, ['type', 'text', 'cache_control'])
+    && hasSupportedExactCacheControl(record);
+}
+
+/** Scan the complete source with overlap larger than the identifier extractor's
+ * maximum token length. This keeps identifiers native even when one straddles a
+ * renderer-sized window boundary; no extracted text is ever emitted. */
+function hasProtectedExactIdentifier(text: string): boolean {
+  // Long whitespace-free blobs are precision-sensitive too (base64, minified
+  // payloads, opaque ids) and the extractor deliberately skips them for cost.
+  if (/(?:^|\s)\S{513}/u.test(text)) return true;
+  // The general extractor intentionally avoids guessing every lowercase
+  // alphanumeric token. Explicit identifier assignments are not guesses:
+  // preserve their containing result even for unfamiliar values such as
+  // `job_id=qz91lm2n`.
+  if (
+    /(?:^|[\s{[(,])["']?(?:id|token|secret|hash|sha|uuid|ref|path|url|version|port|email|date|api_key|[A-Za-z][A-Za-z0-9.-]{0,48}(?:[_-](?:id|key|token|hash|sha|uuid|ref|path|url|version|port)|Id|ID))["']?\s*[:=]\s*["']?[A-Za-z0-9._~:/+@-]{3,120}/m.test(text)
+  ) return true;
+  if (
+    /\b(?=[A-Za-z0-9_-]{7,120}\b)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*\b/.test(text)
+  ) return true;
+  const windowSize = Math.max(1_024, DENSE_CONTENT_CHARS_PER_IMAGE);
+  const overlap = 512;
+  const step = Math.max(1, windowSize - overlap);
+  for (let start = 0; start < text.length; start += step) {
+    if (factSheetText(text.slice(start, start + windowSize)) !== '') return true;
+  }
+  return false;
+}
+
+function recordExactBucket(
+  info: TransformInfo,
+  rendered: ExactRenderedBucket,
+  sourceChars: number,
+  bucket: BucketName,
+  component: 'project' | 'tool_result',
+): void {
+  info.imageCount += rendered.images.length;
+  info.imageBytes += rendered.imageBytes;
+  info.imagePixels = (info.imagePixels ?? 0) + rendered.pixels;
+  info.origChars += sourceChars;
+  bumpImagedBucket(info, bucket, sourceChars);
+  if (component === 'project') {
+    info.projectImageCount = (info.projectImageCount ?? 0) + rendered.images.length;
+  } else {
+    info.toolResultImgs = (info.toolResultImgs ?? 0) + rendered.images.length;
+  }
+  (info.imagePngs ??= []).push(...rendered.pngs);
+  (info.imageDims ??= []).push(...rendered.dims);
+  if (info.firstImagePng === undefined) {
+    info.firstImagePng = rendered.pngs[0];
+    info.firstImageWidth = rendered.dims[0]?.width;
+    info.firstImageHeight = rendered.dims[0]?.height;
+  }
+}
+
 async function transformSafeAnthropicRequest(
   originalBody: Uint8Array,
   req: MessagesRequest,
   partition: AnthropicContextPartition,
   info: TransformInfo,
   o: Required<TransformOptions>,
-  opts: TransformOptions,
-  droppedCodepoints: Map<number, number>,
-): Promise<{ body: Uint8Array; info: TransformInfo }> {
+): Promise<AnthropicCandidateResult> {
   const originalImageCount = countRequestImages(req);
+  const imageCapacity = Math.max(0, MAX_ANTHROPIC_IMAGES - originalImageCount);
+  const perResultImageCap = Number.isFinite(o.maxImagesPerToolResult)
+    ? Math.max(0, Math.floor(o.maxImagesPerToolResult))
+    : 0;
   info.contextMode = partition.openingCarrier ? 'claude_code_2_1_205' : 'safe_native';
   recordContextPartitionTelemetry(req, partition, info);
-  const nativeOpeningReminder = partition.openingCarrier?.text ?? firstNativeReminderText(req);
   const firstUser = firstUserText(req);
   if (firstUser) info.firstUserSha8 = await sha8(firstUser);
+  info.toolMode = 'native';
+  info.toolDisposition = 'native_default';
 
-  const project = await applyRoleBoundProjectGuidance(
-    req,
-    partition,
-    info,
-    o,
-    opts,
-    droppedCodepoints,
-  );
-  let current = project.request;
-  let changed = project.applied;
+  const operations: AnthropicExactImageOperation[] = [];
+  const accepted = new Map<string, {
+    readonly rendered: ExactRenderedBucket;
+    readonly chars: number;
+    readonly bucket: BucketName;
+    readonly component: 'project' | 'tool_result';
+  }>();
 
-  if (Array.isArray(current.messages) && current.messages.length > 0) {
-    const historyCpt = opts.charsPerToken !== undefined ? o.charsPerToken : HISTORY_CHARS_PER_TOKEN;
-    const horizon = Math.max(1, Math.floor(o.historyAmortizationHorizon));
-    const historyProfitable = (text: string, cols: number): boolean => {
-      const geometry = denseGateGeometry(cols, 1);
-      return isCompressionProfitableAmortized(
-        text,
-        geometry.cols,
-        undefined,
-        1,
-        historyCpt,
-        horizon,
-        o.priorWarmTokens,
-        o.priorWarmImageTokens,
-        true,
-        geometry.maxChars,
-      );
-    };
-    let collapsed;
-    try {
-      collapsed = await collapseHistory(current.messages, historyProfitable, {
-        cols: o.cols,
-        protectedPrefix: 0,
-        protectedProjectRef: project.ref,
-        protectedOpeningCarrierText: project.openingCarrierText ?? nativeOpeningReminder,
-        reflow: o.reflow,
-      });
-    } catch {
-      info.historyReason = 'render_error';
-      collapsed = undefined;
-    }
-    if (collapsed && collapsed.info.collapsedChars > 0) {
-      bumpBucket(info, 'history', collapsed.info.collapsedChars);
-    }
-    if (collapsed && collapsed.info.collapsedTurns > 0) {
-      const candidate: MessagesRequest = { ...current, messages: collapsed.messages };
-      if (countRequestImages(candidate) > MAX_ANTHROPIC_IMAGES) {
-        info.historyReason = 'too_many_images';
+  const project = partition.projectGuidance;
+  if (project) {
+    info.projectSourceChars = project.text.length;
+    info.projectSourceRole = 'user';
+    info.projectSourceMessageIndex = project.locator.messageIndex;
+    info.projectSourceBlockIndex = project.locator.blockIndex;
+    bumpBucket(info, 'project_guidance', project.text.length);
+    const sourceSha = await sha8(project.text);
+    info.projectSourceSha8 = sourceSha;
+    info.claudeMdSha8 = sourceSha;
+
+    if (!o.compressProjectGuidance) {
+      info.projectDisposition = 'native_disabled';
+    } else if (project.text.length < o.minCompressChars) {
+      info.projectDisposition = 'native_below_threshold';
+      bumpPassthrough(info, 'below_threshold');
+    } else {
+      const rendered = await renderExactBucket(project.text, o);
+      if (!rendered) {
+        info.projectDisposition = 'native_render_error';
       } else {
-        current = candidate;
-        changed = true;
-        info.collapsedTurns = collapsed.info.collapsedTurns;
-        info.collapsedChars = collapsed.info.collapsedChars;
-        info.collapsedImages = collapsed.info.collapsedImages;
-        info.imageCount += collapsed.info.collapsedImages;
-        info.imageBytes += collapsed.info.collapsedImageBytes;
-        info.imagePixels = (info.imagePixels ?? 0) + collapsed.info.collapsedImagePixels;
-        (info.imagePngs ??= []).push(...collapsed.info.collapsedPngs);
-        (info.imageDims ??= []).push(...collapsed.info.collapsedImageDims);
-        info.droppedChars = (info.droppedChars ?? 0) + collapsed.info.droppedChars;
-        for (const [cp, count] of collapsed.info.droppedCodepoints) {
-          droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + count);
-        }
-        info.historyReason = 'collapsed';
-        info.historyTextChars = collapsed.info.collapsedChars;
-        info.historyImageSha = await historyImageSha8(collapsed.messages);
-        info.origChars += collapsed.info.collapsedChars;
-        bumpImagedBucket(info, 'history', collapsed.info.collapsedChars);
+        const id = `project:${project.locator.messageIndex}:${project.locator.blockIndex}`;
+        operations.push({ kind: 'user_text_span', source: project, images: rendered.images, id });
+        accepted.set(id, {
+          rendered,
+          chars: project.text.length,
+          bucket: 'project_guidance',
+          component: 'project',
+        });
+        info.projectDisposition = 'imaged';
+        info.projectRef = `pg_${(await sha256Hex(project.text)).slice(0, 32)}`;
       }
-    } else if (collapsed?.info.reason) {
-      info.historyReason = collapsed.info.reason;
     }
   }
 
-  // Collapse the closed prefix before per-block tool-result imaging so images
-  // generated for the live tail cannot be swallowed by a later history rewrite.
-  const toolResults = await compressSafeToolResults(
-    current,
-    info,
-    o,
-    droppedCodepoints,
-  );
-  current = toolResults.request;
-  changed = changed || toolResults.changed;
+  if (o.compressToolResults && Array.isArray(req.messages)) {
+    for (let messageIndex = 0; messageIndex < req.messages.length; messageIndex++) {
+      const message = req.messages[messageIndex]!;
+      if (message.role !== 'user' || !Array.isArray(message.content)) continue;
+      for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
+        const block = message.content[blockIndex];
+        if (!block || typeof block !== 'object' || block.type !== 'tool_result') continue;
+        if (!isExactToolResultBlock(block) || block.is_error === true) {
+          bumpPassthrough(info, 'unsupported_shape');
+          continue;
+        }
 
-  const tools = await applyToolReference(
-    current,
-    project,
-    info,
-    o,
-    opts,
-    droppedCodepoints,
-  );
-  current = tools.request;
-  changed = changed || tools.applied;
+        const staged: Array<{
+          readonly operation: AnthropicExactImageOperation;
+          readonly rendered: ExactRenderedBucket;
+          readonly chars: number;
+          readonly bucket: BucketName;
+        }> = [];
+        const consider = async (
+          source: string,
+          kind: 'tool_result' | 'tool_result_part',
+          partIndex?: number,
+        ): Promise<void> => {
+          const shape = classifyContent(source);
+          const bucket = toolResultBucket(shape);
+          bumpBucket(info, bucket, source.length);
+          if (source.length < o.minToolResultChars) {
+            bumpPassthrough(info, 'below_threshold');
+            return;
+          }
+          if (callerKeepsSharp(o.keepSharp, {
+              kind,
+              text: source,
+              toolUseId: block.tool_use_id,
+            })) {
+            bumpPassthrough(info, 'kept_sharp');
+            info.keptSharpBlocks = (info.keptSharpBlocks ?? 0) + 1;
+            return;
+          }
+          // Structured data and logs are identifier-bearing by default. Exact
+          // values cannot be distinguished reliably enough to image only the
+          // prose portions, so v1 keeps those complete source buckets native.
+          if (shape !== 'other' || hasProtectedExactIdentifier(source)) {
+            bumpPassthrough(info, 'exact_identifier');
+            return;
+          }
+          const rendered = await renderExactBucket(source, o);
+          if (!rendered) {
+            bumpPassthrough(info, 'render_error');
+            return;
+          }
+          const id = partIndex === undefined
+            ? `tool:${messageIndex}:${blockIndex}`
+            : `tool:${messageIndex}:${blockIndex}:${partIndex}`;
+          const sourceDescriptor = partIndex === undefined
+            ? {
+                kind: 'tool_result_string' as const,
+                messageIndex,
+                blockIndex,
+                expectedText: source,
+              }
+            : {
+                kind: 'tool_result_text_part' as const,
+                messageIndex,
+                blockIndex,
+                partIndex,
+                expectedText: source,
+              };
+          staged.push({
+            operation: {
+              kind: 'tool_result_text',
+              source: sourceDescriptor,
+              images: rendered.images,
+              id,
+            },
+            rendered,
+            chars: source.length,
+            bucket,
+          });
+        };
 
-  const runtime = applyRuntimeMetadataTail(current, partition, project);
-  if (partition.runtimeMetadata.length > 0) {
-    info.runtimeMetadataDisposition = runtime.applied ? 'moved' : 'native_apply_error';
-    if (runtime.applied) info.runtimeMetadataChars = runtime.chars;
+        if (typeof block.content === 'string') {
+          await consider(block.content, 'tool_result');
+        } else if (Array.isArray(block.content)) {
+          for (let partIndex = 0; partIndex < block.content.length; partIndex++) {
+            const part = block.content[partIndex];
+            if (isExactTextBlock(part)) await consider(part.text, 'tool_result_part', partIndex);
+          }
+        }
+
+        const groupImages = staged.reduce(
+          (sum, item) => sum + item.rendered.images.length,
+          0,
+        );
+        if (
+          groupImages === 0
+          || groupImages > perResultImageCap
+        ) {
+          if (groupImages > 0) bumpPassthrough(info, 'too_many_images');
+          continue;
+        }
+        for (const item of staged) {
+          operations.push(item.operation);
+          accepted.set(item.operation.id, {
+            rendered: item.rendered,
+            chars: item.chars,
+            bucket: item.bucket,
+            component: 'tool_result',
+          });
+        }
+      }
+    }
   }
-  current = runtime.request;
-  changed = changed || runtime.applied;
 
-  const finalImageCount = countRequestImages(current);
-  if (finalImageCount > Math.max(MAX_ANTHROPIC_IMAGES, originalImageCount)) {
-    return {
-      body: originalBody,
-      info: nativeTransformInfo('image_limit_postcondition'),
-    };
+  if (operations.length === 0) {
+    info.outgoingTextChars = countOutgoingTextChars(req);
+    return exactNativeResult(originalBody, info);
   }
+
+  const candidateImageCount = [...accepted.values()].reduce(
+    (sum, item) => sum + item.rendered.images.length,
+    0,
+  );
+  if (candidateImageCount > imageCapacity) {
+    const native = nativeTransformInfo('candidate_image_limit');
+    native.firstUserSha8 = info.firstUserSha8;
+    return exactNativeResult(originalBody, native);
+  }
+
+  const applied = applyAnthropicExactImageReplacements({ request: req, operations });
+  if (!applied.ok) {
+    return exactNativeResult(
+      originalBody,
+      nativeTransformInfo(`exact_splice_failed: ${applied.reason}`),
+    );
+  }
+  for (const operation of operations) {
+    const item = accepted.get(operation.id);
+    if (!item) {
+      return exactNativeResult(originalBody, nativeTransformInfo('exact_splice_accounting_missing'));
+    }
+    recordExactBucket(info, item.rendered, item.chars, item.bucket, item.component);
+  }
+
+  const finalImageCount = countRequestImages(applied.request);
+  if (finalImageCount > MAX_ANTHROPIC_IMAGES) {
+    return exactNativeResult(originalBody, nativeTransformInfo('image_limit_postcondition'));
+  }
+  info.compressed = true;
   const accountingFailure = accountingPostconditionFailure(info);
   if (accountingFailure) {
-    return {
-      body: originalBody,
-      info: nativeTransformInfo(`accounting_postcondition: ${accountingFailure}`),
-    };
+    return exactNativeResult(
+      originalBody,
+      nativeTransformInfo(`accounting_postcondition: ${accountingFailure}`),
+    );
   }
-
-  info.compressed = changed;
-  info.outgoingTextChars = countOutgoingTextChars(current);
-  if (!changed) return { body: originalBody, info };
-  const prefix = await cachePrefixDigest(
-    current,
-    project.ref,
-    tools.ref,
-    tools.imageCount,
-  );
-  if (prefix) {
-    info.cachePrefixSha8 = prefix.sha8;
-    info.cachePrefixBytes = prefix.bytes;
-    info.cacheBoundaryKind = prefix.kind;
-  }
-  recordDroppedCodepoints(info, droppedCodepoints);
-  return { body: new TextEncoder().encode(JSON.stringify(current)), info };
+  info.outgoingTextChars = countOutgoingTextChars(applied.request);
+  return {
+    body: new TextEncoder().encode(JSON.stringify(applied.request)),
+    info,
+    replacements: applied.descriptors,
+    changedSpans: applied.changedSpans,
+  };
 }
 
 /**
@@ -2399,7 +2639,7 @@ async function transformSafeAnthropicRequest(
 export async function buildAnthropicCandidate(
   body: Uint8Array,
   opts: TransformOptions = {},
-): Promise<{ body: Uint8Array; info: TransformInfo }> {
+): Promise<AnthropicCandidateResult> {
   // Merge caller opts over DEFAULTS, but treat explicit `undefined` as "not
   // provided" so it falls through to the default. Without this, a caller that
   // passes `{ minToolResultChars: undefined }` (common when forwarding partial
@@ -2424,14 +2664,9 @@ export async function buildAnthropicCandidate(
     dynamicBlockCount: 0,
     droppedChars: 0,
   };
-  // Per-request codepoint drop histogram. Merged from every render call
-  // (static slab + reminder + tool_result compressions). Serialized to
-  // `info.droppedCodepointsTop` at the end of transformRequest IF non-empty.
-  const droppedCodepoints = new Map<number, number>();
-
   if (!o.compress) {
     info.reason = 'compress=false';
-    return { body, info };
+    return exactNativeResult(body, info);
   }
 
   let req: MessagesRequest;
@@ -2439,7 +2674,7 @@ export async function buildAnthropicCandidate(
     req = JSON.parse(new TextDecoder().decode(body));
   } catch (e) {
     info.reason = `parse_error: ${(e as Error).message}`;
-    return { body, info };
+    return exactNativeResult(body, info);
   }
 
   // Provenance-safe Anthropic orchestration. Native system blocks, tools, and
@@ -2451,8 +2686,6 @@ export async function buildAnthropicCandidate(
     partitionAnthropicContext(req),
     info,
     o,
-    opts,
-    droppedCodepoints,
   );
 }
 

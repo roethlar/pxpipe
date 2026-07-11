@@ -150,7 +150,7 @@ describe('public Anthropic provenance controls', () => {
 
     expect(result.applied).toBe(false);
     expect(result.body).toEqual(encode(req));
-    expect(result.info.projectDisposition).toBeUndefined();
+    expect(result.info.projectDisposition).toBe('native_disabled');
     expect(out.tools).toEqual(req.tools);
     expect(opening.some(
       (block) => block.type === 'text' && block.text.includes('worker option governance row 2199'),

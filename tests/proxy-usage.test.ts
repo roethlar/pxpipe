@@ -1,11 +1,6 @@
 import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { createProxy, type ProxyEvent } from '../src/core/proxy.js';
-import {
-  buildAnthropicCandidate,
-  PROJECT_GUIDANCE_MANIFEST_TAG,
-  RUNTIME_CONTEXT_LABEL,
-  RUNTIME_CONTEXT_MANIFEST_TAG,
-} from '../src/core/transform.js';
+import { buildAnthropicCandidate } from '../src/core/transform.js';
 import {
   DIRECT_PROJECT_GUIDANCE,
   makeCapturedRequest,
@@ -95,7 +90,7 @@ describe('proxy usage extraction', () => {
     expect(captured!.firstByteMs).toBeTypeOf('number');
   });
 
-  it('rejects the legacy runtime-tail/manifest candidate byte-exact before count_tokens', async () => {
+  it('admits only the exact in-place project candidate after all four count checks', async () => {
     const capturedRequest = makeCapturedRequest({
       projectGuidance:
         DIRECT_PROJECT_GUIDANCE + '\n' +
@@ -109,27 +104,30 @@ describe('proxy usage extraction', () => {
     const reqBytes = new TextEncoder().encode(reqBody);
     const transform = { charsPerToken: 1, minCompressChars: 1 };
 
-    // Lock this regression to the shipped unsafe candidate: it moves runtime
-    // facts into a generated user tail and adds privileged manifests.
-    const legacyCandidate = await buildAnthropicCandidate(reqBytes, transform);
-    const candidateText = new TextDecoder().decode(legacyCandidate.body);
-    const candidateRequest = JSON.parse(candidateText) as {
-      system?: Array<{ text?: string }>;
-    };
-    const candidateSystem = (candidateRequest.system ?? [])
-      .map((block) => block.text ?? '')
-      .join('\n');
-    expect(legacyCandidate.info.compressed).toBe(true);
-    expect(candidateSystem).toContain(`<${PROJECT_GUIDANCE_MANIFEST_TAG} version="1">`);
-    expect(candidateSystem).toContain(`<${RUNTIME_CONTEXT_MANIFEST_TAG} version="1">`);
-    expect(candidateText).toContain(RUNTIME_CONTEXT_LABEL);
+    const safeCandidate = await buildAnthropicCandidate(reqBytes, transform);
+    const candidateText = new TextDecoder().decode(safeCandidate.body);
+    const candidateRequest = JSON.parse(candidateText) as typeof capturedRequest;
+    expect(safeCandidate.info.compressed).toBe(true);
+    expect(safeCandidate.replacements).toHaveLength(1);
+    expect(candidateRequest.system).toEqual(capturedRequest.system);
+    expect(candidateRequest.tools).toEqual(capturedRequest.tools);
+    expect(candidateRequest.messages.map((message) => message.role)).toEqual(
+      capturedRequest.messages.map((message) => message.role),
+    );
+    expect(candidateText).toContain('owner@example.invalid');
+    expect(candidateText).toContain('2026-07-10');
+    expect(candidateText).not.toContain('PXPIPE');
 
     const upstreamRequests: Request[] = [];
     let countTokenCalls = 0;
+    const probeTokens = [20_000, 1_000, 1_000, 500];
     const restore = mockUpstream(async (req) => {
       if (req.url.endsWith('/count_tokens')) {
-        countTokenCalls += 1;
-        throw new Error('count_tokens must not run before contract validation');
+        const input_tokens = probeTokens[countTokenCalls++] ?? 0;
+        return new Response(JSON.stringify({ input_tokens }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }
       upstreamRequests.push(req.clone());
       return new Response(
@@ -167,17 +165,16 @@ describe('proxy usage extraction', () => {
 
     const main = upstreamRequests.find((r) => r.url === 'http://ocproxy.test/anthropic/messages');
     expect(main).toBeDefined();
-    expect(new Uint8Array(await main!.arrayBuffer())).toEqual(reqBytes);
-    expect(countTokenCalls).toBe(0);
+    expect(new Uint8Array(await main!.arrayBuffer())).toEqual(safeCandidate.body);
+    expect(countTokenCalls).toBe(4);
     expect(captured?.model).toBe('claude-fable-5');
-    expect(captured?.info?.compressed).toBe(false);
-    expect(captured?.info?.reason).toBe('candidate_contract_invalid');
-    expect(captured?.info?.admissionReason).toBe('candidate_contract_invalid');
-    expect(captured?.info?.baselineProbeStatus).toBeUndefined();
-    expect(captured?.info?.baselineTokens).toBeUndefined();
-    expect(captured?.info?.candidateTokens).toBeUndefined();
-    expect(captured?.info?.admissionSignedSavingsTokens).toBeUndefined();
-    expect(captured?.info?.admissionRelativeSavings).toBeUndefined();
+    expect(captured?.info?.compressed).toBe(true);
+    expect(captured?.info?.admissionReason).toBe('admitted');
+    expect(captured?.info?.baselineProbeStatus).toBe('ok');
+    expect(captured?.info?.baselineTokens).toBe(20_000);
+    expect(captured?.info?.candidateTokens).toBe(1_000);
+    expect(captured?.info?.admissionSignedSavingsTokens).toBeGreaterThan(256);
+    expect(captured?.info?.admissionRelativeSavings).toBeGreaterThan(0.1);
   });
 
   it('routes GPT 5.6 Sol chat completions to OpenAI, transforms once, and normalizes usage', async () => {

@@ -1,210 +1,155 @@
-/**
- * Tests for the caller fidelity hint (Task #1): `keepSharp`.
- *
- * A caller (typically a harness that knows a block carries exact-match-
- * critical content — an ID, hash, secret, or file path) can supply a
- * `keepSharp(block)` predicate. Any block for which it returns `true`
- * is left as text and never rendered into an image, overriding the
- * chars/token profitability heuristic.
- *
- * Contract being verified:
- *   - Default (no predicate): a large tool_result is imaged.
- *   - keepSharp → true: the same block stays text, is NOT imaged, and
- *     `info.keptSharpBlocks` is incremented.
- *   - The predicate receives a descriptor it can decide on (kind/text).
- *   - keepSharp is per-block: a sharp block stays text while a sibling
- *     block in the same request still images.
- *   - A throwing / non-boolean predicate is treated as `false` and never
- *     breaks the request (pure, defensive).
- *   - The hint is reachable through the public library option type.
- *
- * Rendered PNGs are opaque in tests, so we assert on the request body
- * shape (text block survived vs. became image) and the `info` counters.
- */
-
 import { describe, expect, it } from 'vitest';
-import { buildAnthropicCandidate as transformRequest } from '../src/core/transform.js';
 import { transformAnthropicMessages } from '../src/core/library.js';
+import { buildAnthropicCandidate } from '../src/core/transform.js';
+import type { ContentBlock, MessagesRequest, ToolResultBlock } from '../src/core/types.js';
 
-const enc = new TextEncoder();
-const dec = new TextDecoder();
+const BIG = 'ordinary readable prose '.repeat(2_500);
 
-/**
- * Build a request whose first user message carries `content` blocks and a
- * large tool-result block (so compression machinery is definitely active).
- * `model` defaults to a sonnet alias (the proxy path transforms any model);
- * the library wrapper gates on supported models, so its test passes Fable.
- */
-function makeReq(content: unknown[], model = 'claude-3-5-sonnet') {
-  return enc.encode(
-    JSON.stringify({
-      model,
-      // Large static slab → main compression path runs, info.compressed flips.
-      system: 'x'.repeat(80_000),
-      messages: [{ role: 'user', content }],
-    }),
+function encode(request: MessagesRequest): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(request));
+}
+
+function requestWith(...results: ToolResultBlock[]): MessagesRequest {
+  return {
+    model: 'claude-fable-5',
+    system: 'native system text',
+    messages: [{ role: 'user', content: results }],
+  };
+}
+
+function decode(body: Uint8Array): MessagesRequest {
+  return JSON.parse(new TextDecoder().decode(body)) as MessagesRequest;
+}
+
+function toolResult(body: Uint8Array, id: string): ToolResultBlock {
+  const request = decode(body);
+  const blocks = request.messages[0]!.content;
+  if (!Array.isArray(blocks)) throw new Error('expected content blocks');
+  const result = blocks.find(
+    (block): block is ToolResultBlock =>
+      block.type === 'tool_result' && block.tool_use_id === id,
   );
+  if (!result) throw new Error(`missing tool result ${id}`);
+  return result;
 }
 
-function parse(body: Uint8Array): any {
-  return JSON.parse(dec.decode(body));
+function hasImage(result: ToolResultBlock): boolean {
+  return Array.isArray(result.content)
+    && result.content.some((block) => block.type === 'image');
 }
 
-/** Pull the (single) user message's content blocks out of a transformed body. */
-function userBlocks(body: Uint8Array): any[] {
-  const req = parse(body);
-  const user = (req.messages ?? []).find((m: any) => m.role === 'user');
-  return Array.isArray(user?.content) ? user.content : [];
-}
-
-// A tool_result big enough that the profitability gate would normally image it.
-const BIG = 'x'.repeat(50_000);
+const exactOptions = {
+  minToolResultChars: 100,
+  cols: 100,
+  maxImagesPerToolResult: 10,
+} as const;
 
 describe('keepSharp fidelity hint', () => {
-  it('images a large tool_result by default (baseline, no hint)', async () => {
-    const { body, info } = await transformRequest(
-      makeReq([{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }]),
-      { multiCol: 1, charsPerToken: 2 },
-    );
-    expect(info.compressed).toBe(true);
-    expect(info.toolResultImgs ?? 0).toBeGreaterThan(0);
-    expect(info.keptSharpBlocks ?? 0).toBe(0);
+  it('images an eligible tool result when no caller hint protects it', async () => {
+    const input = encode(requestWith({
+      type: 'tool_result',
+      tool_use_id: 'toolu_default',
+      content: BIG,
+    }));
+    const transformed = await buildAnthropicCandidate(input, exactOptions);
 
-    // The imaged tool_result no longer carries its original text payload.
-    const blocks = userBlocks(body);
-    const tr = blocks.find((b) => b.type === 'tool_result');
-    const hasImage =
-      Array.isArray(tr?.content) &&
-      tr.content.some((b: any) => b.type === 'image');
-    expect(hasImage).toBe(true);
+    expect(transformed.info.compressed).toBe(true);
+    expect(transformed.info.toolResultImgs ?? 0).toBeGreaterThan(0);
+    expect(transformed.info.keptSharpBlocks ?? 0).toBe(0);
+    expect(hasImage(toolResult(transformed.body, 'toolu_default'))).toBe(true);
   });
 
-  it('keeps a tool_result as text when keepSharp returns true', async () => {
-    const { body, info } = await transformRequest(
-      makeReq([{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }]),
-      {
-        multiCol: 1,
-        charsPerToken: 2,
-        keepSharp: (blk) => blk.kind === 'tool_result',
+  it('keeps a protected tool result byte-exact', async () => {
+    const input = encode(requestWith({
+      type: 'tool_result',
+      tool_use_id: 'toolu_kept',
+      content: BIG,
+    }));
+    const transformed = await buildAnthropicCandidate(input, {
+      ...exactOptions,
+      keepSharp: (block) => block.kind === 'tool_result',
+    });
+
+    expect(transformed.body).toBe(input);
+    expect(transformed.info.toolResultImgs ?? 0).toBe(0);
+    expect(transformed.info.keptSharpBlocks).toBe(1);
+    expect(toolResult(transformed.body, 'toolu_kept').content).toBe(BIG);
+  });
+
+  it('passes the exact source kind, text, and tool-use id to the predicate', async () => {
+    const seen: Array<{ kind: string; toolUseId?: string; text: string }> = [];
+    await buildAnthropicCandidate(encode(requestWith({
+      type: 'tool_result',
+      tool_use_id: 'toolu_descriptor',
+      content: BIG,
+    })), {
+      ...exactOptions,
+      keepSharp: (block) => {
+        seen.push({ kind: block.kind, toolUseId: block.toolUseId, text: block.text });
+        return false;
       },
-    );
+    });
 
-    // No tool_result image was produced; the counter recorded the override.
-    expect(info.toolResultImgs ?? 0).toBe(0);
-    expect(info.keptSharpBlocks ?? 0).toBeGreaterThan(0);
-
-    // The original text survived byte-for-byte inside the tool_result.
-    const tr = userBlocks(body).find((b) => b.type === 'tool_result');
-    const text =
-      typeof tr?.content === 'string'
-        ? tr.content
-        : (tr?.content ?? []).find((b: any) => b.type === 'text')?.text;
-    expect(text).toBe(BIG);
+    expect(seen).toEqual([{
+      kind: 'tool_result',
+      toolUseId: 'toolu_descriptor',
+      text: BIG,
+    }]);
   });
 
-  it('passes a descriptor the predicate can decide on', async () => {
-    const seen: Array<{ kind: string; toolUseId?: string; len: number }> = [];
-    await transformRequest(
-      makeReq([{ type: 'tool_result', tool_use_id: 'toolu_z', content: BIG }]),
-      {
-        multiCol: 1,
-        charsPerToken: 2,
-        keepSharp: (blk) => {
-          seen.push({ kind: blk.kind, toolUseId: blk.toolUseId, len: blk.text.length });
-          return false;
-        },
+  it('protects one result without moving or disabling an eligible sibling', async () => {
+    const input = encode(requestWith(
+      { type: 'tool_result', tool_use_id: 'keep_me', content: BIG },
+      { type: 'tool_result', tool_use_id: 'image_me', content: BIG },
+    ));
+    const transformed = await buildAnthropicCandidate(input, {
+      ...exactOptions,
+      keepSharp: (block) => block.toolUseId === 'keep_me',
+    });
+    const output = decode(transformed.body);
+    const blocks = output.messages[0]!.content as ContentBlock[];
+
+    expect(transformed.info.compressed).toBe(true);
+    expect(transformed.info.keptSharpBlocks).toBe(1);
+    expect(blocks.map((block) =>
+      block.type === 'tool_result' ? block.tool_use_id : block.type))
+      .toEqual(['keep_me', 'image_me']);
+    expect(toolResult(transformed.body, 'keep_me').content).toBe(BIG);
+    expect(hasImage(toolResult(transformed.body, 'image_me'))).toBe(true);
+  });
+
+  it('treats a throwing predicate as false without breaking the request', async () => {
+    const transformed = await buildAnthropicCandidate(encode(requestWith({
+      type: 'tool_result',
+      tool_use_id: 'toolu_throw',
+      content: BIG,
+    })), {
+      ...exactOptions,
+      keepSharp: () => {
+        throw new Error('caller bug');
       },
-    );
-    const tr = seen.find((s) => s.kind === 'tool_result');
-    expect(tr).toBeTruthy();
-    expect(tr!.toolUseId).toBe('toolu_z');
-    expect(tr!.len).toBe(BIG.length);
+    });
+
+    expect(transformed.info.compressed).toBe(true);
+    expect(transformed.info.keptSharpBlocks ?? 0).toBe(0);
+    expect(hasImage(toolResult(transformed.body, 'toolu_throw'))).toBe(true);
   });
 
-  it('is per-block: a sharp block stays text while a sibling images', async () => {
-    const { body, info } = await transformRequest(
-      makeReq([
-        { type: 'tool_result', tool_use_id: 'keep_me', content: BIG },
-        { type: 'tool_result', tool_use_id: 'image_me', content: BIG },
-      ]),
-      {
-        multiCol: 1,
-        charsPerToken: 2,
-        keepSharp: (blk) => blk.toolUseId === 'keep_me',
-      },
-    );
-
-    expect(info.keptSharpBlocks ?? 0).toBe(1);
-    expect(info.toolResultImgs ?? 0).toBeGreaterThan(0);
-
-    const blocks = userBlocks(body);
-    const kept = blocks.find((b) => b.tool_use_id === 'keep_me');
-    const imaged = blocks.find((b) => b.tool_use_id === 'image_me');
-
-    const keptText =
-      typeof kept?.content === 'string'
-        ? kept.content
-        : (kept?.content ?? []).find((b: any) => b.type === 'text')?.text;
-    expect(keptText).toBe(BIG);
-
-    const imagedHasImage =
-      Array.isArray(imaged?.content) &&
-      imaged.content.some((b: any) => b.type === 'image');
-    expect(imagedHasImage).toBe(true);
-  });
-
-  it('treats a throwing predicate as false and never breaks the request', async () => {
-    const { body, info } = await transformRequest(
-      makeReq([{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }]),
-      {
-        multiCol: 1,
-        charsPerToken: 2,
-        keepSharp: () => {
-          throw new Error('caller bug');
-        },
-      },
-    );
-    // Falls back to default behavior: the block is imaged, nothing pinned.
-    expect(info.compressed).toBe(true);
-    expect(info.keptSharpBlocks ?? 0).toBe(0);
-    const tr = userBlocks(body).find((b) => b.type === 'tool_result');
-    const hasImage =
-      Array.isArray(tr?.content) &&
-      tr.content.some((b: any) => b.type === 'image');
-    expect(hasImage).toBe(true);
-  });
-
-  it('keeps the public library wrapper native without an admission transport', async () => {
-    // Fable is the supported model by default; the wrapper gates on
-    // `input.model`, so set it to a Fable alias to run the real transform.
-    const input = makeReq(
-        [
-          { type: 'tool_result', tool_use_id: 'keep_me', content: BIG },
-          { type: 'tool_result', tool_use_id: 'image_me', content: BIG },
-        ],
-        'claude-fable-5',
-      );
+  it('keeps the public library wrapper native without admission probes', async () => {
+    const input = encode(requestWith(
+      { type: 'tool_result', tool_use_id: 'keep_me', content: BIG },
+      { type: 'tool_result', tool_use_id: 'image_me', content: BIG },
+    ));
     const result = await transformAnthropicMessages({
       body: input,
       model: 'claude-fable-5',
-      options: {
-        // multiCol defaults to 1; PxpipeOptions intentionally narrows the
-        // library surface to charsPerToken / historyAmortizationHorizon / keepSharp.
-        charsPerToken: 2,
-        keepSharp: (blk) => blk.toolUseId === 'keep_me',
-      },
+      options: { keepSharp: (block) => block.toolUseId === 'keep_me' },
     });
 
     expect(result.applied).toBe(false);
     expect(result.body).toBe(input);
     expect(result.info.reason).toBe('admission_probe_unavailable');
-    const tr = userBlocks(result.body).find((b) => b.tool_use_id === 'keep_me');
-    const text =
-      typeof tr?.content === 'string'
-        ? tr.content
-        : (tr?.content ?? []).find((b: any) => b.type === 'text')?.text;
-    expect(text).toBe(BIG);
-    const imaged = userBlocks(result.body).find((b) => b.tool_use_id === 'image_me');
-    expect(Array.isArray(imaged?.content) && imaged.content.some((b: any) => b.type === 'image')).toBe(false);
+    expect(toolResult(result.body, 'keep_me').content).toBe(BIG);
+    expect(hasImage(toolResult(result.body, 'image_me'))).toBe(false);
   });
 });

@@ -20,7 +20,7 @@ describe('standalone Anthropic transformation is fail-native', () => {
           content: [{
             type: 'tool_result',
             tool_use_id: 'tool-1',
-            content: 'plain tool output line\n'.repeat(2_000),
+            content: 'plain tool output line\n'.repeat(500),
           }],
         },
       ],

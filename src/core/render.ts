@@ -907,6 +907,178 @@ export async function renderTextToPngs(
   return renderTextToPngsWithCharLimit(text, cols, READABLE_CHARS_PER_IMAGE, style, maxHeightPx, slotText);
 }
 
+// --- exact single-column rendering -----------------------------------------
+
+/** Options intentionally omit every source-mutating or annotating legacy knob. */
+export interface ExactRenderOptions {
+  /** Soft-wrap width in cells. No source newline is inserted at a soft wrap. */
+  readonly cols?: number;
+  /** Physical page ceiling. Pagination is row-only and never truncates source. */
+  readonly maxHeightPx?: number;
+  /** Atlas selection only; it does not alter the source stream. */
+  readonly font?: RenderFont;
+  /** Use the grayscale companion atlas. Default true. */
+  readonly aa?: boolean;
+}
+
+/** One exact page plus its contiguous, byte-for-byte JavaScript source span. */
+export interface ExactRenderedImage extends RenderedImage {
+  /** Exact source substring represented by this page; concatenating pages restores input. */
+  readonly sourceText: string;
+  /** UTF-16 offsets into the caller string. Both are codepoint boundaries. */
+  readonly sourceStart: number;
+  readonly sourceEnd: number;
+}
+
+interface ExactRow {
+  readonly glyphs: string[];
+  readonly sourceStart: number;
+  sourceEnd: number;
+}
+
+/**
+ * Wrap without materializing a changed text string. Iteration is by Unicode
+ * codepoint, so a valid surrogate pair can never be split across rows/pages.
+ * Newlines own their original source codepoint but render as row boundaries;
+ * tabs, CR, ESC, and other controls remain literal glyph attempts and surface
+ * through droppedCodepoints when the atlas cannot draw them.
+ */
+function exactRows(text: string, cols: number, font: RenderFont): ExactRow[] {
+  const rows: ExactRow[] = [{ glyphs: [], sourceStart: 0, sourceEnd: 0 }];
+  let row = rows[0]!;
+  let cells = 0;
+  let offset = 0;
+
+  for (const ch of text) {
+    const start = offset;
+    offset += ch.length;
+    if (ch === '\n') {
+      // The following visual row owns the newline codepoint. This keeps every
+      // page span non-empty when a trailing newline starts a new page while
+      // still rendering the exact same line break.
+      row.sourceEnd = start;
+      row = { glyphs: [], sourceStart: start, sourceEnd: offset };
+      rows.push(row);
+      cells = 0;
+      continue;
+    }
+
+    const codepoint = ch.codePointAt(0)!;
+    const advance = cellsFor(codepoint, 1, font);
+    if (row.glyphs.length > 0 && cells + advance > cols) {
+      row.sourceEnd = start;
+      row = { glyphs: [], sourceStart: start, sourceEnd: offset };
+      rows.push(row);
+      cells = 0;
+    }
+    row.glyphs.push(ch);
+    row.sourceEnd = offset;
+    cells += advance;
+  }
+
+  return rows;
+}
+
+async function renderExactRows(
+  text: string,
+  rows: readonly ExactRow[],
+  sourceStart: number,
+  sourceEnd: number,
+  cols: number,
+  font: RenderFont,
+  aa: boolean,
+): Promise<ExactRenderedImage> {
+  const style: RenderStyle = { font, aa };
+  const cellW = renderCellWidth(style);
+  const cellH = renderCellHeight(style);
+  const width = 2 * PAD_X + cols * cellW;
+  const height = 2 * PAD_Y + Math.max(1, rows.length) * cellH;
+  const fb = new Uint8Array(width * height);
+  let droppedChars = 0;
+  const droppedCodepoints = new Map<number, number>();
+
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex]!;
+    const baseY = PAD_Y + rowIndex * cellH;
+    let col = 0;
+    for (const ch of row.glyphs) {
+      const codepoint = ch.codePointAt(0)!;
+      const baseX = PAD_X + col * cellW;
+      const advance = aa
+        ? blitGlyphGray(fb, width, baseX, baseY, codepoint, font)
+        : blitGlyph(fb, width, baseX, baseY, codepoint, font);
+      if (advance === 0) {
+        droppedChars++;
+        droppedCodepoints.set(codepoint, (droppedCodepoints.get(codepoint) ?? 0) + 1);
+        col += 1;
+      } else {
+        col += advance;
+      }
+    }
+  }
+
+  for (let index = 0; index < fb.length; index++) fb[index] = 255 - fb[index]!;
+  const png = await encodeGrayPng(fb, width, height);
+  const sourceText = text.slice(sourceStart, sourceEnd);
+  let charsRendered = 0;
+  for (const _ of sourceText) charsRendered++;
+  return {
+    png,
+    width,
+    height,
+    charsRendered,
+    droppedChars,
+    droppedCodepoints,
+    sourceText,
+    sourceStart,
+    sourceEnd,
+  };
+}
+
+/**
+ * Render caller text as deterministic, unlabeled, single-column PNG pages.
+ *
+ * This path never calls the legacy minifier, reflow, tab expander, label,
+ * paging, truncation, or multi-column helpers. Page source spans are contiguous
+ * slices of the original string, and every boundary is produced by codepoint
+ * iteration. Missing glyphs are rendered as blank cells and reported so the
+ * caller can reject the entire source bucket before forwarding.
+ */
+export async function renderTextToPngsExact(
+  text: string,
+  opts: ExactRenderOptions = {},
+): Promise<ExactRenderedImage[]> {
+  if (text.length === 0) return [];
+  // A full-width Unicode glyph occupies two cells. Never permit a caller's
+  // narrow layout option to clip one while reporting a lossless render.
+  const cols = Math.max(2, Math.floor(opts.cols ?? DEFAULT_COLS));
+  const font = opts.font ?? DEFAULT_RENDER_FONT;
+  const aa = opts.aa ?? true;
+  const style: RenderStyle = { font, aa };
+  const cellH = renderCellHeight(style);
+  const requestedHeight = Math.floor(opts.maxHeightPx ?? MAX_HEIGHT_PX);
+  const maxHeightPx = Math.max(2 * PAD_Y + cellH, requestedHeight);
+  const rowsPerPage = Math.max(1, Math.floor((maxHeightPx - 2 * PAD_Y) / cellH));
+  const rows = exactRows(text, cols, font);
+  const pages: ExactRenderedImage[] = [];
+
+  for (let rowStart = 0; rowStart < rows.length; rowStart += rowsPerPage) {
+    const pageRows = rows.slice(rowStart, rowStart + rowsPerPage);
+    const sourceStart = pageRows[0]!.sourceStart;
+    const sourceEnd = pageRows[pageRows.length - 1]!.sourceEnd;
+    pages.push(await renderExactRows(
+      text,
+      pageRows,
+      sourceStart,
+      sourceEnd,
+      cols,
+      font,
+      aa,
+    ));
+  }
+  return pages;
+}
+
 // --- R2 multi-column rendering --------------------------------------------
 //
 // Packs N columns side-by-side (column-major) so one image covers numCols×linesPerImg

@@ -12,7 +12,9 @@ import {
 import { transformOpenAIChatCompletions, transformOpenAIResponses } from './openai.js';
 import { isAnthropicMessagesPath, isPxpipeSupportedGptModel, isPxpipeSupportedModel } from './applicability.js';
 import {
+  buildCacheablePrefixCountTokensBody,
   readCallerCacheControlTier,
+  resolveChangedSpanCacheCoverage,
 } from './measurement.js';
 import {
   admitAnthropicCandidate,
@@ -850,9 +852,19 @@ export function createProxy(config: ProxyConfig = {}) {
               decision = await admitAnthropicCandidate({
                 originalBody: bodyIn,
                 candidateBody: candidate.body,
-                // Slice 2 supplies exact per-span ownership. Until then, an
-                // unproved source position cannot enter the economic gate.
-                changedSpanCache: [{ kind: 'unknown' }],
+                replacements: candidate.replacements,
+                changedSpanCache: resolveChangedSpanCacheCoverage(
+                  bodyIn,
+                  candidate.changedSpans,
+                ).map((coverage) => {
+                  if (coverage.kind === 'cold') return coverage;
+                  if (coverage.kind === 'unknown') return { kind: 'unknown' as const };
+                  return {
+                    kind: 'covered' as const,
+                    marker: JSON.stringify(coverage.marker),
+                    ttl: coverage.rawTtl,
+                  };
+                }),
                 probe: (probeBody) => countTokensUpstream(
                   ctUrl,
                   probeBody,
@@ -863,6 +875,11 @@ export function createProxy(config: ProxyConfig = {}) {
 
             if (decision.admitted) {
               recordAdmissionEvidence(candidate.info, decision, bodyIn);
+              const prefixBody = buildCacheablePrefixCountTokensBody(decision.body);
+              if (prefixBody) {
+                candidate.info.cachePrefixSha8 = await sha8Bytes(prefixBody);
+                candidate.info.cachePrefixBytes = prefixBody.byteLength;
+              }
               r = { body: decision.body, info: candidate.info };
               if (config.compressionCoordinator && decision.cacheTier) {
                 let coordinated: ProxyCompressionLeaseResult;

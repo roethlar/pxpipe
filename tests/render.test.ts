@@ -45,6 +45,12 @@ import {
   synthesizeText,
 } from './fixtures/real-shapes.js';
 
+function exactProse(chars: number): string {
+  return 'ordinary readable prose '.repeat(
+    Math.ceil(chars / 'ordinary readable prose '.length),
+  ).slice(0, chars);
+}
+
 describe('model-selectable font atlases', () => {
   it('uses the JetBrains Mono 10 cell geometry without changing the default atlas', async () => {
     expect(renderCellWidth({ aa: true })).toBe(5);
@@ -1707,14 +1713,9 @@ describe('transform', () => {
     expect(typeof tr.content).toBe('string');
   });
 
-  // --- dropped_codepoints_top telemetry --------------------------------------
-  // Records the top-20 dropped codepoints on each request. Lets the operator
-  // see which Unicode blocks to add to the atlas profile without having to
-  // capture & inspect the request body.
+  // --- exact-render glyph admission -----------------------------------------
 
-  it('populates droppedCodepointsTop when drops occur, sorted by count', async () => {
-    // Tool-result compression remains provenance-safe. Put drops at the front
-    // so they remain visible even when the page budget truncates the tail.
+  it('keeps the whole source native when any glyph would be dropped', async () => {
     const cpA = String.fromCodePoint(0x1f600); // 😀
     const cpB = String.fromCodePoint(0x1f604); // 😄
     const cpC = String.fromCodePoint(0x1f60a); // 😊
@@ -1722,7 +1723,7 @@ describe('transform', () => {
       cpA.repeat(10) +  // 10 drops of U+1F600
       '\n' + cpB.repeat(3) +   // 3  drops of U+1F604
       '\n' + cpC.repeat(1) +   // 1  drop  of U+1F60A
-      '\n' + 'x'.repeat(40_000);
+      '\n' + exactProse(40_000);
     const req = JSON.stringify({
       model: 'claude-3-5-sonnet',
       messages: [{
@@ -1731,22 +1732,15 @@ describe('transform', () => {
       }],
       system: 'native system text',
     });
-    const { info } = await transformRequest(new TextEncoder().encode(req), { charsPerToken: 2 });
-    expect(info.compressed).toBe(true);
-    expect(info.droppedChars).toBeGreaterThanOrEqual(14);
-    expect(info.droppedCodepointsTop).toBeDefined();
-    const top = info.droppedCodepointsTop!;
-    expect(top['U+1F600']).toBe(10);
-    expect(top['U+1F604']).toBe(3);
-    expect(top['U+1F60A']).toBe(1);
-    // Ensure key format is the expected U+HHHH uppercase with no surprises.
-    for (const k of Object.keys(top)) {
-      expect(k).toMatch(/^U\+[0-9A-F]{4,}$/);
-    }
-    // Sorted by count desc: iteration of object keys preserves insertion order
-    // in V8/JSC, so the first key is the highest-count drop.
-    const keys = Object.keys(top);
-    expect(keys[0]).toBe('U+1F600');
+    const input = new TextEncoder().encode(req);
+    const { body, info } = await transformRequest(input, { charsPerToken: 2 });
+    expect(info.compressed).toBe(false);
+    expect(info.toolResultImgs ?? 0).toBe(0);
+    expect(info.droppedChars ?? 0).toBe(0);
+    expect(info.droppedCodepointsTop).toBeUndefined();
+    expect(body).toBe(input);
+    const out = JSON.parse(new TextDecoder().decode(body));
+    expect(out.messages[0].content[0].content).toBe(result);
   });
 
   it('omits droppedCodepointsTop entirely when no drops occur', async () => {
@@ -1758,7 +1752,7 @@ describe('transform', () => {
         content: [{
           type: 'tool_result',
           tool_use_id: 'toolu_ascii',
-          content: 'x'.repeat(40_000),
+          content: exactProse(40_000),
         }],
       }],
       system: 'native system text',
@@ -1769,36 +1763,39 @@ describe('transform', () => {
     expect(info.droppedCodepointsTop).toBeUndefined();
   });
 
-  it('caps droppedCodepointsTop at 20 entries', async () => {
-    // 25 distinct supplementary-plane codepoints, each appearing N times so
-    // we can verify the cap drops the smallest counts.
+  it('keeps a dropped-glyph source native while an independent safe sibling is imaged', async () => {
     let payload = '';
     for (let i = 0; i < 25; i++) {
-      // U+1F300..U+1F318 — 25 distinct codepoints, each occurring (25 - i) times
-      // so U+1F300 occurs 25 times, U+1F318 occurs 1 time.
       payload += String.fromCodePoint(0x1f300 + i).repeat(25 - i);
     }
-    payload += '\n' + 'x'.repeat(40_000);
+    payload += '\n' + exactProse(40_000);
+    const safe = exactProse(40_000);
     const req = JSON.stringify({
       model: 'claude-3-5-sonnet',
       messages: [{
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'toolu_many_drops', content: payload }],
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_many_drops', content: payload },
+          { type: 'tool_result', tool_use_id: 'toolu_safe', content: safe },
+        ],
       }],
       system: 'native system text',
     });
-    const { info } = await transformRequest(new TextEncoder().encode(req), { charsPerToken: 2 });
-    expect(info.droppedCodepointsTop).toBeDefined();
-    const top = info.droppedCodepointsTop!;
-    expect(Object.keys(top).length).toBe(20);
-    // The 5 smallest-count codepoints (last in the input) must be dropped
-    // from the top-20.
-    for (let i = 20; i < 25; i++) {
-      const hex = (0x1f300 + i).toString(16).toUpperCase().padStart(4, '0');
-      expect(top[`U+${hex}`]).toBeUndefined();
-    }
-    // The top entry is the most-frequent.
-    expect(top['U+1F300']).toBe(25);
+    const { body, info } = await transformRequest(new TextEncoder().encode(req), { charsPerToken: 2 });
+    expect(info.compressed).toBe(true);
+    expect(info.toolResultImgs ?? 0).toBeGreaterThan(0);
+    expect(info.droppedChars ?? 0).toBe(0);
+    expect(info.droppedCodepointsTop).toBeUndefined();
+    const out = JSON.parse(new TextDecoder().decode(body));
+    const dropped = out.messages[0].content.find(
+      (block: any) => block.tool_use_id === 'toolu_many_drops',
+    );
+    const imaged = out.messages[0].content.find(
+      (block: any) => block.tool_use_id === 'toolu_safe',
+    );
+    expect(dropped.content).toBe(payload);
+    expect(Array.isArray(imaged.content)).toBe(true);
+    expect(imaged.content.every((part: any) => part.type === 'image')).toBe(true);
   });
 
   // --- Per-block break-even gate (URGENT slice, supersedes prior threshold tests) ---
@@ -2003,10 +2000,8 @@ describe('transform', () => {
     expect(isCompressionProfitable('a'.repeat(15000), 100)).toBe(true);
   });
 
-  it('break-even gate: 25000-char tool_result still images (clear win at 1 image)', async () => {
-    // 25000 chars of dense code/log content (charsPerToken≈2) → profitable.
-    // With cpt=2: textCost=ceil(25000/2)=12500 vs imgCost=2*3484=6968 → clear win.
-    const longResult = 'x'.repeat(25000);
+  it('builds an exact prose candidate without a legacy per-bucket savings gate', async () => {
+    const longResult = exactProse(25_000);
     const req = JSON.stringify({
       model: 'claude-3-5-sonnet',
       messages: [

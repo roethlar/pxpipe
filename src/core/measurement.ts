@@ -12,6 +12,44 @@ export interface CountTokensBodies {
 
 export type CallerCacheControlTier = 'none' | '5m' | '1h' | 'conservative_1h';
 
+/** Exact source container whose text is a candidate for in-place replacement. */
+export interface AnthropicChangedSpanLocation {
+  readonly messageIndex: number;
+  readonly blockIndex: number;
+  /** Required only when the changed text is one part of an array-valued tool_result. */
+  readonly toolResultPartIndex?: number;
+}
+
+/** Stable, JSON-safe address of the globally governing caller cache marker. */
+export type CallerCacheControlPointer =
+  | { readonly kind: 'tool'; readonly toolIndex: number }
+  | { readonly kind: 'system'; readonly systemIndex: number }
+  | { readonly kind: 'message'; readonly messageIndex: number }
+  | {
+      readonly kind: 'message_block';
+      readonly messageIndex: number;
+      readonly blockIndex: number;
+    }
+  | {
+      readonly kind: 'tool_result_part';
+      readonly messageIndex: number;
+      readonly blockIndex: number;
+      readonly toolResultPartIndex: number;
+    };
+
+export type ChangedSpanCacheCoverage =
+  | { readonly kind: 'cold' }
+  | {
+      readonly kind: 'covered';
+      readonly marker: CallerCacheControlPointer;
+      /** Caller value without normalization. Omitted and malformed TTLs remain unknown. */
+      readonly rawTtl: unknown;
+    }
+  | {
+      readonly kind: 'unknown';
+      readonly reason: 'invalid_body' | 'invalid_location' | 'ambiguous_location';
+    };
+
 /** Fields accepted by /v1/messages/count_tokens. Any other field returns 400 "Unknown parameter". */
 const COUNT_TOKENS_FIELDS = new Set([
   'model',
@@ -73,6 +111,222 @@ function cacheControlTier(x: unknown): Exclude<CallerCacheControlTier, 'none'> |
   return 'conservative_1h';
 }
 
+interface CacheMarkerEntry {
+  readonly kind: 'marker';
+  readonly pointer: CallerCacheControlPointer;
+  readonly rawTtl: unknown;
+  readonly tier: Exclude<CallerCacheControlTier, 'none'>;
+}
+
+interface CacheSpanEntry {
+  readonly kind: 'span';
+  readonly key: string;
+}
+
+type CacheOrderEntry = CacheMarkerEntry | CacheSpanEntry;
+
+function rawCacheControlTtl(x: unknown): unknown {
+  if (!hasCacheControl(x)) return undefined;
+  const cacheControl = (x as { cache_control?: unknown }).cache_control;
+  return cacheControl && typeof cacheControl === 'object'
+    ? (cacheControl as { ttl?: unknown }).ttl
+    : undefined;
+}
+
+function changedSpanKey(location: AnthropicChangedSpanLocation): string {
+  return location.toolResultPartIndex === undefined
+    ? `m:${location.messageIndex}:b:${location.blockIndex}`
+    : `m:${location.messageIndex}:b:${location.blockIndex}:p:${location.toolResultPartIndex}`;
+}
+
+function pushMarker(
+  entries: CacheOrderEntry[],
+  value: unknown,
+  pointer: CallerCacheControlPointer,
+): void {
+  const tier = cacheControlTier(value);
+  if (!tier) return;
+  entries.push({
+    kind: 'marker',
+    pointer,
+    rawTtl: rawCacheControlTtl(value),
+    tier,
+  });
+}
+
+/**
+ * Flatten caller-owned cache locations in Anthropic cache order. A marker is
+ * placed after the source it terminates, so a marker on a changed block/part
+ * covers that source. Tool-result parts precede their outer block marker.
+ */
+function callerCacheOrder(obj: Record<string, unknown>): CacheOrderEntry[] {
+  const entries: CacheOrderEntry[] = [];
+
+  const tools = obj.tools;
+  if (Array.isArray(tools)) {
+    for (let toolIndex = 0; toolIndex < tools.length; toolIndex++) {
+      pushMarker(entries, tools[toolIndex], { kind: 'tool', toolIndex });
+    }
+  }
+
+  const system = obj.system;
+  if (Array.isArray(system)) {
+    for (let systemIndex = 0; systemIndex < system.length; systemIndex++) {
+      pushMarker(entries, system[systemIndex], { kind: 'system', systemIndex });
+    }
+  }
+
+  const messages = obj.messages;
+  if (!Array.isArray(messages)) return entries;
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+    const message = messages[messageIndex];
+    if (!message || typeof message !== 'object') continue;
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) {
+      // Preserve the prefix builder's compatibility path for string-content
+      // messages carrying a marker on the message object itself.
+      pushMarker(entries, message, { kind: 'message', messageIndex });
+      continue;
+    }
+
+    for (let blockIndex = 0; blockIndex < content.length; blockIndex++) {
+      const block = content[blockIndex];
+      if (!block || typeof block !== 'object') continue;
+      const type = (block as { type?: unknown }).type;
+      const blockContent = (block as { content?: unknown }).content;
+      if (type === 'tool_result' && Array.isArray(blockContent)) {
+        for (
+          let toolResultPartIndex = 0;
+          toolResultPartIndex < blockContent.length;
+          toolResultPartIndex++
+        ) {
+          const part = blockContent[toolResultPartIndex];
+          if (
+            part
+            && typeof part === 'object'
+            && (part as { type?: unknown }).type === 'text'
+            && typeof (part as { text?: unknown }).text === 'string'
+          ) {
+            entries.push({
+              kind: 'span',
+              key: changedSpanKey({ messageIndex, blockIndex, toolResultPartIndex }),
+            });
+          }
+          pushMarker(entries, part, {
+            kind: 'tool_result_part',
+            messageIndex,
+            blockIndex,
+            toolResultPartIndex,
+          });
+        }
+      } else if (
+        (type === 'text' && typeof (block as { text?: unknown }).text === 'string')
+        || (type === 'tool_result' && typeof blockContent === 'string')
+      ) {
+        entries.push({ kind: 'span', key: changedSpanKey({ messageIndex, blockIndex }) });
+      }
+      pushMarker(entries, block, { kind: 'message_block', messageIndex, blockIndex });
+    }
+  }
+  return entries;
+}
+
+function lastCacheMarker(entries: readonly CacheOrderEntry[]): CacheMarkerEntry | undefined {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry?.kind === 'marker') return entry;
+  }
+  return undefined;
+}
+
+function isAmbiguousChangedLocation(
+  obj: Record<string, unknown>,
+  location: AnthropicChangedSpanLocation,
+): boolean {
+  if (location.toolResultPartIndex !== undefined) return false;
+  const messages = obj.messages;
+  if (!Array.isArray(messages)) return false;
+  const message = messages[location.messageIndex];
+  if (!message || typeof message !== 'object') return false;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return false;
+  const block = content[location.blockIndex];
+  return Boolean(
+    block
+    && typeof block === 'object'
+    && (block as { type?: unknown }).type === 'tool_result'
+    && Array.isArray((block as { content?: unknown }).content),
+  );
+}
+
+/**
+ * Classify changed Anthropic source spans against the exact last caller-owned
+ * cache marker. Results are parallel to `locations`; invalid structural
+ * addresses fail unknown rather than guessing at a neighboring block.
+ */
+export function resolveChangedSpanCacheCoverage(
+  bytes: BytesLike,
+  locations: readonly AnthropicChangedSpanLocation[],
+): ChangedSpanCacheCoverage[] {
+  const b = toUint8Array(bytes);
+  let obj: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(b)) as unknown;
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { messages?: unknown }).messages)) {
+      return locations.map(() => ({ kind: 'unknown', reason: 'invalid_body' }));
+    }
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return locations.map(() => ({ kind: 'unknown', reason: 'invalid_body' }));
+  }
+
+  const entries = callerCacheOrder(obj);
+  const spanIndexes = new Map<string, number[]>();
+  let governingIndex = -1;
+  let governing: CacheMarkerEntry | undefined;
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]!;
+    if (entry.kind === 'span') {
+      const indexes = spanIndexes.get(entry.key) ?? [];
+      indexes.push(index);
+      spanIndexes.set(entry.key, indexes);
+    } else {
+      governingIndex = index;
+      governing = entry;
+    }
+  }
+
+  return locations.map((location): ChangedSpanCacheCoverage => {
+    if (
+      !location
+      || !Number.isInteger(location.messageIndex)
+      || !Number.isInteger(location.blockIndex)
+      || location.messageIndex < 0
+      || location.blockIndex < 0
+      || (
+        location.toolResultPartIndex !== undefined
+        && (!Number.isInteger(location.toolResultPartIndex) || location.toolResultPartIndex < 0)
+      )
+    ) {
+      return { kind: 'unknown', reason: 'invalid_location' };
+    }
+    if (isAmbiguousChangedLocation(obj, location)) {
+      return { kind: 'unknown', reason: 'ambiguous_location' };
+    }
+    const indexes = spanIndexes.get(changedSpanKey(location));
+    if (!indexes || indexes.length === 0) {
+      return { kind: 'unknown', reason: 'invalid_location' };
+    }
+    if (indexes.length !== 1) {
+      return { kind: 'unknown', reason: 'ambiguous_location' };
+    }
+    if (!governing) return { kind: 'cold' };
+    return indexes[0]! <= governingIndex
+      ? { kind: 'covered', marker: governing.pointer, rawTtl: governing.rawTtl }
+      : { kind: 'cold' };
+  });
+}
+
 /**
  * Resolve the caller-owned breakpoint used by the cacheable-prefix probe.
  * Search order intentionally matches buildCacheablePrefixCountTokensBody.
@@ -87,39 +341,7 @@ export function readCallerCacheControlTier(bytes: BytesLike): CallerCacheControl
     return 'none';
   }
 
-  const messages = obj.messages;
-  if (Array.isArray(messages)) {
-    for (let mi = messages.length - 1; mi >= 0; mi--) {
-      const message = messages[mi];
-      if (!message || typeof message !== 'object') continue;
-      const content = (message as { content?: unknown }).content;
-      if (Array.isArray(content)) {
-        for (let bi = content.length - 1; bi >= 0; bi--) {
-          const tier = cacheControlTier(content[bi]);
-          if (tier) return tier;
-        }
-      }
-      const tier = cacheControlTier(message);
-      if (tier) return tier;
-    }
-  }
-
-  const system = obj.system;
-  if (Array.isArray(system)) {
-    for (let si = system.length - 1; si >= 0; si--) {
-      const tier = cacheControlTier(system[si]);
-      if (tier) return tier;
-    }
-  }
-
-  const tools = obj.tools;
-  if (Array.isArray(tools)) {
-    for (let ti = tools.length - 1; ti >= 0; ti--) {
-      const tier = cacheControlTier(tools[ti]);
-      if (tier) return tier;
-    }
-  }
-  return 'none';
+  return lastCacheMarker(callerCacheOrder(obj))?.tier ?? 'none';
 }
 
 /** Return tool_use ids with no matching tool_result. count_tokens rejects orphans;
@@ -166,6 +388,90 @@ function appendSyntheticToolResults(
   return { ...truncated, messages: [...messages, syntheticUserMsg] };
 }
 
+/** Top-level controls accepted by count_tokens that affect construction or
+ * cache identity of the prompt prefix. Omitting them can price caller-cached
+ * tokens as cold while underpricing the rebuilt candidate prefix. */
+function cacheRelevantTopLevelControls(
+  obj: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of ['tool_choice', 'thinking', 'mcp_servers'] as const) {
+    if (obj[key] !== undefined) out[key] = obj[key];
+  }
+  return out;
+}
+
+function truncateAtCallerMarker(
+  obj: Record<string, unknown>,
+  marker: CallerCacheControlPointer,
+): Record<string, unknown> | null {
+  const model = obj.model;
+  const tools = obj.tools;
+  const system = obj.system;
+  const messages = obj.messages;
+  const controls = cacheRelevantTopLevelControls(obj);
+
+  if (marker.kind === 'tool') {
+    if (!Array.isArray(tools) || marker.toolIndex >= tools.length) return null;
+    return {
+      model,
+      ...controls,
+      tools: tools.slice(0, marker.toolIndex + 1),
+      messages: [{ role: 'user', content: 'x' }],
+    };
+  }
+
+  if (marker.kind === 'system') {
+    if (!Array.isArray(system) || marker.systemIndex >= system.length) return null;
+    return {
+      model,
+      ...controls,
+      ...(tools !== undefined ? { tools } : {}),
+      system: system.slice(0, marker.systemIndex + 1),
+      messages: [{ role: 'user', content: 'x' }],
+    };
+  }
+
+  if (!Array.isArray(messages) || marker.messageIndex >= messages.length) return null;
+  if (marker.kind === 'message') {
+    const truncated: Record<string, unknown> = {
+      model,
+      ...controls,
+      messages: messages.slice(0, marker.messageIndex + 1),
+    };
+    if (system !== undefined) truncated.system = system;
+    if (tools !== undefined) truncated.tools = tools;
+    return truncated;
+  }
+
+  const message = messages[marker.messageIndex];
+  if (!message || typeof message !== 'object') return null;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content) || marker.blockIndex >= content.length) return null;
+  let truncatedBlock = content[marker.blockIndex];
+  if (marker.kind === 'tool_result_part') {
+    if (!truncatedBlock || typeof truncatedBlock !== 'object') return null;
+    const parts = (truncatedBlock as { content?: unknown }).content;
+    if (!Array.isArray(parts) || marker.toolResultPartIndex >= parts.length) return null;
+    truncatedBlock = {
+      ...truncatedBlock,
+      content: parts.slice(0, marker.toolResultPartIndex + 1),
+    };
+  }
+  const truncatedMessage = {
+    ...message,
+    content: content.slice(0, marker.blockIndex).concat([truncatedBlock]),
+  };
+  const truncated: Record<string, unknown> = {
+    model,
+    ...controls,
+    messages: messages.slice(0, marker.messageIndex).concat([truncatedMessage]),
+  };
+  if (system !== undefined) truncated.system = system;
+  if (tools !== undefined) truncated.tools = tools;
+  return truncated;
+}
+
 
 /** Build a body containing only the longest cacheable prefix (everything up to and including the last
  *  cache_control marker). count_tokens on this body gives cacheable_prefix_tokens.
@@ -181,68 +487,10 @@ export function buildCacheablePrefixCountTokensBody(bytes: BytesLike): Uint8Arra
   }
   if (typeof obj.model !== 'string') return null;
 
-  const system = obj.system;
-  const messages = obj.messages;
-  const tools = obj.tools;
-
-  let truncated: Record<string, unknown> | null = null;
-  if (Array.isArray(messages)) {
-    for (let mi = messages.length - 1; mi >= 0 && truncated == null; mi--) {
-      const msg = messages[mi] as { role?: unknown; content?: unknown };
-      const content = msg?.content;
-      if (Array.isArray(content)) {
-        for (let bi = content.length - 1; bi >= 0; bi--) {
-          if (hasCacheControl(content[bi])) {
-            const truncatedMsg = { ...msg, content: content.slice(0, bi + 1) };
-            const truncatedMessages = messages.slice(0, mi).concat([truncatedMsg]);
-            truncated = {
-              model: obj.model,
-              messages: truncatedMessages,
-            };
-            if (system !== undefined) truncated.system = system;
-            if (tools !== undefined) truncated.tools = tools;
-            break;
-          }
-        }
-      } else if (hasCacheControl(msg)) {
-        truncated = {
-          model: obj.model,
-          messages: messages.slice(0, mi + 1),
-        };
-        if (system !== undefined) truncated.system = system;
-        if (tools !== undefined) truncated.tools = tools;
-      }
-    }
-  }
-
-  if (truncated == null && Array.isArray(system)) {
-    for (let si = system.length - 1; si >= 0; si--) {
-      if (hasCacheControl(system[si])) {
-        truncated = {
-          model: obj.model,
-          system: system.slice(0, si + 1),
-          messages: [{ role: 'user', content: 'x' }],
-        };
-        if (tools !== undefined) truncated.tools = tools;
-        break;
-      }
-    }
-  }
-
-  if (truncated == null && Array.isArray(tools)) {
-    for (let ti = tools.length - 1; ti >= 0; ti--) {
-      if (hasCacheControl(tools[ti])) {
-        truncated = {
-          model: obj.model,
-          tools: tools.slice(0, ti + 1),
-          messages: [{ role: 'user', content: 'x' }],
-        };
-        break;
-      }
-    }
-  }
-
-  if (truncated == null) return null;
+  const marker = lastCacheMarker(callerCacheOrder(obj));
+  if (!marker) return null;
+  let truncated = truncateAtCallerMarker(obj, marker.pointer);
+  if (!truncated) return null;
   truncated = appendSyntheticToolResults(truncated);
   const out: Record<string, unknown> = {};
   for (const k of Object.keys(truncated)) {

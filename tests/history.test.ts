@@ -11,8 +11,8 @@
  *   - `messagesToHistoryText`: `--- role ---` framing, skips empty turns.
  *   - `collapseHistory`: full pipeline — opts handling, break-even gate,
  *     synthetic user message shape (text+image+recency pointer+text), live-tail preservation.
- *   - `transformRequest` end-to-end: compressHistory off (default), on with
- *     enough turns to fire, off when no closed prefix exists.
+ *   - `transformRequest` end-to-end: the Anthropic path never rewrites history,
+ *     even when legacy history-related options are enabled.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -33,6 +33,7 @@ import {
 } from '../src/core/transform.js';
 import { DENSE_CONTENT_CHARS_PER_IMAGE } from '../src/core/render.js';
 import type { Message } from '../src/core/types.js';
+import { makeCapturedRequest } from './fixtures/anthropic-context.js';
 
 // A tiny helper so test fixtures are readable.
 function asst(content: Message['content']): Message {
@@ -969,211 +970,77 @@ describe('collapseHistory', () => {
   });
 });
 
-describe('transformRequest history compression (always-on)', () => {
+describe('transformRequest keeps Anthropic history native', () => {
   function bigPlain(n: number): string {
     return 'x'.repeat(n);
   }
 
-  function mkBody(messages: Message[], systemText: string) {
-    return new TextEncoder().encode(
-      JSON.stringify({
-        model: 'claude-3-5-sonnet',
-        system: systemText,
-        messages,
-      }),
-    );
+  function mkBody(messages: Message[], systemText: string): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify({
+      model: 'claude-3-5-sonnet',
+      system: systemText,
+      messages,
+    }));
   }
 
-  it('compressHistory is always-on by default — input msgs are not mutated', async () => {
-    // The proxy ships with compressHistory baked in. This test pins the
-    // INVARIANT that even when history compression is active, the
-    // caller's `messages` array is not mutated in place — the function
-    // returns a new body and leaves the input object identical to its
-    // pre-call serialization.
+  it('does not collapse or relabel a long closed history when history options are enabled', async () => {
     const msgs: Message[] = [];
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 18; i++) {
       msgs.push(i % 2 === 0 ? usr(bigPlain(3000)) : asst(bigPlain(3000)));
     }
-    const before = JSON.stringify(msgs);
-    const { body } = await transformRequest(mkBody(msgs, bigPlain(80_000)));
-    // Input still byte-identical to its pre-call serialization.
-    expect(JSON.stringify(msgs)).toBe(before);
-    // And the returned body is valid JSON we can re-parse.
-    const reparsed = JSON.parse(new TextDecoder().decode(body));
-    expect(Array.isArray(reparsed.messages)).toBe(true);
+    const originalMessages = JSON.stringify(msgs);
+    const originalBody = mkBody(msgs, bigPlain(80_000));
+    const { body } = await transformRequest(originalBody, {
+      compressProjectGuidance: false,
+      compressToolResults: false,
+      collapseHistory: true,
+      historyAmortizationHorizon: 20,
+    });
+
+    expect(body).toEqual(originalBody);
+    expect(JSON.stringify(msgs)).toBe(originalMessages);
+
+    const reparsed = JSON.parse(new TextDecoder().decode(body)) as { messages: Message[] };
+    expect(reparsed.messages).toEqual(msgs);
+    expect(reparsed.messages.map((message) => message.role)).toEqual(
+      msgs.map((message) => message.role),
+    );
+    expect(() => syntheticHistoryMessage(reparsed.messages)).toThrow();
   });
 
-  it('collapses 10 closed turns while leaving native system context untouched (keepTail=4)', async () => {
-    // 15 turns total. Native system context is no longer converted into a
-    // slab-bearing user message, so history is the only image bucket here.
-    const msgs: Message[] = [];
+  it('preserves a literal system directive immediately before its assistant reply', async () => {
+    // Captured Claude Code shape: the literal system directive belongs between
+    // the opening user carrier and the assistant acknowledgement. The former
+    // history rewrite inserted a synthetic user after the directive, producing
+    // [user, system, user, assistant] and a provider-side role-ordering error.
+    const request = makeCapturedRequest();
+    const msgs = request.messages;
+    const literalSystem = msgs[1]!;
+    const reply = msgs[2]!;
     for (let i = 0; i < 15; i++) {
-      const body = `turn ${i}: ` + bigPlain(3500);
-      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
+      const text = `turn ${i}: ` + bigPlain(3000);
+      msgs.push(i % 2 === 0 ? usr(text) : asst(text));
     }
-    // The caller-owned system marker remains exactly where the caller put it.
-    const markedBody = new TextEncoder().encode(
-      JSON.stringify({
-        model: 'claude-3-5-sonnet',
-        system: [{ type: 'text', text: bigPlain(80_000), cache_control: { type: 'ephemeral' } }],
-        messages: msgs,
-      }),
-    );
-    const { body, info } = await transformRequest(markedBody);
-    expect(info.collapsedTurns).toBe(10);
-    expect(info.collapsedChars).toBeGreaterThan(0);
-    expect(info.collapsedImages).toBeGreaterThanOrEqual(1);
-    expect(info.historyReason).toBe('collapsed');
-    expect(info.imageCount).toBe(info.collapsedImages);
 
-    const reparsed = JSON.parse(new TextDecoder().decode(body));
-    expect(reparsed.messages.length).toBe(6); // 1 synthetic + 5 live-tail turns
-    expect(reparsed.system).toEqual([
-      { type: 'text', text: bigPlain(80_000), cache_control: { type: 'ephemeral' } },
+    const originalBody = new TextEncoder().encode(JSON.stringify(request));
+    const { body } = await transformRequest(originalBody, {
+      compressProjectGuidance: false,
+      compressToolResults: false,
+      collapseHistory: true,
+      historyAmortizationHorizon: 20,
+    });
+
+    expect(body).toEqual(originalBody);
+    const reparsed = JSON.parse(new TextDecoder().decode(body)) as { messages: Message[] };
+    expect(reparsed.messages).toEqual(msgs);
+    expect(reparsed.messages.slice(0, 3).map((message) => message.role)).toEqual([
+      'user',
+      'system',
+      'assistant',
     ]);
-
-    // Locate the synthetic history by its exported marker: role-bound system
-    // attachments can make its message index greater than one.
-    const historyMessage = syntheticHistoryMessage(reparsed.messages as Message[]);
-    expect(historyMessage.role).toBe('user');
-    const content = historyMessage.content;
-    expect(Array.isArray(content)).toBe(true);
-    expect(content[0]).toMatchObject({ type: 'text' });
-    expect((content[0] as { text: string }).text).toContain('attribute every turn strictly by its tag');
-    expect(content[content.length - 1]).toMatchObject({ type: 'text' });
-    expect((content[content.length - 1] as { text: string }).text).toContain('current request is the live text');
-    const histImgs = content.filter((b: { type: string }) => b.type === 'image');
-    expect(histImgs.every((b: { cache_control?: unknown }) => b.cache_control === undefined)).toBe(true);
-  });
-
-  it('sets historyReason=no_closed_prefix when an open tool_use precedes the tail', async () => {
-    // First message opens a tool_use; nothing closes it. With default
-    // keepTail=4 and 4 messages total, cutoff=0, so the boundary search
-    // runs over an empty range [0..-1] and returns -1 → no_closed_prefix.
-    const msgs: Message[] = [
-      asst([{ type: 'tool_use', id: 'X', name: 't', input: {} }]),
-      usr('plain'),
-      asst('plain'),
-      usr('plain'),
-    ];
-    const { info } = await transformRequest(mkBody(msgs, bigPlain(80_000)));
-    expect(info.collapsedTurns).toBeUndefined();
-    expect(info.historyReason).toBe('no_closed_prefix');
-  });
-
-  it('borderline fixture: collapses with built-in HISTORY_CHARS_PER_TOKEN=2.0 where cpt=4 would reject', async () => {
-    // Empirical 2026-05-20: N=10 production "history rejected as
-    // not_profitable" events have body cpt 1.08-1.10. The gate using
-    // cpt=4 was estimating text as 3.7× cheaper than reality and
-    // rejecting compressions that real billing would have approved.
-    //
-    // This fixture pins the wiring of HISTORY_CHARS_PER_TOKEN=2.0 into the
-    // transformRequest → collapseHistory gate after the 5×8 atlas change.
-    // It sits in the band where image cost is:
-    //   • > text-tokens at cpt=4   → REJECT under stale/default prose cpt
-    //   • < text-tokens at cpt=2.0 → ACCEPT under Opus 4.7 telemetry
-    const msgs: Message[] = [];
-    for (let i = 0; i < 15; i++) {
-      const body = `turn ${i}: ` + bigPlain(900);
-      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
-    }
-    const { info } = await transformRequest(mkBody(msgs, bigPlain(80_000)));
-    // Under HISTORY_CHARS_PER_TOKEN=2.0 this fixture collapses cleanly.
-    expect(info.historyReason).toBe('collapsed');
-    expect(info.collapsedTurns).toBe(10);
-
-    // Counterfactual: a host override above 4 (= "English-prose territory,
-    // but worse than the historical default") forces the gate back into
-    // rejection — confirms the fix actually flows through the `cpt`
-    // argument, not some other side-effect. After fragility #2 (override-
-    // gate default-value collision), the override-gate uses `!== undefined`
-    // so 4.5 is honored as an explicit override on its own merits, not
-    // because it differs from any sentinel.
-    const stale = await transformRequest(mkBody(msgs, bigPlain(80_000)), {
-      charsPerToken: 4.5,
-    });
-    // New geometry (MaxCPI(100)=19500): images are so cheap that even
-    // cpt=4.5 prose collapses profitably. The old premise that >4 cpt
-    // would reject is gone with the larger atlas.
-    expect(stale.info.historyReason).toBe('collapsed');
-    expect(stale.info.collapsedTurns).toBe(10);
-  });
-
-  it('explicit charsPerToken=4 is honored end-to-end (no silent swap to constants)', async () => {
-    // Regression for fragility #2: the override-gate previously used a
-    // `!== CHARS_PER_TOKEN` check that silently swapped 4 → SLAB_CHARS_PER_TOKEN
-    // (2.5) for unspecified hosts. That coupling broke the distinction
-    // between "host didn't override" and "host deliberately wants 4". The
-    // gate now uses `!== undefined` so a literal 4 stays a literal 4.
-    //
-    // Observable proof: a borderline-density fixture (1200-char bodies × 14
-    // turns) that is rejected at cpt=4 but accepted at cpt=2.0. If the gate
-    // silently ignored explicit 4, this fixture would collapse — but
-    // with the fix it stays rejected, confirming the gate honored the literal
-    // 4. The companion test below pins cpt=2.0 collapse on the same shape.
-    const msgs: Message[] = [];
-    for (let i = 0; i < 15; i++) {
-      const body = `turn ${i}: ` + bigPlain(900);
-      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
-    }
-    const explicit4 = await transformRequest(mkBody(msgs, bigPlain(80_000)), {
-      charsPerToken: 4,
-    });
-    // New geometry: cpt=4 also collapses profitably (image cost dominates
-    // less than text cost even at "English-prose" cpt).
-    expect(explicit4.info.historyReason).toBe('collapsed');
-    expect(explicit4.info.collapsedTurns).toBe(10);
-
-    // Same shape at cpt=2.0 collapses — proves the fixture actually straddles
-    // the threshold and isn't a tautology.
-    const explicit20 = await transformRequest(mkBody(msgs, bigPlain(80_000)), {
-      charsPerToken: 2.0,
-    });
-    expect(explicit20.info.historyReason).toBe('collapsed');
-    expect(explicit20.info.collapsedTurns).toBe(10);
-  });
-
-  it('never relocates a caller system marker onto history images', async () => {
-    // Native system content is not an image bucket. Even with frozen carry-over
-    // history pages, pxpipe must not move marker ownership across API roles.
-    const msgs: Message[] = [];
-    for (let i = 0; i < 56; i++) {
-      const body = `turn ${i}: ` + bigPlain(3500);
-      msgs.push(i % 2 === 0 ? usr(body) : asst(body));
-    }
-    // Marked system array gives pxpipe exactly one caller-owned marker to preserve.
-    const marked = new TextEncoder().encode(
-      JSON.stringify({
-        model: 'claude-3-5-sonnet',
-        system: [{ type: 'text', text: bigPlain(80_000), cache_control: { type: 'ephemeral' } }],
-        messages: msgs,
-      }),
-    );
-    const { body, info } = await transformRequest(marked);
-    expect(info.collapsedTurns).toBe(50);
-    expect(info.collapsedImages).toBeGreaterThanOrEqual(2);
-    const reparsed = JSON.parse(new TextDecoder().decode(body));
-
-    expect(reparsed.system).toEqual([
-      { type: 'text', text: bigPlain(80_000), cache_control: { type: 'ephemeral' } },
-    ]);
-
-    // History images never acquire a marker from native system context.
-    const historyMessage = syntheticHistoryMessage(reparsed.messages as Message[]);
-    const histImgs = (historyMessage.content as Array<{ type: string; cache_control?: unknown }>).filter(
-      (b) => b.type === 'image',
-    );
-    expect(histImgs.length).toBeGreaterThanOrEqual(2);
-    expect(histImgs.every((img) => img.cache_control === undefined)).toBe(true);
-
-    // Exactly one cache_control remains, still on the original native block.
-    const all = [
-      ...(Array.isArray(reparsed.system) ? reparsed.system : []),
-      ...reparsed.messages.flatMap((m: { content?: unknown }) =>
-        Array.isArray(m.content) ? m.content : [],
-      ),
-    ];
-    expect(all.filter((b: { cache_control?: unknown }) => b && b.cache_control !== undefined).length).toBe(1);
+    expect(reparsed.messages[1]).toEqual(literalSystem);
+    expect(reparsed.messages[2]).toEqual(reply);
+    expect(() => syntheticHistoryMessage(reparsed.messages)).toThrow();
   });
 });
 

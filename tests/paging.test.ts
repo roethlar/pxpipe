@@ -5,14 +5,12 @@
  *   - Unit-test the truncation helpers directly (`classifyContent`,
  *     `estimateImageCount`, `truncateForBudget`) — they're pure, no
  *     rendering needed.
- *   - End-to-end through `transformRequest` to verify the counters land
- *     in `info` (`truncatedToolResults`, `omittedChars`) and that the
- *     image budget is actually honored.
+ *   - End-to-end through `transformRequest` to verify the safe path never
+ *     truncates: a complete exact rendering is accepted under the image cap,
+ *     while an oversized source remains native byte-for-byte.
  *
- * The rendered PNGs themselves are opaque in tests (we don't have an OCR
- * harness in this repo), but the truncated *source* text is what
- * actually carries the paging marker into the image — so verifying the
- * source string is the right level.
+ * The legacy truncation helpers remain covered as pure utilities. They are not
+ * reachable from the provenance-safe Anthropic request builder.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -29,6 +27,7 @@ import {
   DENSE_CONTENT_COLS,
   DENSE_RENDER_STYLE,
   READABLE_CHARS_PER_IMAGE,
+  renderTextToPngsExact,
   renderTextToPngsWithCharLimit,
 } from '../src/core/render.js';
 
@@ -351,82 +350,71 @@ function makeReq(toolResultText: string) {
   );
 }
 
-describe('paging end-to-end (transformRequest)', () => {
-  it('tool_result under cap renders normally (no truncation counters)', async () => {
-    // Above the multi-col break-even (~22k chars), well under the 10-image
-    // single-column budget (~920k chars = 10 × ~92k DENSE at the 5×8 atlas).
-    // charsPerToken:2 reflects reality (tool_result content is code/logs, ~2 ch/tok)
-    // and ensures the gate accepts this size at numCols=1.
-    const text = 'x'.repeat(50_000);
-    const { info } = await transformRequest(makeReq(text), { multiCol: 1, charsPerToken: 2 });
+function exactProse(chars: number): string {
+  return 'ordinary words '.repeat(Math.ceil(chars / 'ordinary words '.length)).slice(0, chars);
+}
+
+describe('safe paging end-to-end (transformRequest)', () => {
+  it('renders every exact page only when the complete tool_result fits under the cap', async () => {
+    const text = exactProse(50_000);
+    const expectedPages = await renderTextToPngsExact(text);
+    expect(expectedPages.length).toBeGreaterThan(1);
+    expect(expectedPages.length).toBeLessThanOrEqual(10);
+    expect(expectedPages.map((page) => page.sourceText).join('')).toBe(text);
+
+    const input = makeReq(text);
+    const { body, info } = await transformRequest(input, { multiCol: 1, charsPerToken: 2 });
     expect(info.compressed).toBe(true);
-    expect((info.toolResultImgs ?? 0)).toBeGreaterThan(0);
+    expect(info.toolResultImgs).toBe(expectedPages.length);
     expect(info.truncatedToolResults ?? 0).toBe(0);
     expect(info.omittedChars ?? 0).toBe(0);
+    const out = JSON.parse(new TextDecoder().decode(body));
+    const toolResult = out.messages[0].content[0];
+    expect(toolResult.content).toHaveLength(expectedPages.length);
+    expect(toolResult.content.every((part: { type: string }) => part.type === 'image')).toBe(true);
   });
 
-  it('pages dense medium tool_results instead of packing them into one image', async () => {
-    const lockish = Array.from({ length: 600 }, (_, i) =>
-      `  pkg-${i}@npm:1.${i}.0(peer@npm:^${i}.0.0)(typescript@npm:^5.${i % 10}.0): checksum=${'a'.repeat(24)}`,
-    ).join('\n');
-    // > 2 dense pages (DENSE_CONTENT_CHARS_PER_IMAGE = 28,080) so it genuinely
-    // pages, while 600 short rows / 90 per page = 7 images stays under the ≤10
-    // per-tool_result clamp (no truncation).
-    expect(lockish.length).toBeGreaterThan(2 * DENSE_CONTENT_CHARS_PER_IMAGE);
-    expect(lockish.length).toBeLessThan(80_000);
+  it('keeps an oversized tool_result wholly native instead of truncating it', async () => {
+    const text = exactProse(DENSE_CONTENT_CHARS_PER_IMAGE * 11);
+    expect((await renderTextToPngsExact(text)).length).toBeGreaterThan(10);
 
-    const { info } = await transformRequest(makeReq(lockish), { multiCol: 1, charsPerToken: 2 });
-    expect(info.compressed).toBe(true);
+    const input = makeReq(text);
+    const { body, info } = await transformRequest(input, { multiCol: 1, charsPerToken: 2 });
+    expect(info.compressed).toBe(false);
+    expect(info.toolResultImgs ?? 0).toBe(0);
     expect(info.truncatedToolResults ?? 0).toBe(0);
     expect(info.omittedChars ?? 0).toBe(0);
-    expect(info.toolResultImgs).toBeGreaterThanOrEqual(
-      Math.ceil(lockish.length / DENSE_CONTENT_CHARS_PER_IMAGE),
-    );
+    expect(body).toBe(input);
+    expect(new TextDecoder().decode(body)).not.toContain('pxpipe paging:');
   });
 
-  it('tool_result over cap fires truncation, lands ≤ 10 images', async () => {
-    // ~500k char log → ~42 raw images (10k rows / 240), should clamp to ≤10.
-    const lines: string[] = [];
-    for (let i = 0; i < 10_000; i++) {
-      lines.push(`2026-05-18T12:00:00Z entry ${i} payload content here`);
-    }
-    const log = lines.join('\n');
-    expect(log.length).toBeGreaterThan(400_000);
+  it('keeps the exact source native when a custom cap is below its complete page count', async () => {
+    const text = exactProse(60_000);
+    const pageCount = (await renderTextToPngsExact(text)).length;
+    expect(pageCount).toBeGreaterThan(2);
+    expect(pageCount).toBeLessThanOrEqual(10);
 
-    const { info } = await transformRequest(makeReq(log), { multiCol: 1, charsPerToken: 2 });
-    expect(info.compressed).toBe(true);
-    expect(info.truncatedToolResults).toBe(1);
-    expect(info.omittedChars).toBeGreaterThan(0);
-    // Image count for this tool_result should be capped at the budget.
-    // (Allow 1-image slack for the marker / rounding.)
-    expect(info.toolResultImgs).toBeLessThanOrEqual(11);
-  });
+    const defaultResult = await transformRequest(makeReq(text), {
+      multiCol: 1,
+      charsPerToken: 2,
+    });
+    expect(defaultResult.info.compressed).toBe(true);
 
-  it('respects a custom maxImagesPerToolResult option', async () => {
-    const lines: string[] = [];
-    for (let i = 0; i < 10_000; i++) {
-      lines.push(`2026-05-18T12:00:00Z entry ${i} payload content here`);
-    }
-    const log = lines.join('\n');
-
-    // Tight budget of 2 images = ~28k chars.
-    const { info } = await transformRequest(makeReq(log), {
+    const input = makeReq(text);
+    const { body, info } = await transformRequest(input, {
       multiCol: 1,
       charsPerToken: 2,
       maxImagesPerToolResult: 2,
     });
-    expect(info.truncatedToolResults).toBe(1);
-    expect(info.toolResultImgs).toBeLessThanOrEqual(3); // 2 + slack
+    expect(info.compressed).toBe(false);
+    expect(info.toolResultImgs ?? 0).toBe(0);
+    expect(info.truncatedToolResults ?? 0).toBe(0);
+    expect(info.omittedChars ?? 0).toBe(0);
+    expect(body).toBe(input);
   });
 
-  it('counts multiple tool_results that all exceed the budget', async () => {
-    const lines: string[] = [];
-    for (let i = 0; i < 10_000; i++) {
-      lines.push(`2026-05-18T12:00:00Z entry ${i} payload content here`);
-    }
-    const log = lines.join('\n');
-
-    // Two big tool_results in one request.
+  it('keeps multiple oversized tool_results native without paging telemetry', async () => {
+    const text = exactProse(DENSE_CONTENT_CHARS_PER_IMAGE * 11);
     const req = new TextEncoder().encode(
       JSON.stringify({
         model: 'claude-3-5-sonnet',
@@ -435,29 +423,23 @@ describe('paging end-to-end (transformRequest)', () => {
           {
             role: 'user',
             content: [
-              { type: 'tool_result', tool_use_id: 'toolu_a', content: log },
-              { type: 'tool_result', tool_use_id: 'toolu_b', content: log },
+              { type: 'tool_result', tool_use_id: 'toolu_a', content: text },
+              { type: 'tool_result', tool_use_id: 'toolu_b', content: text },
             ],
           },
         ],
       }),
     );
-    const { info } = await transformRequest(req, { multiCol: 1, charsPerToken: 2 });
-    expect(info.truncatedToolResults).toBe(2);
-    // Both should have been truncated → omittedChars roughly doubled. The
-    // exact bound depends on renderer config: at multiCol=1 each image
-    // packs ~19.5k chars worst-case. Threshold below covers the single-col case.
-    expect(info.omittedChars).toBeGreaterThan(600_000);
+    const { body, info } = await transformRequest(req, { multiCol: 1, charsPerToken: 2 });
+    expect(info.compressed).toBe(false);
+    expect(info.toolResultImgs ?? 0).toBe(0);
+    expect(info.truncatedToolResults ?? 0).toBe(0);
+    expect(info.omittedChars ?? 0).toBe(0);
+    expect(body).toBe(req);
   });
 
-  it('handles array-shaped tool_result content', async () => {
-    const lines: string[] = [];
-    for (let i = 0; i < 10_000; i++) {
-      lines.push(`2026-05-18T12:00:00Z entry ${i} payload content here`);
-    }
-    const log = lines.join('\n');
-
-    // Array shape: tool_result content is [{type: 'text', text: ...}]
+  it('keeps oversized array-shaped tool_result text wholly native', async () => {
+    const text = exactProse(DENSE_CONTENT_CHARS_PER_IMAGE * 11);
     const req = new TextEncoder().encode(
       JSON.stringify({
         model: 'claude-3-5-sonnet',
@@ -469,17 +451,19 @@ describe('paging end-to-end (transformRequest)', () => {
               {
                 type: 'tool_result',
                 tool_use_id: 'toolu_x',
-                content: [{ type: 'text', text: log }],
+                content: [{ type: 'text', text }],
               },
             ],
           },
         ],
       }),
     );
-    const { info } = await transformRequest(req, { multiCol: 1, charsPerToken: 2 });
-    expect(info.truncatedToolResults).toBe(1);
-    expect(info.omittedChars).toBeGreaterThan(0);
-    expect(info.toolResultImgs).toBeLessThanOrEqual(11);
+    const { body, info } = await transformRequest(req, { multiCol: 1, charsPerToken: 2 });
+    expect(info.compressed).toBe(false);
+    expect(info.toolResultImgs ?? 0).toBe(0);
+    expect(info.truncatedToolResults ?? 0).toBe(0);
+    expect(info.omittedChars ?? 0).toBe(0);
+    expect(body).toBe(req);
   });
 });
 

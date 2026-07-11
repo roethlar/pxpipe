@@ -1,24 +1,8 @@
 /**
- * Tests for the recovery channel (Task #2): `emitRecoverable` + `info.recoverable`.
- *
- * `keepSharp` is the *keep-as-text* half of the fidelity contract — it pins a
- * block before it is ever imaged. `emitRecoverable` is the *recover* half: for
- * blocks pxpipe DID render to image(s), it returns a `RecoverableBlock` carrying
- * the exact original text + provenance, so a stateful caller (a harness, not a
- * proxy) can re-inject the bytes or re-fetch from source if the model later
- * needs the imaged region verbatim. This is the documented mitigation for the
- * silent-confabulation failure mode: imaged content becomes lossy-but-recoverable
- * instead of lossy-and-permanent.
- *
- * Contract being verified:
- *   - Default (option off): `info.recoverable` is undefined even when imaging.
- *   - emitRecoverable → true: each imaged live-region block yields an entry with
- *     a stable `rec_` id, kind, toolUseId, byte-exact original `text`, and
- *     `imageCount`.
- *   - The id is content-derived and stable (same content → same id).
- *   - A kept-sharp (never-imaged) block produces NO recovery entry.
- *   - Recording is free when the option is off (no entries, no field).
- *   - The channel is reachable through the public library wrapper.
+ * The provenance-safe Anthropic path never returns caller source text through
+ * diagnostics. `emitRecoverable` remains a compatibility option, but cannot
+ * expose imaged text from the active request builder. The public standalone
+ * wrapper also remains fail-native because it has no admission-probe transport.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -49,69 +33,51 @@ function userBlocks(body: Uint8Array): any[] {
 }
 
 // Big enough that the profitability gate images it by default.
-const BIG = 'x'.repeat(50_000);
+const BIG = 'ordinary readable prose '.repeat(2_500);
 
-describe('emitRecoverable recovery channel', () => {
-  it('emits no recovery map by default, even when content is imaged', async () => {
+describe('emitRecoverable on the safe Anthropic path', () => {
+  it('emits no recovery map by default, even when exact content is imaged', async () => {
     const { info } = await transformRequest(
       makeReq([{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }]),
       { multiCol: 1, charsPerToken: 2 },
     );
-    // The block WAS imaged...
     expect(info.toolResultImgs ?? 0).toBeGreaterThan(0);
-    // ...but with the option off, pxpipe keeps nothing (a proxy can't anyway).
     expect(info.recoverable).toBeUndefined();
   });
 
-  it('records an imaged tool_result with byte-exact original text + provenance', async () => {
+  it('does not expose source text when emitRecoverable is true', async () => {
     const { body, info } = await transformRequest(
       makeReq([{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }]),
       { multiCol: 1, charsPerToken: 2, emitRecoverable: true },
     );
 
-    // The block was imaged out of the body...
     const tr = userBlocks(body).find((b) => b.type === 'tool_result');
     const hasImage =
       Array.isArray(tr?.content) &&
       tr.content.some((b: any) => b.type === 'image');
     expect(hasImage).toBe(true);
-
-    // ...and recorded for recovery, with the exact bytes preserved.
-    expect(Array.isArray(info.recoverable)).toBe(true);
-    const entry = info.recoverable!.find((r) => r.kind === 'tool_result');
-    expect(entry).toBeTruthy();
-    expect(entry!.id).toMatch(/^rec_[0-9a-f]{8}$/);
-    expect(entry!.toolUseId).toBe('toolu_a');
-    expect(entry!.text).toBe(BIG); // byte-exact, pre-compaction
-    expect(entry!.imageCount).toBeGreaterThan(0);
+    expect(info.toolResultImgs ?? 0).toBeGreaterThan(0);
+    expect(info.recoverable).toBeUndefined();
+    expect(JSON.stringify(info)).not.toContain(BIG);
   });
 
-  it('derives a stable content id (same content → same id)', async () => {
-    const opts = { multiCol: 1, charsPerToken: 2, emitRecoverable: true } as const;
-    const a = await transformRequest(
+  it('emitRecoverable cannot change the candidate body', async () => {
+    const without = await transformRequest(
       makeReq([{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }]),
-      opts,
+      { multiCol: 1, charsPerToken: 2 },
     );
-    const b = await transformRequest(
+    const withRecoverable = await transformRequest(
       makeReq([{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }]),
-      opts,
+      { multiCol: 1, charsPerToken: 2, emitRecoverable: true },
     );
-    const idA = a.info.recoverable!.find((r) => r.kind === 'tool_result')!.id;
-    const idB = b.info.recoverable!.find((r) => r.kind === 'tool_result')!.id;
-    expect(idA).toBe(idB);
-
-    // Different tool_use_id → different id (provenance is part of the key).
-    const c = await transformRequest(
-      makeReq([{ type: 'tool_result', tool_use_id: 'toolu_OTHER', content: BIG }]),
-      opts,
-    );
-    const idC = c.info.recoverable!.find((r) => r.kind === 'tool_result')!.id;
-    expect(idC).not.toBe(idA);
+    expect(withRecoverable.body).toEqual(without.body);
+    expect(withRecoverable.info.recoverable).toBeUndefined();
   });
 
-  it('does NOT record a block that keepSharp kept as text (never imaged)', async () => {
-    const { info } = await transformRequest(
-      makeReq([{ type: 'tool_result', tool_use_id: 'keep_me', content: BIG }]),
+  it('does not expose a block that keepSharp kept as native text', async () => {
+    const input = makeReq([{ type: 'tool_result', tool_use_id: 'keep_me', content: BIG }]);
+    const { body, info } = await transformRequest(
+      input,
       {
         multiCol: 1,
         charsPerToken: 2,
@@ -119,14 +85,14 @@ describe('emitRecoverable recovery channel', () => {
         keepSharp: (blk) => blk.toolUseId === 'keep_me',
       },
     );
-    // Pinned as text up-front, so there is nothing to recover.
     expect(info.keptSharpBlocks ?? 0).toBeGreaterThan(0);
     expect(info.toolResultImgs ?? 0).toBe(0);
     expect(info.recoverable).toBeUndefined();
+    expect(body).toBe(input);
   });
 
-  it('records only the imaged sibling when one block is kept sharp', async () => {
-    const { info } = await transformRequest(
+  it('never returns either source when one sibling is native and one is imaged', async () => {
+    const { body, info } = await transformRequest(
       makeReq([
         { type: 'tool_result', tool_use_id: 'keep_me', content: BIG },
         { type: 'tool_result', tool_use_id: 'image_me', content: BIG },
@@ -138,9 +104,14 @@ describe('emitRecoverable recovery channel', () => {
         keepSharp: (blk) => blk.toolUseId === 'keep_me',
       },
     );
-    const ids = (info.recoverable ?? []).map((r) => r.toolUseId);
-    expect(ids).toContain('image_me');
-    expect(ids).not.toContain('keep_me');
+    const blocks = userBlocks(body).filter((block) => block.type === 'tool_result');
+    const kept = blocks.find((block) => block.tool_use_id === 'keep_me');
+    const imaged = blocks.find((block) => block.tool_use_id === 'image_me');
+    expect(kept?.content).toBe(BIG);
+    expect(Array.isArray(imaged?.content)).toBe(true);
+    expect(imaged.content.every((part: any) => part.type === 'image')).toBe(true);
+    expect(info.recoverable).toBeUndefined();
+    expect(JSON.stringify(info)).not.toContain(BIG);
   });
 
   it('does not leak candidate recovery text through the unmeasured public wrapper', async () => {
