@@ -3,7 +3,7 @@
 **Severity**: MEDIUM — both real parser commands remain network-isolated, but
 Codex cannot resolve its private home and absent system-policy root under the
 initial sandbox profile
-**Status**: Pending independent review
+**Status**: Accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `04861f204c965e353a9ccea03d4d4fbc312d5d3b` (base
 `8d7ba3ee871c3b1053b188d0f68938229748051a`, the branch's merge-base with
@@ -113,4 +113,26 @@ subscription/model request, push, or merge is authorized by this review.
   checkpoint `0325c79` as base was stopped before verdict and discarded. The
   review playbook requires the branch merge-base, so no result from that run
   can be accepted.
-- R1 pending against merge-base `8d7ba3e`.
+- Pre-R1 retry (2026-07-11): a prompt carrying an incorrect expanded head SHA
+  was stopped before verdict and discarded. No result was accepted.
+- R1 (2026-07-11T12:54:03Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-sandbox-metadata-r1`.
+  - Reviewed SHA: `33bb29ec398dcc2176c6195f1bfb6093d4da641a`.
+  - Base SHA: `8d7ba3ee871c3b1053b188d0f68938229748051a`.
+  - `guard_confirmed: true`.
+  - Verdict: **accepted**; no material finding.
+  - Claude isolated the code change to `04861f2`; the later review commits were
+    documentation only.
+  - Rule trace confirmed metadata and existence checks only. Real sandbox
+    probes denied ancestor listing, contents, siblings, network, fork, other
+    execution, and outside writes. The absent policy root resolved as absent;
+    no fixture remained afterward.
+  - Removing the exact rule made the focused guard fail 42/43; restoration made
+    it pass 43/43 with a byte-clean source diff.
+  - Broadening to owner-home data made the scope guard fail; restoration made
+    it pass with a byte-clean source diff.
+  - Both restored profiles parsed and ran only `/usr/bin/true` under the real
+    macOS sandbox. No Codex, Grok, staged client, service, or model ran.
+  - Focused tests, typecheck, all 1,157 tests, build, both installer syntax
+    checks, packager syntax, and diff check passed. Tracked status was clean.

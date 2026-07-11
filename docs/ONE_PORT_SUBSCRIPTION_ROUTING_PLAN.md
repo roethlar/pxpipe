@@ -17,9 +17,11 @@ an npm architecture alias whose internal package name and version differ from
 the directory alias. Exact alias fix `129ef35` is accepted at Claude-reviewed
 head `6912f53` after independent alias and CPU guard proofs. The real staged
 commands then showed that the sandbox lacked metadata-only path resolution for
-the private child and absent `/etc/codex` root. Exact metadata fix `04861f2`
-awaits Claude review; the same rule made both real parsers pass diagnostically
-without retaining output. No live model request ran.
+the private child and absent `/etc/codex` root. Exact metadata fix `04861f2` is
+accepted at Claude-reviewed head `33bb29e` after independent narrow-scope,
+red/green, inert-executable, and full-suite proofs. The same rule made both real
+parsers pass diagnostically without retaining output. No live model request
+ran. Package, install, and production offline validation are next.
 
 Plan base: `cc79310` on `fix/provenance-safe-compression`. The corrected local
 package source `59e2b9a` is installed and passed its no-network capture.
