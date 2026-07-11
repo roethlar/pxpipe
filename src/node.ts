@@ -34,6 +34,7 @@ import {
   dashboardPath,
   type DashboardRoute,
 } from './dashboard.js';
+import { validateRawRequestTarget } from './node-target.js';
 
 /** Runtime config. The core transform tuning comes from DEFAULTS in
  *  transform.ts; startup knobs cover deployment plus emergency model scope
@@ -48,6 +49,8 @@ interface RuntimeConfig {
   upstream: string;
   openAIUpstream: string;
   openAIApiKey?: string;
+  codexUpstream?: string;
+  grokUpstream?: string;
   provider?: 'cloudflare-ai-gateway';
   gatewayBaseUrl?: string;
   gatewayHeaders?: Record<string, string>;
@@ -107,27 +110,60 @@ function parseCli(argv: string[]): RuntimeConfig {
   }
   applyConfigFileDefaults();
   const sharedUpstream = process.env.PXPIPE_UPSTREAM;
+  const generic = readGenericRoutingConfig();
+  const rawOpenAIKey = process.env.OPENAI_API_KEY;
   return {
     port: Number(process.env.PORT ?? 47821),
     // Loopback by default; opt into all-interfaces exposure explicitly via HOST.
     host: process.env.HOST?.trim() || '127.0.0.1',
     upstream: process.env.ANTHROPIC_UPSTREAM ?? sharedUpstream ?? 'https://api.anthropic.com',
     openAIUpstream: process.env.OPENAI_UPSTREAM ?? sharedUpstream ?? 'https://api.openai.com',
-    openAIApiKey: process.env.OPENAI_API_KEY,
-    provider: parseProvider(process.env.PXPIPE_PROVIDER),
-    gatewayBaseUrl: process.env.PXPIPE_GATEWAY_BASE_URL,
-    gatewayHeaders: parseGatewayHeaders(process.env.PXPIPE_GATEWAY_HEADERS),
+    openAIApiKey: rawOpenAIKey?.trim() ? rawOpenAIKey : undefined,
+    codexUpstream: process.env.PXPIPE_CODEX_UPSTREAM,
+    grokUpstream: process.env.PXPIPE_GROK_UPSTREAM,
+    ...generic,
     eventsFile:
       process.env.PXPIPE_LOG ??
       path.join(os.homedir(), '.pxpipe', 'events.jsonl'),
   };
 }
 
-function parseProvider(v: string | undefined): 'cloudflare-ai-gateway' | undefined {
-  if (v === undefined || v === '') return undefined;
-  if (v === 'cloudflare-ai-gateway') return v;
-  console.error(`[pxpipe] unknown PXPIPE_PROVIDER: ${v}`);
-  process.exit(2);
+function readGenericRoutingConfig(): Pick<
+  RuntimeConfig,
+  'provider' | 'gatewayBaseUrl' | 'gatewayHeaders'
+> {
+  const rawProvider = process.env.PXPIPE_PROVIDER;
+  let gatewayHeaders: Record<string, string>;
+  try {
+    gatewayHeaders = parseGatewayHeaders(process.env.PXPIPE_GATEWAY_HEADERS);
+    // Parse accepts the compact config syntax; Headers performs the platform's
+    // actual name/value validation before a request can encounter it.
+    new Headers(gatewayHeaders);
+  } catch {
+    return { provider: 'cloudflare-ai-gateway' };
+  }
+
+  if (rawProvider !== undefined && rawProvider !== '' && rawProvider !== 'cloudflare-ai-gateway') {
+    return { provider: 'cloudflare-ai-gateway' };
+  }
+
+  const gatewayBaseUrl = process.env.PXPIPE_GATEWAY_BASE_URL;
+  if (rawProvider === 'cloudflare-ai-gateway' && gatewayBaseUrl) {
+    try {
+      const parsed = new URL(gatewayBaseUrl);
+      if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname) {
+        return { provider: 'cloudflare-ai-gateway' };
+      }
+    } catch {
+      return { provider: 'cloudflare-ai-gateway' };
+    }
+  }
+
+  return {
+    provider: rawProvider === 'cloudflare-ai-gateway' ? rawProvider : undefined,
+    gatewayBaseUrl,
+    gatewayHeaders,
+  };
 }
 
 function printHelp(): void {
@@ -162,6 +198,8 @@ Environment:
   OPENAI_UPSTREAM         OpenAI API base; overrides PXPIPE_UPSTREAM
                            (default https://api.openai.com)
   OPENAI_API_KEY          optional OpenAI key override; otherwise forwarded
+  PXPIPE_CODEX_UPSTREAM   fixed Codex subscription API base
+  PXPIPE_GROK_UPSTREAM    fixed Grok subscription API base
   PXPIPE_PROVIDER         optional: 'cloudflare-ai-gateway' — route both API
                           families through one gateway base URL
   PXPIPE_GATEWAY_BASE_URL gateway base URL (required with PXPIPE_PROVIDER)
@@ -196,9 +234,9 @@ function printVersion(): void {
 // ---- node:http <-> Web Request/Response bridge ---------------------------
 
 function toWebRequest(req: IncomingMessage): Request {
-  const proto = (req.headers['x-forwarded-proto'] as string) ?? 'http';
-  const host = req.headers.host ?? 'localhost';
-  const url = `${proto}://${host}${req.url ?? '/'}`;
+  // Routing is path-only. Never let client-controlled Host or
+  // X-Forwarded-Proto turn a reserved path into a generic one.
+  const url = new URL(req.url ?? '/', 'http://pxpipe.local').href;
 
   const headers = new Headers();
   for (const [k, v] of Object.entries(req.headers)) {
@@ -896,6 +934,8 @@ async function main(): Promise<void> {
     upstream: opts.upstream,
     openAIUpstream: opts.openAIUpstream,
     openAIApiKey: opts.openAIApiKey,
+    codexUpstream: opts.codexUpstream,
+    grokUpstream: opts.grokUpstream,
     // Per-request transform options:
     //   1. Runtime kill switch — when the dashboard "passthrough" toggle
     //      is off, force compress=false so /v1/messages forwards
@@ -972,9 +1012,15 @@ async function main(): Promise<void> {
   const server = createServer((req, res) => {
     Promise.resolve()
       .then(async () => {
+        if (!validateRawRequestTarget(req.url).ok) {
+          res.statusCode = 404;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ error: 'reserved_route_not_found' }));
+          return;
+        }
         // Local dashboard routes — handled BEFORE the proxy so they never hit
         // api.anthropic.com (which would 404 them).
-        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        const url = new URL(req.url ?? '/', 'http://pxpipe.local');
         const route = dashboardPath(url.pathname);
         if (route) {
           const webRes = await dispatchDashboard(dashboard, route, req, url, opts.port);
@@ -1008,9 +1054,13 @@ async function main(): Promise<void> {
           `Unset HOST to restrict to loopback.`,
       );
     }
-    const routes = resolveUpstreams(config);
-    console.log(`[pxpipe] anthropic upstream → ${routes.anthropic}`);
-    console.log(`[pxpipe] openai upstream → ${routes.openai}`);
+    try {
+      const routes = resolveUpstreams(config);
+      console.log(`[pxpipe] anthropic upstream → ${routes.anthropic}`);
+      console.log(`[pxpipe] openai upstream → ${routes.openai}`);
+    } catch {
+      console.warn('[pxpipe] generic upstream configuration is invalid; subscription routes remain available');
+    }
     console.log(`[pxpipe] tracking events → ${opts.eventsFile}`);
     console.log(`[pxpipe] dashboard → http://127.0.0.1:${opts.port}/`);
   });
