@@ -94,7 +94,8 @@
     }
   },
   "dependencies": {
-    "gpt-tokenizer": "^3.4.0"
+    "gpt-tokenizer": "^3.4.0",
+    "smol-toml": "1.7.0"
   },
   "repository": {
     "type": "git",

@@ -43,6 +43,23 @@ await build({
 
 console.log('✓ built dist/node.js');
 
+// The local macOS installer is shipped as one dependency-free Node program
+// beside install.sh. Bundling keeps TOML validation and transaction recovery
+// available before the package itself has been installed.
+await build({
+  entryPoints: ['src/macos-local-install-app.ts'],
+  outfile: 'dist/macos-local-installer.js',
+  bundle: true,
+  platform: 'node',
+  target: 'node18',
+  format: 'esm',
+  sourcemap: true,
+  external: [],
+  banner: { js: '#!/usr/bin/env node' },
+});
+
+console.log('✓ built dist/macos-local-installer.js');
+
 // Smoke check: the bundled CLI must report the real package version, not a
 // stale fallback. Runs the shipped artifact end-to-end and fails the build on
 // mismatch, so a broken version injection can never reach a release.
