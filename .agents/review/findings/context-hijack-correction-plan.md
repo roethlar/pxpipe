@@ -1,7 +1,7 @@
 # context-hijack-correction-plan: Remove context rewriting and negative returns
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: Pending Claude review — implementation remains owner-gated
+**Status**: Reopened after accepted r1 — three LOW refinements pending
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `489292a42d336e3f99661d3ea2407ab9636b680b`
 
@@ -82,5 +82,60 @@ guards. No partial reviewer output is treated as a verdict.
   against `dd0c5a3` with base `94470f7`, then deliberately terminated before any
   verdict because new owner evidence made the plan stale. Outcome: **no verdict;
   fail closed**.
-- Fresh r1 pending. Record the Claude version, reviewed/base SHA, verdict, UTC
-  timestamp, and all comments before acting on them.
+- R1 (2026-07-11T01:19:37Z): Claude Code 2.1.207 / Sonnet 5, structured output,
+  pxpipe bypassed, read-only disposable worktree under `~/Dev`.
+  - Reviewed SHA: `d9909650a8f4fe9998d24f1a5f545a1ebe777d37`.
+  - Base SHA: `94470f73c1390fd7c405027ac5bd9a7123d725cf`.
+  - Verdict: **accepted**.
+  - Must-fix: none.
+  - Should-fix 1 (verbatim): "LOW;
+    docs/CONTEXT_HIJACK_CORRECTION_PLAN.md:183-210 vs
+    src/core/transform.ts:1535-1600,1792-1873 (per-bucket
+    isCompressionProfitable/priorWarm gates); predicted failure: an implementer
+    could leave the old per-bucket cold-estimate gate
+    (isCompressionProfitable/priorWarmTokens plumbing) running alongside the new
+    request-wide 4-probe admission gate, so two divergent 'is this profitable'
+    formulas coexist and a future edit to one silently drifts from the other;
+    correction: state explicitly in Slice 1/2 whether the legacy per-bucket
+    priorWarm-based profitability functions are retired/superseded by the
+    request-wide gate or retained only as a cheap pre-filter before the
+    authoritative probe-based gate."
+  - Should-fix 2 (verbatim): "LOW;
+    docs/CONTEXT_HIJACK_CORRECTION_PLAN.md:219-223 vs src/worker.ts (no
+    module-level/Durable-Object shared state observed); predicted failure:
+    'atomically disables ... for the rest of the process' reads as a single
+    shared-memory guarantee, but a Cloudflare Worker deployment spreads concurrent
+    requests across many isolates with no shared state today, so the circuit
+    breaker would only suppress repeats within one isolate, not fleet-wide, and a
+    reviewer could later treat the acceptance check as proven globally when it is
+    only proven per-isolate; correction: state explicitly that the
+    negative-feedback breaker is defense-in-depth scoped to a single Node process /
+    single Worker isolate (the per-request strict admission gate is the actual
+    safety net), or specify a cross-isolate mechanism (KV/Durable Object) if
+    fleet-wide suppression is required."
+  - Should-fix 3 (verbatim): "LOW;
+    docs/CONTEXT_HIJACK_CORRECTION_PLAN.md:186-210 (admission bullets) vs rule 8 at
+    docs/CONTEXT_HIJACK_CORRECTION_PLAN.md:130-132 ('leaves the complete source
+    bucket native'); predicted failure: it is unspecified whether the request-wide
+    'candidate full request' probe is built once from every simultaneously
+    safety-qualified bucket (so one unprofitable bucket fails the whole multi-bucket
+    request to native) or is evaluated iteratively per bucket combination; an
+    implementer could pick either and both satisfy the acceptance checks, but they
+    yield materially different compression coverage; correction: add one sentence
+    specifying the combinatorial strategy (e.g., 'evaluate the full candidate
+    first; on failure, drop the least-profitable eligible bucket and re-probe' vs
+    'any one unprofitable bucket fails the entire request native')."
+  - Open question 1 (verbatim): "Should the request-wide admission probes and the
+    negative-feedback fingerprint state live entirely in the Workers-safe core
+    (src/core/*.ts, no node:/process globals) so Worker and Node share identical
+    admission logic, or is the circuit breaker intentionally Node-only
+    (dashboard/sessions are already node:fs-only) with Worker relying solely on the
+    per-request strict gate?"
+  - Open question 2 (verbatim): "For the cache-tier pricing (1.25 5m vs 2.0 1h),
+    will tier selection read the governing cache_control marker's existing `ttl`
+    field (src/core/types.ts:41-44) on the caller-owned breakpoint that covers the
+    changed span, and default to the conservative 2.0 rate whenever the changed
+    span isn't clearly covered by a single caller marker with an explicit ttl?"
+
+The structured envelope completed successfully with the pinned SHAs and no
+permission denials. Coder adjudication is recorded in the next revision before r2.
