@@ -269,6 +269,9 @@ under `~/Dev`; Codex does not review this work.
   or moved by a transform.
 - Add final provider-structure validation that rejects a candidate before
   forwarding and restores the exact original body.
+- Treat `rendered.droppedChars > 0` or any non-empty dropped-codepoint map as a
+  render failure, not telemetry-only information. Exclude that entire source
+  bucket before building the economic candidate.
 - Pin the original role, message index, container, text, and ordering for all
   instruction-bearing and host-context regions.
 - Add a regression fixture for adjacent text blocks showing that block identity is
@@ -299,7 +302,7 @@ under `~/Dev`; Codex does not review this work.
   notices, synthetic messages, and semantic telemetry claims from emitted
   requests.
 - Retain exact in-place `tool_result` compression and prove every unsupported
-  bucket fails native.
+  bucket—including any render with one or more dropped codepoints—fails native.
 - Build one all-eligible candidate; if its authoritative request-wide probes fail,
   forward the complete original request without subset search.
 
@@ -357,6 +360,8 @@ under `~/Dev`; Codex does not review this work.
    `user textPXPIPE...` because no runtime tail is emitted.
 8. ANSI/CSI-bearing candidates remain completely native; plain printable suffixes
    are not imaged after a dropped escape byte.
+   Every accepted image reports `droppedChars === 0` and an empty
+   dropped-codepoint map.
 9. Sequential Sonnet/Fable and Sol/Grok fixtures use only their own model, system,
    and request bytes.
 10. A non-directive Anthropic `system` message still precedes an `assistant`
