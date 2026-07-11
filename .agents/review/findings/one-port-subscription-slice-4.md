@@ -2,7 +2,7 @@
 
 **Severity**: HIGH — the release check must not expose stored login data, run a
 model request, trust substituted client bytes, or leave a client process behind
-**Status**: Pending independent review
+**Status**: Accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `c39745d17032db3d315881b65f3bd64c2108d47b` (base
 `fbdddacf59ea27df4a5201db34a97cce0df9242c`)
@@ -113,4 +113,30 @@ by this review.
 
 ## Reviewer comments
 
-Pending.
+- R1 (2026-07-11T11:43:02Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-one-port-slice4-r1`.
+  - Reviewed SHA: `8c9180b82cbff37eba3e2dd5561422dd497720f8`.
+  - Base SHA: `fbdddacf59ea27df4a5201db34a97cce0df9242c`.
+  - `guard_confirmed: true`.
+  - Verdict: **accepted**; no material finding.
+  - Output-cap proof: weakening the combined version-output limit made the
+    exact cap guard fail. Restoration passed and left no child process.
+  - Staged-copy proof: removing the post-run recheck let a mutation reach a
+    forbidden second invocation. Restoration stopped after the first call.
+  - Native-target proof: removing the Codex architecture-package symlink
+    recheck let a retargeted candidate succeed. Restoration rejected it.
+  - Sandbox proof: removing fork denial broke the exact profile guard.
+    Restoration passed; both Codex and Grok profiles then parsed and ran with
+    `/usr/bin/true` under the real macOS sandbox, including the bounded private
+    Grok socket rules.
+  - Final reviewer gate: 37 focused tests, typecheck, all 1,149 tests across 58
+    files, production build and version smoke, both shell syntax checks,
+    packager syntax, and diff check passed.
+  - Final tracked status was clean; only the pre-existing review-scaffolding
+    `node_modules` symlink was untracked.
+
+The JSON envelope exited zero after 68 turns, matched the required schema,
+returned both pinned SHAs exactly, and reported no permission denial, web
+search, or fetch. Claude ran no installer, packager, real client, service,
+credential read, or product request beyond the review itself.
