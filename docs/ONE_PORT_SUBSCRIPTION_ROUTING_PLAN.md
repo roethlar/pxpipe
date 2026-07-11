@@ -11,7 +11,11 @@ directory. Two install attempts exposed a legitimate launchd transition that
 the strict startup check rejected; both rolled back exactly. The bounded retry
 fix is `c1521f8`; Claude Code 2.1.207 / Sonnet 5 accepted review head `e5c4ed6`
 after independently reproducing the failure and confirming the final PID and
-listener guards. No real client command or live model request ran.
+listener guards. That exact source is now installed and healthy. The first
+offline client check stopped before executing either client because Codex uses
+an npm architecture alias whose internal package name and version differ from
+the directory alias. Exact alias fix `129ef35` awaits Claude review. No live
+model request ran.
 
 Plan base: `cc79310` on `fix/provenance-safe-compression`. The corrected local
 package source `59e2b9a` is installed and passed its no-network capture.

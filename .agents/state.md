@@ -8,15 +8,16 @@ in the files linked below rather than being copied here.
 - The no-context-hijack correction on `fix/provenance-safe-compression` is
   implemented and independently accepted; see
   `docs/CONTEXT_HIJACK_CORRECTION_PLAN.md` and `.agents/review/index.md`.
-- As of accepted source `59e2b9a`, the clean local package passed its offline
-  capture and is the healthy installed login service on loopback port 47821.
-  The canonical package/install receipt is
+- Accepted source `e5c4ed6` is the healthy installed login service on loopback
+  port 47821. Its installer receipt and current release both name that exact
+  source. The prior no-context-hijack install receipt remains recorded at
   `.agents/review/findings/context-correction-slice-5.md`.
-- Machine-local (`nagatha`): the durable bundle and hash-only capture are in
+- Machine-local (`nagatha`): the durable package is in
   `/Users/michael/Dev/pxpipe-deploy`; the installed release is under
-  `~/Library/Application Support/pxpipe/releases/59e2b9a618af6faba6c54390970e62484ea501c1`.
-  No delivery artifact is stored under `/private`. Older raw logs and sidecars
-  remain untouched pending an explicit owner decision.
+  `~/Library/Application Support/pxpipe/releases/e5c4ed65416af4b4da0415345d437d85f71b9c30`.
+  No delivery artifact is stored under `/private`. The verified legacy launcher
+  is preserved in the deploy directory; older raw logs and sidecars remain
+  untouched pending an explicit owner decision.
 - Upstream `main` was `8b525a1` at the final correction recheck. Its Grok
   imaging conflicts with the later exact-pass-through rule and was not imported.
 - One-port subscription routing Slices 1–4 are independently accepted. Slice 4
@@ -24,7 +25,8 @@ in the files linked below rather than being copied here.
   package is in the durable deploy directory. Two installs safely rolled back
   when launchd briefly retained a PID before reporting `running`; bounded retry
   fix `c1521f8` is accepted at reviewed head `e5c4ed6`. No real client or model
-  request ran.
+  request ran. The real offline check then stopped before client execution on
+  Codex's npm alias layout; exact identity fix `129ef35` awaits Claude review.
   Canonical status and guard evidence live in
   `docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md` and `.agents/review/index.md`.
 - The glyph-escape workstream remains separate and is not the purpose of this
@@ -32,15 +34,16 @@ in the files linked below rather than being copied here.
 
 ## Next
 
-- Package exact reviewed head `e5c4ed6`, install it, run the two sandboxed
-  offline parser checks, and verify one listener plus installed source.
+- Complete Claude review of Codex alias fix `129ef35`, package and install its
+  exact reviewed head, then run both sandboxed offline parser checks and verify
+  one listener plus installed source.
 - Any live subscription smoke, corrected live A/B matrix, push, merge, or
   upstream contribution remains separately owner-gated.
 
 ## Blockers
 
-- No blocker remains for the corrected reviewed installation. Both earlier
-  failed attempts restored the prior installation exactly.
+- Offline client validation waits for independent acceptance of the reproduced
+  Codex alias fix. The current reviewed service remains healthy.
 - No blocker remains for the installed no-hijack correction.
 
 ## Verification
