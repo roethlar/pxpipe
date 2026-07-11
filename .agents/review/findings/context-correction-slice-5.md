@@ -117,15 +117,38 @@ Empty.
 
 ## Known gaps
 
-- Package creation, digest verification, the hash-only no-network capture,
-  installation, and running-source verification follow acceptance of this head.
-- The one-port subscription plan remains intentionally paused until that local
-  installation and capture pass. The rejected multi-terminal workaround is not
-  documented as a supported alternative.
 - The corrected live A/B matrix has not run, so no current end-to-end savings
   percentage is claimed.
 - No live product model call, push, merge, release, or upstream contribution is
   authorized by this review.
+
+## Local package and installation receipt
+
+Completed 2026-07-11 from accepted source
+`59e2b9a618af6faba6c54390970e62484ea501c1`:
+
+- The clean package gate passed typecheck, all 863 tests across 52 files, build,
+  pack, and extracted-CLI version verification.
+- `/Users/michael/Dev/pxpipe-deploy/manifest.json` names archive
+  `pxpipe-proxy-0.8.0-provenance-safe.1-59e2b9a618af6faba6c54390970e62484ea501c1.tgz`
+  with SHA-256
+  `57a6cf608839f126b69b9bef75e5613b03ac432e7424b220ee2e238b19f6970f`;
+  an independent digest read matched.
+- `/Users/michael/Dev/pxpipe-deploy/no-network-capture.json` records only
+  synthetic hashes/counts: seven trapped fetches, four Anthropic probes, one
+  exact in-place replacement with the no-hijack comparison true, byte-exact
+  OpenAI Chat and Responses bodies, and zero blocked/unsynthetic fetches.
+- The installed receipt and package manifest match. `current` points to the
+  release named by that full source commit; the CLI reports
+  `0.8.0-provenance-safe.1`; launchd reports the service running; the dashboard
+  returns 200; and the only listener is `127.0.0.1:47821`.
+- The LaunchAgent persists Fable, Sol, and Grok selection and contains no API
+  key, provider, gateway, or upstream override. Older raw logs/sidecars were not
+  deleted or rewritten. No live product model call was made.
+
+The correction's installation gate is therefore closed. The separate one-port
+plan may now be amended and re-reviewed; the rejected multi-terminal workaround
+is still unsupported.
 
 ## Reviewer comments
 

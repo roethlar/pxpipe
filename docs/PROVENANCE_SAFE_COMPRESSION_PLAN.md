@@ -1,7 +1,7 @@
 # Provenance-safe Anthropic compaction without losing project governance
 
-Status: **REOPENED 2026-07-10 — the installed design still acts like a context
-hijack; its correction plan is independently accepted and awaits owner approval**.
+Status: **SUPERSEDED — the no-hijack correction is complete and installed
+locally as of source `59e2b9a` (2026-07-11)**.
 
 Canonical correction:
 `docs/CONTEXT_HIJACK_CORRECTION_PLAN.md`. The implementation and reviews recorded
@@ -15,9 +15,10 @@ Slices 1–4 were accepted by codex-cli. Claude Code 2.1.206 / Sonnet 5 accepted
 Slice 5 at `fd548c8` after independently reconfirming three representative
 guards; the verdict is recorded at `c6b9437`. Local verification at the
 reviewed head: 793 tests + typecheck + build. When pnpm is off PATH, use
-`npx -y pnpm@10.21.0 run build`. The plan section 7 Fable/Sonnet live A/B matrix has
-not been run or authorized, and merge to main remains owner-gated. The context
-correction must be reviewed and approved before further implementation.
+`npx -y -p pnpm@10.21.0 pnpm run build`. The plan section 7 Fable/Sonnet live A/B matrix has
+not been run or authorized, and merge to main remains owner-gated. Current
+behavior and installation evidence live in the canonical correction and its
+review records, not in this historical plan.
 
 Plan base: `b1f5a01` (`origin/main`, 2026-07-09). The plan is intentionally
 isolated from the unrelated `fix/escape-atlas-missing-glyphs` branch.

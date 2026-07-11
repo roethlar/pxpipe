@@ -109,9 +109,11 @@ Empty.
 ## Known gaps
 
 - Package creation, the no-network capture, digest verification, installation,
-  and running-source verification follow acceptance of this head.
-- The one-port plan remains paused until that installation passes; its stale
-  OpenAI compression expectations must be amended before implementation.
+  and running-source verification are complete; the canonical receipt is in
+  `.agents/review/findings/context-correction-slice-5.md`.
+- The one-port plan's installation prerequisite is satisfied, but its stale
+  OpenAI compression expectations must be amended and re-reviewed before
+  implementation.
 - No live product model call, push, merge, release, deletion of old private
   artifacts, or upstream contribution is authorized by this review.
 

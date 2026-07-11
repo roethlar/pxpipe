@@ -1,12 +1,21 @@
 # Stop pxpipe from rewriting trust boundaries
 
-Status: **APPROVED AND IN IMPLEMENTATION**. The canonical plan verdict is
+Status: **COMPLETE — IMPLEMENTED, CLAUDE-REVIEWED, PACKAGED, AND INSTALLED
+LOCALLY**. The canonical plan verdict is
 `.agents/review/findings/context-hijack-correction-plan.md`; the live
 slice-by-slice state and review verdicts are owned by `.agents/review/index.md`.
 
+Installed checkpoint (2026-07-11): local package source
+`59e2b9a618af6faba6c54390970e62484ea501c1` passed the complete gate and the
+synthetic no-network wire capture, then installed as the healthy loopback-only
+login service. The durable package, digest, capture, and installation receipt is
+recorded once in
+`.agents/review/findings/context-correction-slice-5.md`. No live product model
+call was made.
+
 Plan base: `94470f7` on `fix/provenance-safe-compression`. Canonical upstream
-`main` was `8d7ba3e` when rechecked. Recheck again before implementation and
-prefer any upstream solution that overlaps or conflicts.
+`main` was `8b525a1` at the final pre-install recheck. Prefer any later upstream
+solution that overlaps or conflicts before future implementation.
 
 Pre-release recheck: upstream advanced to `8b525a1` on 2026-07-11. That commit
 does not address the correction's privacy, role-order, or negative-return
@@ -17,9 +26,11 @@ upstream solution to adopt; its unrelated renderer, chart, and evaluation work
 remains outside this correction.
 
 This is the canonical correction to the installed provenance-safe design. It
-supersedes that design's claim of completion and pauses
-`docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md`. The older plans remain historical
-receipts; they are not authority for the corrected default behavior.
+supersedes that design's claim of completion. It paused
+`docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md` through corrected installation; that
+gate is now clear for a focused plan amendment and fresh Claude review, not for
+unreviewed routing implementation. The older plans remain historical receipts;
+they are not authority for the corrected default behavior.
 
 ## Required outcome
 
