@@ -82,7 +82,9 @@ npx -y pnpm@10.21.0 run package:macos-local -- --output "$HOME/Dev/pxpipe-deploy
 
 The installer verifies the adjacent package and checksum, installs under the
 current user, and starts pxpipe at login on `127.0.0.1:47821`. It does not use
-Cloudflare, sudo, or the public package registry. Start Claude Code with:
+Cloudflare, sudo, or the public package registry. This local package saves
+`claude-fable-5,gpt-5.6-sol,grok-4.5` as its compression scope, so all three
+stay selected after restart. Start Claude Code with:
 
 ```bash
 ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude
@@ -98,10 +100,12 @@ installed program (while preserving logs and events) with:
 ### Manually route Codex or Grok subscriptions locally
 
 No API key is required: both CLIs can forward their existing browser login.
-Sol and Grok remain opt-in, so `PXPIPE_MODELS` must be set on the **proxy**
-process. Codex and Grok need separate proxy processes because their identical
-request paths go to different subscription services. Leave the installed
-login service on `47821` alone.
+The installed login service already saves Fable, Sol, and Grok as eligible for
+compression. These manual subscription checks still set `PXPIPE_MODELS`
+explicitly because each temporary proxy starts from an empty environment.
+Codex and Grok need separate proxy processes because their identical request
+paths go to different subscription services. Leave the installed login
+service on `47821` alone.
 
 The commands below are manual one-call connectivity examples. They spend
 subscription quota, do not enforce the acceptance smoke's no-tools rule, and
@@ -110,8 +114,7 @@ acceptance smoke adds a fixed temporary repository and checks the recorded
 path, model, result, and positive image count.
 
 For an isolated manual run, start each child from a clean environment so an
-unrelated
-exported key cannot replace the subscription login. This helper passes only
+unrelated exported key cannot replace the subscription login. This helper passes only
 the reviewed non-secret fields; define it in each terminal:
 
 ```bash
@@ -220,11 +223,13 @@ Grok JSON includes a `sessionId`; remove that bounded smoke session with
   re-sends the full transcript as plain text each turn is in the same high-
   savings class as Claude Code. Details and measured splits:
   [docs/CACHING_AND_SAVINGS.md](docs/CACHING_AND_SAVINGS.md#openai-responses-path-codex-and-friends).
-- **Model scope:** default `PXPIPE_MODELS=claude-fable-5`. Sol, Opus 4.7/4.8,
-  GPT 5.5, and **Grok** are opt-in only (dashboard chips or `PXPIPE_MODELS`) —
-  not good enough as silent defaults for imaged context. The exact Sol id still
-  matters when opted in: sibling variants such as `gpt-5.6-terra` do not inherit
-  Sol's allowlist or render profile.
+- **Model scope:** the built-in fallback is
+  `PXPIPE_MODELS=claude-fable-5`. The local macOS installer deliberately saves
+  Fable, Sol, and Grok as the owner's explicit scope; standalone runs keep the
+  Fable-only fallback. Opus 4.7/4.8 and GPT 5.5 remain opt-in only (dashboard
+  chips or `PXPIPE_MODELS`). The exact Sol id still matters when selected:
+  sibling variants such as `gpt-5.6-terra` do not inherit Sol's allowlist or
+  render profile.
   `PXPIPE_MODELS=off` disables imaging. Everything else passes through
   byte-identical. On the GPT path, tool definitions stay native JSON and no
   Anthropic `cache_control` markers are used.
