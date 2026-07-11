@@ -4,7 +4,7 @@
 history into synthetic user messages, added proxy-authored directives, stripped
 tool-schema prose, and could report savings for a request whose trust boundary
 had changed.
-**Status**: In progress — pending independent review
+**Status**: Verified — independently accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `de5d189f451b87400ce9bb0c4a7bdde0c0e3c3be` (base: parent
 `bd6c38efd6776de03cb1d566e49ecef6d196f93a`)
@@ -119,4 +119,23 @@ Empty.
 
 ## Reviewer comments
 
-Pending independent Claude review.
+- R1 (2026-07-11T03:28:37Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-context-correction-s3-r1`.
+  - Reviewed SHA: `a4a456a6c115501828a86efd55a0d8d87163acfb`.
+  - Base SHA: `bd6c38efd6776de03cb1d566e49ecef6d196f93a`.
+  - `guard_confirmed: true` — the reviewer independently restored the base
+    OpenAI transformer and observed the exact-native Chat, Responses, and
+    sequential Sol/Grok proxy guards fail; restored the reviewed head and
+    observed them pass; then completed typecheck, all tests, and the production
+    build.
+  - Verdict: **accepted**.
+  - Comments: none.
+
+The JSON envelope exited zero, matched the required schema, and returned both
+pinned SHAs exactly. Five ancillary compound/no-op diagnostic Bash attempts were
+denied by the review allowlist; none was a required revert, focused guard,
+restore, or final gate command. The disposable worktree was tracked-clean after
+restoration; its only untracked entry was the temporary `node_modules` symlink.
+Acceptance does not authorize installation, live product calls, push, merge, or
+the paused routing work.
