@@ -246,7 +246,11 @@ async function readPackageIdentity(
   packageRoot: string,
   name: string,
   expectedVersion?: string,
-): Promise<{ readonly snapshot: StableFile; readonly version: string }> {
+): Promise<{
+  readonly snapshot: StableFile;
+  readonly version: string;
+  readonly manifest: Readonly<Record<string, unknown>>;
+}> {
   const packageFile = path.join(packageRoot, 'package.json');
   const snapshot = await readStableRegularFile(packageFile, { label: `${name} package metadata` });
   let parsed: unknown;
@@ -264,7 +268,43 @@ async function readPackageIdentity(
     || typeof version !== 'string' || !VERSION.test(version)
     || (expectedVersion !== undefined && version !== expectedVersion)
   ) throw new ClientParserValidationError(`${name} package metadata does not match the expected identity`);
-  return { snapshot, version };
+  return { snapshot, version, manifest: parsed as Record<string, unknown> };
+}
+
+function codexArchitecturePackageVersion(
+  rootPackage: Awaited<ReturnType<typeof readPackageIdentity>>,
+  aliasName: string,
+  architecture: 'arm64' | 'x64',
+): string {
+  const architectureVersion = `${rootPackage.version}-darwin-${architecture}`;
+  const optionalDependencies = rootPackage.manifest.optionalDependencies;
+  if (
+    typeof optionalDependencies !== 'object'
+    || optionalDependencies === null
+    || Array.isArray(optionalDependencies)
+    || (optionalDependencies as Record<string, unknown>)[aliasName]
+      !== `npm:@openai/codex@${architectureVersion}`
+  ) throw new ClientParserValidationError('Codex root package does not bind the architecture alias exactly');
+  return architectureVersion;
+}
+
+async function readCodexArchitecturePackageIdentity(
+  packageRoot: string,
+  aliasName: string,
+  rootPackage: Awaited<ReturnType<typeof readPackageIdentity>>,
+  architecture: 'arm64' | 'x64',
+): Promise<StableFile> {
+  const architectureVersion = codexArchitecturePackageVersion(rootPackage, aliasName, architecture);
+  const identity = await readPackageIdentity(packageRoot, '@openai/codex', architectureVersion);
+  if (
+    !Array.isArray(identity.manifest.os)
+    || identity.manifest.os.length !== 1
+    || identity.manifest.os[0] !== 'darwin'
+    || !Array.isArray(identity.manifest.cpu)
+    || identity.manifest.cpu.length !== 1
+    || identity.manifest.cpu[0] !== architecture
+  ) throw new ClientParserValidationError('Codex architecture package platform metadata is invalid');
+  return identity.snapshot;
 }
 
 async function resolveCodex(
@@ -288,7 +328,9 @@ async function resolveCodex(
     : architecture === 'x64' ? 'x86_64-apple-darwin'
       : undefined;
   if (triple === undefined) throw new ClientParserValidationError(`unsupported macOS architecture: ${architecture}`);
+  const supportedArchitecture = architecture as 'arm64' | 'x64';
   const architecturePackage = `codex-darwin-${architecture}`;
+  const architectureAlias = `@openai/${architecturePackage}`;
   const architectureRoots = [
     packageRoot,
     path.join(packageRoot, 'node_modules', '@openai', architecturePackage),
@@ -312,7 +354,12 @@ async function resolveCodex(
         validateMachO(native.bytes, architecture, 'Codex native executable');
         let metadata: StableFile | undefined;
         if (root !== packageRoot) {
-          metadata = (await readPackageIdentity(root, `@openai/${architecturePackage}`, packageIdentity.version)).snapshot;
+          metadata = await readCodexArchitecturePackageIdentity(
+            root,
+            architectureAlias,
+            packageIdentity,
+            supportedArchitecture,
+          );
         }
         const prior = matches.get(realCandidate);
         if (prior === undefined) {

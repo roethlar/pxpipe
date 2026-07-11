@@ -16,6 +16,7 @@ import { buildClientCandidate } from '../src/macos-local-config.js';
 import { resolveMacosInstallerPaths, serializeReceipt, type CommandResult } from '../src/macos-local-installer.js';
 
 const CODEX_VERSION = '0.144.1';
+const CODEX_ARCH_VERSION = `${CODEX_VERSION}-darwin-arm64`;
 const GROK_VERSION = '0.2.93';
 const NONCE = '0123456789ab';
 const UID = process.getuid?.() ?? process.geteuid?.() ?? 0;
@@ -73,8 +74,19 @@ async function makeFixture(): Promise<Fixture> {
   const codexArchitectureRoot = path.join(codexPackageRoot, 'node_modules', '@openai', 'codex-darwin-arm64');
   const codexNative = path.join(codexArchitectureRoot, 'vendor', 'aarch64-apple-darwin', 'bin', 'codex');
   await write(codexNodeLauncher, '#!/usr/bin/env node\n// synthetic launcher\n', 0o755);
-  await write(path.join(codexPackageRoot, 'package.json'), `${JSON.stringify({ name: '@openai/codex', version: CODEX_VERSION })}\n`, 0o644);
-  await write(path.join(codexArchitectureRoot, 'package.json'), `${JSON.stringify({ name: '@openai/codex-darwin-arm64', version: CODEX_VERSION })}\n`, 0o644);
+  await write(path.join(codexPackageRoot, 'package.json'), `${JSON.stringify({
+    name: '@openai/codex',
+    version: CODEX_VERSION,
+    optionalDependencies: {
+      '@openai/codex-darwin-arm64': `npm:@openai/codex@${CODEX_ARCH_VERSION}`,
+    },
+  })}\n`, 0o644);
+  await write(path.join(codexArchitectureRoot, 'package.json'), `${JSON.stringify({
+    name: '@openai/codex',
+    version: CODEX_ARCH_VERSION,
+    os: ['darwin'],
+    cpu: ['arm64'],
+  })}\n`, 0o644);
   await write(codexNative, arm64MachO('synthetic codex'), 0o755);
   const codexLauncher = path.join(bin, 'codex');
   await fs.symlink(codexNodeLauncher, codexLauncher);
@@ -421,6 +433,48 @@ describe('offline macOS client parser validation', () => {
     expect(target.calls).toHaveLength(0);
   });
 
+  it('requires the root package to bind the architecture alias to the exact suffixed package', async () => {
+    await fs.writeFile(path.join(target.codexPackageRoot, 'package.json'), JSON.stringify({
+      name: '@openai/codex',
+      version: CODEX_VERSION,
+      optionalDependencies: {
+        '@openai/codex-darwin-arm64': `npm:@openai/codex@${CODEX_VERSION}`,
+      },
+    }));
+    await expect(validateMacosClientParsers(target.options)).rejects.toThrow('bind the architecture alias exactly');
+    expect(target.calls).toHaveLength(0);
+  });
+
+  it.each([
+    ['alias package name', { name: '@openai/codex-darwin-arm64', version: CODEX_ARCH_VERSION, os: ['darwin'], cpu: ['arm64'] }, 'expected identity'],
+    ['architecture version suffix', { name: '@openai/codex', version: CODEX_VERSION, os: ['darwin'], cpu: ['arm64'] }, 'expected identity'],
+    ['macOS restriction', { name: '@openai/codex', version: CODEX_ARCH_VERSION, os: ['linux'], cpu: ['arm64'] }, 'platform metadata'],
+    ['CPU restriction', { name: '@openai/codex', version: CODEX_ARCH_VERSION, os: ['darwin'], cpu: ['x64'] }, 'platform metadata'],
+  ])('rejects invalid Codex architecture-package %s', async (_label, manifest, message) => {
+    const architecturePackage = path.join(
+      target.codexPackageRoot, 'node_modules', '@openai', 'codex-darwin-arm64', 'package.json',
+    );
+    await fs.writeFile(architecturePackage, JSON.stringify(manifest));
+    await expect(validateMacosClientParsers(target.options)).rejects.toThrow(message);
+    expect(target.calls).toHaveLength(0);
+  });
+
+  it('supports a direct embedded vendor payload without an architecture alias', async () => {
+    const architectureRoot = path.join(target.codexPackageRoot, 'node_modules', '@openai', 'codex-darwin-arm64');
+    await fs.rm(architectureRoot, { recursive: true });
+    await fs.writeFile(path.join(target.codexPackageRoot, 'package.json'), JSON.stringify({
+      name: '@openai/codex',
+      version: CODEX_VERSION,
+    }));
+    const directNative = path.join(
+      target.codexPackageRoot, 'vendor', 'aarch64-apple-darwin', 'bin', 'codex',
+    );
+    await write(directNative, arm64MachO('direct synthetic codex'), 0o755);
+    await expect(validateMacosClientParsers(target.options)).resolves.toMatchObject({
+      codex: { sourcePath: await fs.realpath(directNative), version: CODEX_VERSION },
+    });
+  });
+
   it('rejects ambiguous Codex native payloads', async () => {
     const duplicate = path.join(target.codexPackageRoot, 'vendor', 'aarch64-apple-darwin', 'bin', 'codex');
     await write(duplicate, arm64MachO('duplicate'), 0o755);
@@ -540,7 +594,12 @@ describe('offline macOS client parser validation', () => {
     const secondRoot = `${architectureRoot}-second`;
     await fs.rename(architectureRoot, firstRoot);
     await fs.symlink(firstRoot, architectureRoot, 'dir');
-    await write(path.join(secondRoot, 'package.json'), `${JSON.stringify({ name: '@openai/codex-darwin-arm64', version: CODEX_VERSION })}\n`, 0o644);
+    await write(path.join(secondRoot, 'package.json'), `${JSON.stringify({
+      name: '@openai/codex',
+      version: CODEX_ARCH_VERSION,
+      os: ['darwin'],
+      cpu: ['arm64'],
+    })}\n`, 0o644);
     await write(
       path.join(secondRoot, 'vendor', 'aarch64-apple-darwin', 'bin', 'codex'),
       arm64MachO('replacement codex'),
