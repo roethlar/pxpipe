@@ -1,8 +1,8 @@
 # Local subscription-harness routing and smoke tests
 
-Status: **OWNER CORRECTION APPROVED 2026-07-10 — persistent installed model
-selection and truthful dashboard status are in progress; live calls and push
-remain separately owner-gated**.
+Status: **OWNER CORRECTION INDEPENDENTLY ACCEPTED 2026-07-10 — corrected
+bundle rebuild/install is in progress; live calls and push remain separately
+owner-gated**.
 
 Plan base: `102b983` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was still `8d7ba3e` when this plan was drafted. Recheck upstream before
@@ -301,3 +301,9 @@ This correction changes compression eligibility and dashboard truthfulness
 only. Codex and Grok still use separate temporary proxy processes because
 their subscription traffic has different upstream services. No live model
 call is part of this correction.
+
+Implementation commits are `7b7ac1c`, `d4f0b1d`, and `6cc440c`. Claude Code
+2.1.206 / Sonnet 5 independently accepted review head
+`7416c94316e3b8eff839ddb4fdfbace860268db5` with both guards confirmed. The
+canonical verdict is
+`.agents/review/findings/subscription-model-persistence.md`.
