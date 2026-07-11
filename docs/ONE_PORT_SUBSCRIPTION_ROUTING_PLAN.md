@@ -32,7 +32,8 @@ uses:
 
 `PXPIPE_PORT` remains an optional **install-time** override for collision-free
 local testing or an intentional alternate local port. If used, the installer
-must write that same port into the service and both client files atomically.
+must write that same port into the service and both client files within the same
+journaled, recoverable transaction.
 It is never a per-run requirement. The normal owner workflow remains:
 
 ```text
@@ -384,9 +385,9 @@ committed and reviewed before the next begins.
     endings/comments/final-newline state, and safe ownership; new files/dirs use
     0600/0700. Ambiguous targets, races, symlinks, and `models_base_url` fail
     before writes.
-14. Both files update atomically, reinstall without churn, roll back with the
-    service on every injected handled failure, and surgically uninstall/reinstall
-    without overwriting later owner edits.
+14. Each file replacement is atomic; the journaled pair rolls back with the
+    service on every injected handled failure. Reinstall has no churn, and
+    uninstall/reinstall never overwrites later owner edits.
 15. Sandboxed network-denied `codex features list` and
     `grok inspect --json --leader-socket <fresh-private-transaction-socket>`
     accept candidate and installed TOML. The default Grok leader socket is not
