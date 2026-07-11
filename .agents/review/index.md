@@ -28,4 +28,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | local-package | `eab46e6` | Loopback-only macOS package and installer             | `[x]` output correction accepted r2 at `2d683da` |
 | subscription-plan | `5499612` | No-key local Fable, Sol, and Grok routing plan       | `[x]` accepted r3; implementation owner-gated |
 | subscription-routing | `80172ae..dfeb07f` | Local no-key Codex and Grok routes          | `[x]` accepted r1 at `9ef32c5`; Claude guards confirmed |
-| subscription-model-persistence | `7b7ac1c..6cc440c` | Save all three installed model selections | `[~]` pending Claude review |
+| subscription-model-persistence | `7b7ac1c..6cc440c` | Save all three installed model selections | `[x]` accepted r1 at `7416c94`; Claude guards confirmed |
