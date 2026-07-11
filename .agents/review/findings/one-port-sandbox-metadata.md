@@ -6,7 +6,8 @@ initial sandbox profile
 **Status**: Pending independent review
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `04861f204c965e353a9ccea03d4d4fbc312d5d3b` (base
-`0325c79104dc4d770f4fd1971b616d7535e0a132`)
+`8d7ba3ee871c3b1053b188d0f68938229748051a`, the branch's merge-base with
+`origin/main` at dispatch)
 
 ## Plan authority
 
@@ -15,6 +16,14 @@ validation. Exact source `6912f53` is installed and healthy. No live model or
 subscription request ran.
 
 ## Evidence and predicted failure
+
+`src/macos-client-parser-validation.ts:799-838` constructs the Codex sandbox
+and runs the fixed `--version` and `features list` commands. At the prior
+accepted checkpoint, `src/macos-client-parser-validation.ts:512-530` allowed
+private-child contents but omitted metadata checks needed to resolve the path
+leading to that child and the absent system-policy root. The exact correction
+is at `src/macos-client-parser-validation.ts:512-535`; its scope guards are at
+`tests/macos-client-parser-validation.test.ts:205-228` and `:677-689`.
 
 After the Codex package-alias correction, the real sandboxed validation reached
 the staged native clients. Codex's version command returned the exact expected
@@ -100,4 +109,8 @@ subscription/model request, push, or merge is authorized by this review.
 
 ## Reviewer comments
 
-Pending.
+- Pre-R1 (2026-07-11): dispatch at head `d8b0773` with prior accepted
+  checkpoint `0325c79` as base was stopped before verdict and discarded. The
+  review playbook requires the branch merge-base, so no result from that run
+  can be accepted.
+- R1 pending against merge-base `8d7ba3e`.
