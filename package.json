@@ -51,6 +51,7 @@
     "dev:worker": "wrangler dev",
     "deploy:worker": "wrangler deploy",
     "package:macos-local": "node scripts/package-macos-local.mjs",
+    "validate:macos-clients": "tsx src/macos-client-parser-validation.ts",
     "restart": "bash scripts/restart.sh",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

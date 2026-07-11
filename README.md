@@ -56,13 +56,14 @@ do not move.
 The public `npx pxpipe-proxy` command installs the published release, not this
 fork. The corrected fork branch is not published yet, so do not install it from
 a remote clone until its final commit is pushed. From the reviewed local
-checkout, build a verified per-user service bundle directly into a stable
-directory:
+checkout, build and package the per-user service once, then run its one installer
+command:
 
 ```bash
 npx -y -p pnpm@10.21.0 pnpm install --frozen-lockfile
 npx -y -p pnpm@10.21.0 pnpm run package:macos-local -- --output "$HOME/Dev/pxpipe-deploy"
-"$HOME/Dev/pxpipe-deploy/install.sh"
+cd "$HOME/Dev/pxpipe-deploy"
+./install.sh
 ```
 
 The package builder requires a clean source tree, runs type checking, tests, and
@@ -70,12 +71,27 @@ the production build, and writes the archive, checksum manifest, and installer
 directly to `~/Dev/pxpipe-deploy`. It refuses output under `/private` or inside
 the source worktree.
 
-The installer verifies the adjacent archive and checksum, installs under the
-current user, and starts a login service on `127.0.0.1:47821`. It uses no sudo,
-public package registry, or Cloudflare deployment. Node 18 or newer is required.
-The installer preconfigures Fable, Sol, and Grok in the persistent startup
-scope; only the safe Anthropic path currently rewrites request bodies. A
-dashboard change is runtime-only unless it matches that saved startup scope.
+The installer verifies the package, installs under the current user, and starts
+a login service on `127.0.0.1:47821`. It also makes the required saved edits to
+`~/.codex/config.toml` and `~/.grok/config.toml`. Do not edit either file for
+pxpipe routing. The service and both client files are changed as one operation:
+before committing, a failed step puts the previous service and file contents
+back; after committing, a later run safely finishes any interrupted cleanup. It
+refuses to overwrite ambiguous or owner-changed settings.
+
+It uses no sudo, public package registry, API key, or Cloudflare deployment.
+Node 18 or newer is required. It preconfigures Fable, Sol, and Grok in the saved
+startup scope; only the safe Anthropic path currently rewrites request bodies.
+
+After installation, use the subscription logins already held by each client:
+
+```bash
+codex
+grok
+```
+
+No wrapper, alias, environment variable, extra terminal, extra process, or
+extra port is needed for either command.
 
 Start Claude Code through the local service:
 
@@ -83,24 +99,35 @@ Start Claude Code through the local service:
 ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude
 ```
 
-The dashboard is at <http://127.0.0.1:47821/>. Rebuild the bundle and rerun the
-installer to update. Uninstall the service and program while preserving logs and
-events with:
+The dashboard is at <http://127.0.0.1:47821/>. Its model selection does not
+choose the Codex or Grok destination and cannot turn on compression for them. A
+dashboard change is temporary unless it matches the saved startup scope.
+
+Rebuild the package and rerun `./install.sh` to update. To stop the service,
+remove the installed program, and undo only the Codex and Grok settings owned by
+this installer while preserving unrelated edits, logs, and events, run:
 
 ```bash
-"$HOME/Dev/pxpipe-deploy/install.sh" --uninstall
+cd "$HOME/Dev/pxpipe-deploy"
+./install.sh --uninstall
 ```
 
-Installation and local health checks do not call any model.
+If an installer-owned setting was changed after installation, uninstall stops
+instead of guessing which text to remove.
+
+Installation and local health checks do not call any model. A live Codex or Grok
+subscription test remains a separate, explicitly approved step.
 
 ## Codex and Grok subscription routing
 
-Codex and Grok request bodies are safe pass-through, but the installed service
-does not yet provide the promised one-port subscription routing. The rejected
-multi-terminal workaround is not a supported setup. The already approved
-follow-on must make one saved client configuration sufficient for plain
-`codex` and plain `grok`; it remains paused until this correction is installed
-and passes its local checks.
+The installer sends both clients through the same local service and then to
+their fixed subscription services. Codex keeps its stored ChatGPT login; Grok
+keeps its stored browser login. pxpipe does not ask for or store either login.
+
+Codex and Grok request bodies pass through byte for byte. Routing and telemetry
+still work, but pxpipe does not compress those bodies and claims no token savings
+for them. Model names, request contents, login tokens, and dashboard selections
+cannot change which service receives a request.
 
 ## Savings and telemetry
 
