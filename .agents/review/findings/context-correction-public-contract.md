@@ -3,7 +3,7 @@
 **Severity**: HIGH — the installed CLI and dashboard still advertised removed
 cross-context compression, GPT/Grok imaging, and incomplete cache pricing after
 the main documentation review had passed.
-**Status**: In Review
+**Status**: Verified — independently accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `91c72e722c1c002cb7e0a6ae29dec726628f1261` (base
 `fb3aef88d8ccbd2654483b91197f5c01c19fee6d`)
@@ -117,4 +117,21 @@ Empty.
 
 ## Reviewer comments
 
-Pending.
+- R1 (2026-07-11T04:45:03Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-context-correction-public-r1`.
+  - Reviewed SHA: `5d557eb3f960d72227e672d6f9f7a5a28016557c`.
+  - Base SHA: `fb3aef88d8ccbd2654483b91197f5c01c19fee6d`.
+  - `guard_confirmed: true` — the reviewer restored the 11 public/runtime
+    files from the base and confirmed that the reviewed focused guards failed,
+    restored the reviewed head and confirmed the focused/docs checks passed,
+    then ran typecheck, the complete test suite, and the production build.
+  - Verdict: **accepted**.
+  - Comments: none.
+
+The JSON envelope exited zero, matched the required schema, and returned both
+pinned SHAs exactly. Two ancillary Bash attempts were denied; the required
+source inspection, base failure, head pass, clean tracked-tree check, and full
+gate completed. The only untracked worktree entry was the expected
+`node_modules` symlink. Acceptance does not authorize a live product call,
+push, merge, release, deletion of old owner data, or one-port implementation.
