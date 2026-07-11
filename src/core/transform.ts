@@ -701,10 +701,25 @@ export interface TransformInfo {
   /** Token count of the pre-compression body truncated at the last cache_control marker.
    *  Absent when the original body has no cache_control markers (cacheable=0 exactly). */
   baselineCacheableTokens?: number;
-  /** 'ok': both probes resolved. 'partial': full-body resolved but cacheable-prefix
-   *  didn't (exclude from rollup — cacheable=0 fallback is dishonest). 'failed': no
-   *  baseline. undefined: no probe attempted. */
+  /** Token counts for the proposed complete body and cacheable prefix. These are
+   *  admission evidence only; actual billed usage still comes from the response. */
+  candidateTokens?: number;
+  candidateCacheableTokens?: number;
+  /** 'ok': all four original/candidate full/prefix measurements resolved.
+   *  'partial': at least one resolved and at least one failed. 'failed': none
+   *  resolved or no valid probe bodies. undefined: no probe attempted. */
   baselineProbeStatus?: 'ok' | 'partial' | 'failed';
+  /** Strict request-wide admission result. Reasons contain no caller text. */
+  admissionReason?: string;
+  admissionCacheTier?: 'none' | '5m' | '1h' | 'conservative_1h';
+  /** Caller-owned marker rate used for the unchanged text counterfactual. */
+  baselineCacheCreateRate?: 1.25 | 2;
+  admissionOriginalEffectiveTokens?: number;
+  admissionCandidateEffectiveTokens?: number;
+  admissionSignedSavingsTokens?: number;
+  admissionRelativeSavings?: number;
+  /** Hash-only Node breaker identity; never contains source text or credentials. */
+  admissionFingerprint?: string;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -1933,7 +1948,8 @@ function accountingPostconditionFailure(info: TransformInfo): string | undefined
   return undefined;
 }
 
-function rolledBackInfo(reason: string): TransformInfo {
+/** Build telemetry for an exact native fallback without retaining candidate artifacts. */
+export function nativeTransformInfo(reason: string): TransformInfo {
   return {
     compressed: false,
     reason,
@@ -2342,14 +2358,14 @@ async function transformSafeAnthropicRequest(
   if (finalImageCount > Math.max(MAX_ANTHROPIC_IMAGES, originalImageCount)) {
     return {
       body: originalBody,
-      info: rolledBackInfo('image_limit_postcondition'),
+      info: nativeTransformInfo('image_limit_postcondition'),
     };
   }
   const accountingFailure = accountingPostconditionFailure(info);
   if (accountingFailure) {
     return {
       body: originalBody,
-      info: rolledBackInfo(`accounting_postcondition: ${accountingFailure}`),
+      info: nativeTransformInfo(`accounting_postcondition: ${accountingFailure}`),
     };
   }
 
@@ -2376,7 +2392,11 @@ async function transformSafeAnthropicRequest(
  * bytes) plus diagnostic info. On any error, returns the original bytes
  * unchanged.
  */
-export async function transformRequest(
+/** @internal Build one in-memory Anthropic candidate. Callers must still apply
+ * the no-hijack contract, provider validation, and four-probe admission before
+ * forwarding it. This is exported only so focused renderer tests can inspect a
+ * candidate without weakening the shipped entry points. */
+export async function buildAnthropicCandidate(
   body: Uint8Array,
   opts: TransformOptions = {},
 ): Promise<{ body: Uint8Array; info: TransformInfo }> {
@@ -2434,6 +2454,23 @@ export async function transformRequest(
     opts,
     droppedCodepoints,
   );
+}
+
+/**
+ * Library-safe Anthropic transform entry point. A standalone library call has
+ * no authenticated count_tokens transport, so any changed candidate must stay
+ * native. The proxy uses `buildAnthropicCandidate` and supplies the strict
+ * request-wide admission transport itself.
+ */
+export async function transformRequest(
+  body: Uint8Array,
+  opts: TransformOptions = {},
+): Promise<{ body: Uint8Array; info: TransformInfo }> {
+  const candidate = await buildAnthropicCandidate(body, opts);
+  if (!candidate.info.compressed) return candidate;
+  const info = nativeTransformInfo('admission_probe_unavailable');
+  info.firstUserSha8 = candidate.info.firstUserSha8;
+  return { body, info };
 }
 
 /** Sum every TEXT char the upstream tokenizer will see (system, tools, messages).

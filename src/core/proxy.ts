@@ -3,14 +3,49 @@
  * Adapted by src/node.ts and src/worker.ts; uses only Request/Response/URL/fetch.
  */
 
-import { transformRequest, type TransformOptions, type TransformInfo } from './transform.js';
+import {
+  buildAnthropicCandidate,
+  nativeTransformInfo,
+  type TransformOptions,
+  type TransformInfo,
+} from './transform.js';
 import { transformOpenAIChatCompletions, transformOpenAIResponses } from './openai.js';
 import { isAnthropicMessagesPath, isPxpipeSupportedGptModel, isPxpipeSupportedModel } from './applicability.js';
 import {
-  buildBaselineCountTokensBody,
-  buildCacheablePrefixCountTokensBody,
+  readCallerCacheControlTier,
 } from './measurement.js';
+import {
+  admitAnthropicCandidate,
+  type AnthropicAdmissionDecision,
+  type CacheCreateTier,
+} from './admission.js';
+import { accountAnthropicInput } from './baseline.js';
 import type { Usage } from './types.js';
+
+export interface CompressionCoordinationInput {
+  readonly provider: 'anthropic';
+  readonly route: string;
+  readonly model: string;
+  readonly sourceBody: Uint8Array;
+  readonly candidateBody: Uint8Array;
+  readonly cacheTier: CacheCreateTier;
+}
+
+export interface ProxyCompressionLease {
+  readonly fingerprint: string;
+  finish(signedSavingsTokens?: number): void;
+}
+
+export type ProxyCompressionLeaseResult =
+  | { readonly acquired: true; readonly lease: ProxyCompressionLease }
+  | {
+      readonly acquired: false;
+      readonly reason: 'in_flight' | 'disabled_after_negative' | 'coordinator_error';
+    };
+
+export interface ProxyCompressionCoordinator {
+  acquire(input: CompressionCoordinationInput): ProxyCompressionLeaseResult;
+}
 
 export interface ProxyConfig {
   /** 'cloudflare-ai-gateway': routes both families through gatewayBaseUrl;
@@ -31,6 +66,8 @@ export interface ProxyConfig {
   /** Pass a function to inject dynamic values per-request (e.g. live charsPerToken);
    *  static object for Workers/tests. */
   transform?: TransformOptions | (() => TransformOptions);
+  /** Node-only defense in depth. Workers omit this and rely on per-request admission. */
+  compressionCoordinator?: ProxyCompressionCoordinator;
   /** Called after every request — useful for logging / metrics in the host. */
   onRequest?: (event: ProxyEvent) => void | Promise<void>;
 }
@@ -538,12 +575,9 @@ function isCanonicalOpenAIPath(
     || ((isModelsPath || isSettingsPath) && looksOpenAIAuth);
 }
 
-/** POST /v1/messages/count_tokens with the given body. Returns the upstream's
- *  `input_tokens` number or null on any failure. count_tokens is documented
- *  as a free endpoint (no input-token billing) — we use it once per request
- *  on the PRE-COMPRESSION body to get the ground-truth baseline. Actual
- *  post-compression tokens already come back free in the /v1/messages usage
- *  block (input_tokens + cache_create + cache_read), so no second probe. */
+/** POST /v1/messages/count_tokens with one strict-admission body. Returns the
+ * upstream `input_tokens` number or null on any failure. The caller runs the
+ * original/candidate full/prefix probes concurrently and waits before forward. */
 async function countTokensUpstream(
   countTokensUrl: string,
   body: Uint8Array,
@@ -561,6 +595,64 @@ async function countTokensUpstream(
   } catch {
     return null;
   }
+}
+
+function recordAdmissionEvidence(
+  info: TransformInfo,
+  decision: AnthropicAdmissionDecision,
+  originalBody: Uint8Array,
+): void {
+  info.admissionReason = decision.admitted ? 'admitted' : decision.reason;
+  info.admissionCacheTier = decision.cacheTier;
+  const callerTier = readCallerCacheControlTier(originalBody);
+  info.baselineCacheCreateRate = callerTier === '5m' ? 1.25 : 2;
+
+  const measurements = decision.measurements;
+  if (measurements) {
+    const values = [
+      measurements.originalFull,
+      measurements.originalPrefix,
+      measurements.candidateFull,
+      measurements.candidatePrefix,
+    ];
+    const resolved = values.filter((value) => value !== null).length;
+    info.baselineProbeStatus = resolved === values.length
+      ? 'ok'
+      : resolved === 0 ? 'failed' : 'partial';
+    if (measurements.originalFull !== null) info.baselineTokens = measurements.originalFull;
+    if (measurements.originalPrefix !== null) {
+      info.baselineCacheableTokens = measurements.originalPrefix;
+    }
+    if (measurements.candidateFull !== null) info.candidateTokens = measurements.candidateFull;
+    if (measurements.candidatePrefix !== null) {
+      info.candidateCacheableTokens = measurements.candidatePrefix;
+    }
+  } else if (
+    decision.reason === 'probe_unavailable'
+    || decision.reason?.includes('_probe_body_unavailable')
+  ) {
+    info.baselineProbeStatus = 'failed';
+  }
+
+  if (decision.pricing) {
+    info.admissionOriginalEffectiveTokens = decision.pricing.originalEffectiveTokens;
+    info.admissionCandidateEffectiveTokens = decision.pricing.candidateEffectiveTokens;
+    info.admissionSignedSavingsTokens = decision.pricing.signedSavingsTokens;
+    info.admissionRelativeSavings = decision.pricing.relativeSavings;
+  }
+}
+
+function nativeAfterAdmission(
+  candidateInfo: TransformInfo,
+  decision: AnthropicAdmissionDecision,
+  originalBody: Uint8Array,
+  reason = decision.reason ?? 'admission_rejected',
+): TransformInfo {
+  const info = nativeTransformInfo(reason);
+  info.firstUserSha8 = candidateInfo.firstUserSha8;
+  recordAdmissionEvidence(info, decision, originalBody);
+  info.admissionReason = reason;
+  return info;
 }
 
 /** Resolve upstream URLs from config. Pure — unit-testable. */
@@ -626,6 +718,7 @@ export function createProxy(config: ProxyConfig = {}) {
     // reqBodyBytes: kept for lazy gzip on 4xx. reqBodySha8: computed eagerly for correlation.
     let reqBodyBytes: Uint8Array | undefined;
     let reqBodySha8: string | undefined;
+    let compressionLease: ProxyCompressionLease | undefined;
 
     const fire = (
       status: number,
@@ -648,38 +741,36 @@ export function createProxy(config: ProxyConfig = {}) {
             // Non-fatal — drop body sample.
           }
         }
-        // Await both count_tokens probes so baseline numbers land on the same event row.
-        // Each probe is independent; null leaves the field absent and dashboard math degrades cleanly.
-        if (info && baselineStatusApplies) {
-          // Track both halves so the dashboard can gate on probe completeness (partial vs ok).
-          // A missing cacheable-prefix probe must NOT be treated as cacheable=0 — that fabricates savings.
-          let baselineResolved: number | null = null;
-          let cacheableExpected = false;
-          let cacheableResolved: number | null = null;
-          if (baselinePromise) {
-            try {
-              baselineResolved = await baselinePromise;
-              if (baselineResolved !== null) info.baselineTokens = baselineResolved;
-            } catch {
-              /* probe threw — drop */
-            }
+        if (compressionLease) {
+          let signedSavingsTokens: number | undefined;
+          if (info?.compressed && usage) {
+            const inputTokens = usage.input_tokens ?? 0;
+            const cacheCreateTokens = usage.cache_creation_input_tokens ?? 0;
+            const cacheReadTokens = usage.cache_read_input_tokens ?? 0;
+            const accounting = accountAnthropicInput({
+              compressed: true,
+              probeStatus: info.baselineProbeStatus,
+              usagePresent:
+                typeof usage.input_tokens === 'number'
+                || typeof usage.cache_creation_input_tokens === 'number'
+                || typeof usage.cache_read_input_tokens === 'number',
+              baselineTokens: info.baselineTokens,
+              baselineCacheableTokens: info.baselineCacheableTokens,
+              inputTokens,
+              cacheCreateTokens,
+              cacheReadTokens,
+              cacheCreate5mTokens: usage.cache_creation?.ephemeral_5m_input_tokens,
+              cacheCreate1hTokens: usage.cache_creation?.ephemeral_1h_input_tokens,
+              // A server-observed read proves warmth. Without prior process
+              // history, full reuse is the conservative baseline split.
+              warm: cacheReadTokens > 0,
+              prevCacheable: info.baselineCacheableTokens ?? 0,
+              baselineCacheCreateRate: info.baselineCacheCreateRate,
+            });
+            if (accounting.creditSaving) signedSavingsTokens = accounting.savedInputEff;
           }
-          if (baselineCacheablePromise) {
-            cacheableExpected = true;
-            try {
-              cacheableResolved = await baselineCacheablePromise;
-              if (cacheableResolved !== null) info.baselineCacheableTokens = cacheableResolved;
-            } catch {
-              /* probe threw */
-            }
-          }
-          if (baselineResolved === null) {
-            info.baselineProbeStatus = 'failed';
-          } else if (cacheableExpected && cacheableResolved === null) {
-            info.baselineProbeStatus = 'partial'; // dashboard excludes row; must not treat as cacheable=0
-          } else {
-            info.baselineProbeStatus = 'ok';
-          }
+          compressionLease.finish(signedSavingsTokens);
+          compressionLease = undefined;
         }
         await config.onRequest?.({
           method: req.method,
@@ -718,14 +809,6 @@ export function createProxy(config: ProxyConfig = {}) {
     let info: TransformInfo | undefined;
     let requestModel: string | undefined;
 
-    // Two count_tokens probes on the pre-compression body (see docs/HISTORY_CACHE_MODEL.md):
-    //   baselinePromise          → full-body input_tokens
-    //   baselineCacheablePromise → input_tokens truncated at last cache_control marker
-    // Dashboard combines them for cache-aware baseline. Both run in parallel with the main forward.
-    let baselinePromise: Promise<number | null> | undefined;
-    let baselineCacheablePromise: Promise<number | null> | undefined;
-    let baselineStatusApplies = false;
-
     if (isMessages || isOpenAIChat || isOpenAIResponses) {
       const bodyIn = new Uint8Array(await req.arrayBuffer());
       try {
@@ -742,46 +825,94 @@ export function createProxy(config: ProxyConfig = {}) {
         const effectiveOpts = modelOk
           ? transformOpts
           : { ...transformOpts, compress: false };
-        const r = isMessages
-          ? await transformRequest(bodyIn, effectiveOpts)
-          : isOpenAIChat
+        let r: { body: Uint8Array; info: TransformInfo };
+        if (isMessages) {
+          const candidate = await buildAnthropicCandidate(bodyIn, effectiveOpts);
+          if (!modelOk || !candidate.info.compressed) {
+            r = candidate;
+          } else {
+            const renderLostSource =
+              (candidate.info.droppedChars ?? 0) > 0
+              || Object.keys(candidate.info.droppedCodepointsTop ?? {}).length > 0;
+            let decision: AnthropicAdmissionDecision;
+            if (renderLostSource) {
+              decision = {
+                admitted: false,
+                body: bodyIn,
+                reason: 'render_loss',
+              };
+            } else {
+              const ctHeaders = applyGatewayHeaders(filterHeaders(req.headers, STRIP_REQ_HEADERS));
+              ctHeaders.set('content-type', 'application/json');
+              if (config.apiKey) ctHeaders.set('x-api-key', config.apiKey);
+              const ctBase = providerPrefixed ? passthroughUpstream : upstream;
+              const ctUrl = ctBase + url.pathname + '/count_tokens';
+              decision = await admitAnthropicCandidate({
+                originalBody: bodyIn,
+                candidateBody: candidate.body,
+                // Slice 2 supplies exact per-span ownership. Until then, an
+                // unproved source position cannot enter the economic gate.
+                changedSpanCache: [{ kind: 'unknown' }],
+                probe: (probeBody) => countTokensUpstream(
+                  ctUrl,
+                  probeBody,
+                  new Headers(ctHeaders),
+                ),
+              });
+            }
+
+            if (decision.admitted) {
+              recordAdmissionEvidence(candidate.info, decision, bodyIn);
+              r = { body: decision.body, info: candidate.info };
+              if (config.compressionCoordinator && decision.cacheTier) {
+                let coordinated: ProxyCompressionLeaseResult;
+                try {
+                  coordinated = config.compressionCoordinator.acquire({
+                    provider: 'anthropic',
+                    route: url.pathname,
+                    model: model ?? '',
+                    sourceBody: bodyIn,
+                    candidateBody: candidate.body,
+                    cacheTier: decision.cacheTier,
+                  });
+                } catch {
+                  coordinated = { acquired: false, reason: 'coordinator_error' };
+                }
+                if (coordinated.acquired) {
+                  compressionLease = coordinated.lease;
+                  candidate.info.admissionFingerprint = coordinated.lease.fingerprint;
+                } else {
+                  r = {
+                    body: bodyIn,
+                    info: nativeAfterAdmission(
+                      candidate.info,
+                      decision,
+                      bodyIn,
+                      `admission_${coordinated.reason}`,
+                    ),
+                  };
+                }
+              }
+            } else {
+              r = {
+                body: bodyIn,
+                info: nativeAfterAdmission(candidate.info, decision, bodyIn),
+              };
+            }
+          }
+        } else {
+          r = isOpenAIChat
             ? await transformOpenAIChatCompletions(bodyIn, effectiveOpts)
             : await transformOpenAIResponses(bodyIn, effectiveOpts);
+        }
         if (!modelOk) r.info.reason = 'unsupported_model';
         bodyOut = r.body as unknown as BodyInit; // TS narrows Uint8Array away from BodyInit
         info = r.info;
         reqBodyBytes = r.body;
-        if (r.body.byteLength > 0) {
-          reqBodySha8 = await sha8Bytes(r.body);
-        }
-
-        if (isMessages) {
-          baselineStatusApplies = true;
-          // Probes fire on the ORIGINAL body before the main forward so all three overlap.
-          // count_tokens is not billed; ~30-80ms latency is hidden by the main forward.
-          const ctBody = buildBaselineCountTokensBody(bodyIn);
-          if (ctBody) {
-            const ctHeaders = applyGatewayHeaders(filterHeaders(req.headers, STRIP_REQ_HEADERS));
-            ctHeaders.set('content-type', 'application/json');
-            if (config.apiKey) ctHeaders.set('x-api-key', config.apiKey);
-            // Mirror the actual outbound request base+path: count_tokens lives at
-            // `<messages-path>/count_tokens`, so provider-prefixed routes like
-            // `/anthropic/messages` probe `/anthropic/messages/count_tokens`.
-            const ctBase = providerPrefixed ? passthroughUpstream : upstream;
-            const ctUrl = ctBase + url.pathname + '/count_tokens';
-            baselinePromise = countTokensUpstream(ctUrl, ctBody, ctHeaders);
-            // Null = no markers → cacheable=0 by definition, no probe needed.
-            const ctCacheableBody = buildCacheablePrefixCountTokensBody(bodyIn);
-            if (ctCacheableBody) {
-              baselineCacheablePromise = countTokensUpstream(
-                ctUrl,
-                ctCacheableBody,
-                new Headers(ctHeaders),
-              );
-            }
-          }
-        }
+        if (r.body.byteLength > 0) reqBodySha8 = await sha8Bytes(r.body);
       } catch (e) {
+        compressionLease?.finish();
+        compressionLease = undefined;
         fire(502, undefined, `transform_error: ${(e as Error).message}`);
         return new Response(JSON.stringify({ error: 'pxpipe transform failed' }), {
           status: 502,

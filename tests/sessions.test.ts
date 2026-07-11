@@ -141,10 +141,13 @@ describe('aggregateSessions', () => {
       ev({
         first_user_sha8: 'aaaaaaaa',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 20_000,
         baseline_cacheable_tokens: 18_000,
         input_tokens: 1_000,
         cache_create_tokens: 800,
+        cache_create_5m_tokens: 800,
         cache_read_tokens: 100,
       }),
       // WARM turn because cr>0. Prior cacheable 18000 >= 9000, so the whole
@@ -153,6 +156,8 @@ describe('aggregateSessions', () => {
       ev({
         first_user_sha8: 'aaaaaaaa',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 9_000,
         baseline_cacheable_tokens: 9_000,
         input_tokens: 5,
@@ -185,33 +190,77 @@ describe('aggregateSessions', () => {
 
   it('reports a real NEGATIVE when cache_create overhead exceeds the prefix saving; probe-miss credits 0', async () => {
     writeEvents(tmp, [
-      // Probe miss: no marker -> credit nothing (was a ~95000-token fabrication
-      // under the old formula). saved 0.
+      // Partial probes cannot support a counterfactual. Saved 0 even though a
+      // baseline number is present.
       ev({
         first_user_sha8: 'bbbbbbbb',
         compressed: true,
+        baseline_probe_status: 'partial',
         baseline_tokens: 100_000,
         input_tokens: 5,
         cache_read_tokens: 90_000,
       }),
-      // Genuine loss turn: tiny body (2000) but pxpipe wrote 5000 cache_create.
-      //   cr=0, so text is cold too and re-creates 1900 prefix at 1.25x:
-      //   baseline = 1900*1.25 + 100 = 2475 ; actual = 3000 + 5000*1.25
-      //   = 9250. saved = 2475 - 9250 = -6775. Honest formula, no clamp.
+      // Genuine loss turn with an unknown cache tier. Unknown creation is
+      // conservatively 2x on both sides: baseline = 1900*2 + 100 = 3900;
+      // actual = 3000 + 5000*2 = 13000; saved = -9100. No clamp.
       ev({
         first_user_sha8: 'bbbbbbbb',
         compressed: true,
+        baseline_probe_status: 'ok',
         baseline_tokens: 2_000,
         baseline_cacheable_tokens: 1_900,
         input_tokens: 3_000,
         cache_create_tokens: 5_000,
       }),
+      // A complete probe on passthrough traffic is still not a compression
+      // counterfactual. The shared accountant must report zero saved.
+      ev({
+        first_user_sha8: 'bbbbbbbb',
+        compressed: false,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
+        baseline_tokens: 20_000,
+        baseline_cacheable_tokens: 18_000,
+        input_tokens: 100,
+        cache_create_tokens: 1_000,
+        cache_create_5m_tokens: 1_000,
+      }),
     ]);
     const { sessions } = await aggregateSessions(tmp);
     const s = sessions.get('bbbbbbbb')!;
-    // 0 + (-6775)
-    expect(s.tokensSavedEst).toBe(-6_775);
-    expect(s.charsSaved).toBe(-6_775 * 4);
+    // 0 + (-9100)
+    expect(s.tokensSavedEst).toBe(-9_100);
+    expect(s.charsSaved).toBe(-9_100 * 4);
+  });
+
+  it('prices explicit one-hour and unknown cache creation at the conservative 2x rate', async () => {
+    const common: Partial<TrackEvent> = {
+      compressed: true,
+      baseline_probe_status: 'ok',
+      baseline_tokens: 10_000,
+      baseline_cacheable_tokens: 8_000,
+      input_tokens: 1_000,
+      cache_create_tokens: 2_000,
+      cache_read_tokens: 0,
+    };
+    writeEvents(tmp, [
+      ev({
+        ...common,
+        first_user_sha8: 'one-hour',
+        baseline_cache_create_rate: 2,
+        cache_create_1h_tokens: 2_000,
+      }),
+      ev({
+        ...common,
+        first_user_sha8: 'unknown-tier',
+        // No split and no baseline rate: both unknown remainders default to 2x.
+      }),
+    ]);
+
+    const { sessions } = await aggregateSessions(tmp);
+    // Baseline = 8k*2 + 2k = 18k; actual = 1k + 2k*2 = 5k.
+    expect(sessions.get('one-hour')!.tokensSavedEst).toBe(13_000);
+    expect(sessions.get('unknown-tier')!.tokensSavedEst).toBe(13_000);
   });
 
   it('prices text cold when the actual request has cache_read=0', async () => {
@@ -226,10 +275,13 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'cccccccc',
         ts: '2026-05-19T00:00:00.000Z',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 28_000,
         input_tokens: 2_000,
         cache_create_tokens: 3_000,
+        cache_create_5m_tokens: 3_000,
         cache_read_tokens: 0,
       }),
       // Turn 2, +60s, cache_read_tokens=0 — actual request is cold, so the text
@@ -238,10 +290,13 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'cccccccc',
         ts: '2026-05-19T00:01:00.000Z',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 28_000,
         input_tokens: 2_000,
         cache_create_tokens: 3_000,
+        cache_create_5m_tokens: 3_000,
         cache_read_tokens: 0,
       }),
     ]);
@@ -269,6 +324,8 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'prefix-precedence',
         ts: '2026-05-19T00:01:00.000Z',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 22_000,
         cache_prefix_sha8: 'exact-prefix',
@@ -276,6 +333,7 @@ describe('aggregateSessions', () => {
         history_image_sha8: 'new-history',
         input_tokens: 100,
         cache_create_tokens: 2_000,
+        cache_create_5m_tokens: 2_000,
         cache_read_tokens: 20_000,
       }),
     ]);
@@ -303,6 +361,8 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'prefix-change',
         ts: '2026-05-19T00:01:00.000Z',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 22_000,
         cache_prefix_sha8: 'new-prefix',
@@ -310,6 +370,7 @@ describe('aggregateSessions', () => {
         history_image_sha8: 'stable-history',
         input_tokens: 100,
         cache_create_tokens: 2_000,
+        cache_create_5m_tokens: 2_000,
         cache_read_tokens: 20_000,
       }),
     ]);
@@ -335,12 +396,15 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'legacy-prefix',
         ts: '2026-05-19T00:01:00.000Z',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 22_000,
         system_sha8: 'new-system',
         history_image_sha8: 'stable-history',
         input_tokens: 100,
         cache_create_tokens: 2_000,
+        cache_create_5m_tokens: 2_000,
         cache_read_tokens: 20_000,
       }),
     ]);
@@ -374,11 +438,14 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'unknown-prefix-bridge',
         ts: '2026-05-19T00:01:00.000Z',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 22_000,
         cache_prefix_sha8: 'exact-prefix',
         input_tokens: 100,
         cache_create_tokens: 2_000,
+        cache_create_5m_tokens: 2_000,
         cache_read_tokens: 20_000,
       }),
     ]);
@@ -397,10 +464,13 @@ describe('aggregateSessions', () => {
         ts: '2026-05-19T00:00:20.000Z',
         duration_ms: 20_000,
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 20_000,
         input_tokens: 100,
         cache_create_tokens: 20_000,
+        cache_create_5m_tokens: 20_000,
         cache_read_tokens: 0,
       }),
       ev({
@@ -412,10 +482,13 @@ describe('aggregateSessions', () => {
         ts: '2026-05-19T00:00:25.000Z',
         duration_ms: 10_000,
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 32_000,
         baseline_cacheable_tokens: 22_000,
         input_tokens: 100,
         cache_create_tokens: 2_000,
+        cache_create_5m_tokens: 2_000,
         cache_read_tokens: 20_000,
       }),
     ]);
@@ -433,6 +506,8 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'dddddddd',
         ts: '2026-05-19T00:00:00.000Z',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 20_000,
         system_sha8: 'old-system',
@@ -445,12 +520,15 @@ describe('aggregateSessions', () => {
         first_user_sha8: 'dddddddd',
         ts: '2026-05-19T00:01:00.000Z',
         compressed: true,
+        baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 20_000,
         system_sha8: 'new-system',
         input_tokens: 100,
         output_tokens: 50,
         cache_create_tokens: 20_000,
+        cache_create_5m_tokens: 20_000,
         cache_read_tokens: 0,
       }),
     ]);

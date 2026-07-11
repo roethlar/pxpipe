@@ -5,7 +5,7 @@ import {
   type PxpipeOptions,
 } from '../src/core/library.js';
 import { transformOpenAIChatCompletions } from '../src/core/openai.js';
-import { transformRequest } from '../src/core/transform.js';
+import { buildAnthropicCandidate as transformRequest } from '../src/core/transform.js';
 import type { ContentBlock, MessagesRequest, TextBlock, ToolDef } from '../src/core/types.js';
 import {
   DIRECT_PROJECT_GUIDANCE,
@@ -148,7 +148,9 @@ describe('public Anthropic provenance controls', () => {
     const out = decode<MessagesRequest>(result.body);
     const opening = out.messages[0]!.content as ContentBlock[];
 
-    expect(result.info.projectDisposition).toBe('native_disabled');
+    expect(result.applied).toBe(false);
+    expect(result.body).toEqual(encode(req));
+    expect(result.info.projectDisposition).toBeUndefined();
     expect(out.tools).toEqual(req.tools);
     expect(opening.some(
       (block) => block.type === 'text' && block.text.includes('worker option governance row 2199'),

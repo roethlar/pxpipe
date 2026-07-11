@@ -4,8 +4,11 @@
  * See docs/CACHING_AND_SAVINGS.md for the full derivation and audit history.
  */
 
-/** Documented Anthropic price ratios: cc_5m = 1.25×, cr = 0.1× base input. One-line change if rates change. */
-export const CACHE_CREATE_RATE = 1.25;
+/** Documented Anthropic price ratios. */
+export const CACHE_CREATE_5M_RATE = 1.25;
+export const CACHE_CREATE_1H_RATE = 2.0;
+/** Historical alias retained for callers that explicitly mean five-minute creation. */
+export const CACHE_CREATE_RATE = CACHE_CREATE_5M_RATE;
 export const CACHE_READ_RATE = 0.1;
 
 /** Anthropic prompt-cache TTL (seconds). Kept for callers that display provider
@@ -99,7 +102,9 @@ export function deriveBaselineWarmth(
  *
  * Saving = baseline_eff − actual_eff; can be negative (honestly reported, not floored).
  *
- * @param baselineCacheable  tokens up to the last cache_control marker. ≤0 ⇒ credit nothing.
+ * @param baselineCacheable  tokens up to the last cache_control marker. Zero is
+ *                           an exact marker-free prefix; a negative value means
+ *                           the prefix measurement is unavailable.
  * @param warm               was a warm cache available for this session this turn?
  * @param prevCacheable      cacheable prefix size on this session's previous turn (warm only).
  */
@@ -111,10 +116,22 @@ export function computeBaselineInputEff(
   cr: number,
   warm = false,
   prevCacheable = 0,
+  cacheCreateRate = CACHE_CREATE_1H_RATE,
+  actualCacheCreate5mTokens?: number,
+  actualCacheCreate1hTokens?: number,
 ): number {
   if (baseline <= 0) return 0;
   // Probe miss: can't split prefix from tail, so credit nothing (same as actual).
-  if (baselineCacheable <= 0) return computeActualInputEff(inputTokens, cc, cr);
+  // A marker-free request has a known zero prefix and is priced cold below.
+  if (baselineCacheable < 0) {
+    return computeActualInputEff(
+      inputTokens,
+      cc,
+      cr,
+      actualCacheCreate5mTokens,
+      actualCacheCreate1hTokens,
+    );
+  }
   const cacheable = Math.min(baselineCacheable, baseline);
   const coldTail = baseline - cacheable;
   if (warm) {
@@ -122,19 +139,121 @@ export function computeBaselineInputEff(
     // growth since last turn (1.25×). Independent of the image path's cache.
     const reused = Math.min(Math.max(prevCacheable, 0), cacheable);
     const grown = cacheable - reused;
-    return reused * CACHE_READ_RATE + grown * CACHE_CREATE_RATE + coldTail * 1.0;
+    return reused * CACHE_READ_RATE + grown * cacheCreateRate + coldTail * 1.0;
   }
   // Cold (first turn / TTL expiry): no warm cache for text either, so it
   // re-creates the whole cacheable prefix at the create rate — same event the
   // imaged path pays. Removes the phantom "free read" that fabricated a loss.
-  return cacheable * CACHE_CREATE_RATE + coldTail * 1.0;
+  return cacheable * cacheCreateRate + coldTail * 1.0;
 }
 
-/** Weighted input cost pxpipe actually paid this turn. */
+/**
+ * Weighted input cost pxpipe actually paid this turn.
+ *
+ * Anthropic reports the aggregate cache-create count plus, on current API
+ * versions, a split by five-minute and one-hour tier. Price the known split at
+ * its real rates. Any absent or inconsistent remainder is conservatively priced
+ * as one-hour creation; silently assuming five-minute creation understated the
+ * installed loss.
+ */
 export function computeActualInputEff(
   inputTokens: number,
   cc: number,
   cr: number,
+  cc5m?: number,
+  cc1h?: number,
 ): number {
-  return inputTokens + cc * CACHE_CREATE_RATE + cr * CACHE_READ_RATE;
+  const create = Math.max(0, cc);
+  const oneHour = Math.min(create, Math.max(0, cc1h ?? 0));
+  const fiveMinute = Math.min(
+    create - oneHour,
+    Math.max(0, cc5m ?? 0),
+  );
+  const unknown = create - oneHour - fiveMinute;
+  return inputTokens
+    + oneHour * CACHE_CREATE_1H_RATE
+    + fiveMinute * CACHE_CREATE_5M_RATE
+    + unknown * CACHE_CREATE_1H_RATE
+    + Math.max(0, cr) * CACHE_READ_RATE;
+}
+
+export type BaselineProbeStatus = 'ok' | 'partial' | 'failed';
+
+export interface AnthropicAccountingInput {
+  readonly compressed: boolean;
+  readonly probeStatus?: BaselineProbeStatus;
+  readonly usagePresent: boolean;
+  readonly baselineTokens?: number;
+  readonly baselineCacheableTokens?: number;
+  readonly inputTokens: number;
+  readonly cacheCreateTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreate5mTokens?: number;
+  readonly cacheCreate1hTokens?: number;
+  readonly warm?: boolean;
+  readonly prevCacheable?: number;
+  /** Rate for the unchanged caller-owned cache marker. Unknown is one-hour. */
+  readonly baselineCacheCreateRate?: typeof CACHE_CREATE_5M_RATE | typeof CACHE_CREATE_1H_RATE;
+}
+
+export interface AnthropicAccountingResult {
+  readonly haveUsage: boolean;
+  readonly haveBaseline: boolean;
+  readonly creditSaving: boolean;
+  readonly actualInputEff: number;
+  readonly baselineInputEff: number;
+  readonly savedInputEff: number;
+}
+
+/**
+ * Single signed Anthropic input-accounting function used by live, replay,
+ * sessions, and stats consumers. Only a genuinely transformed row with a
+ * complete four-probe status may receive a counterfactual. Passthrough and
+ * incomplete rows equal their actual cost.
+ */
+export function accountAnthropicInput(
+  input: AnthropicAccountingInput,
+): AnthropicAccountingResult {
+  const haveUsage = input.usagePresent;
+  const baseline = input.baselineTokens;
+  const haveBaseline =
+    input.probeStatus === 'ok'
+    && typeof baseline === 'number'
+    && Number.isFinite(baseline)
+    && baseline > 0
+    && typeof input.baselineCacheableTokens === 'number'
+    && Number.isFinite(input.baselineCacheableTokens)
+    && input.baselineCacheableTokens >= 0;
+  const actualInputEff = haveUsage
+    ? computeActualInputEff(
+        input.inputTokens,
+        input.cacheCreateTokens,
+        input.cacheReadTokens,
+        input.cacheCreate5mTokens,
+        input.cacheCreate1hTokens,
+      )
+    : 0;
+  const creditSaving = haveUsage && haveBaseline && input.compressed;
+  const baselineInputEff = creditSaving
+    ? computeBaselineInputEff(
+        baseline,
+        Math.max(0, input.baselineCacheableTokens ?? 0),
+        input.inputTokens,
+        input.cacheCreateTokens,
+        input.cacheReadTokens,
+        input.warm ?? false,
+        input.prevCacheable ?? 0,
+        input.baselineCacheCreateRate ?? CACHE_CREATE_1H_RATE,
+        input.cacheCreate5mTokens,
+        input.cacheCreate1hTokens,
+      )
+    : actualInputEff;
+  return {
+    haveUsage,
+    haveBaseline,
+    creditSaving,
+    actualInputEff,
+    baselineInputEff,
+    savedInputEff: baselineInputEff - actualInputEff,
+  };
 }

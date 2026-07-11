@@ -22,7 +22,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { transformRequest } from '../src/core/transform.js';
+import { buildAnthropicCandidate as transformRequest } from '../src/core/transform.js';
 import { transformAnthropicMessages } from '../src/core/library.js';
 
 const enc = new TextEncoder();
@@ -143,18 +143,19 @@ describe('emitRecoverable recovery channel', () => {
     expect(ids).not.toContain('keep_me');
   });
 
-  it('is reachable through the public library wrapper', async () => {
+  it('does not leak candidate recovery text through the unmeasured public wrapper', async () => {
+    const input = makeReq(
+      [{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }],
+      'claude-fable-5',
+    );
     const result = await transformAnthropicMessages({
-      body: makeReq(
-        [{ type: 'tool_result', tool_use_id: 'toolu_a', content: BIG }],
-        'claude-fable-5',
-      ),
+      body: input,
       model: 'claude-fable-5',
       options: { charsPerToken: 2, emitRecoverable: true },
     });
-    expect(result.applied).toBe(true);
-    const entry = (result.info.recoverable ?? []).find((r) => r.kind === 'tool_result');
-    expect(entry).toBeTruthy();
-    expect(entry!.text).toBe(BIG);
+    expect(result.applied).toBe(false);
+    expect(result.body).toBe(input);
+    expect(result.info.reason).toBe('admission_probe_unavailable');
+    expect(result.info.recoverable).toBeUndefined();
   });
 });

@@ -20,7 +20,7 @@ import {
   classifyContent,
   estimateImageCount,
   truncateForBudget,
-  transformRequest,
+  buildAnthropicCandidate as transformRequest,
 } from '../src/core/transform.js';
 import { toTrackEvent } from '../src/core/tracker.js';
 import type { ProxyEvent } from '../src/core/proxy.js';

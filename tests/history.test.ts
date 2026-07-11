@@ -27,7 +27,10 @@ import {
   messageCacheControls,
 } from '../src/core/history.js';
 import { makeProjectGuidanceBoundary } from '../src/core/anthropic-context.js';
-import { transformRequest, isCompressionProfitable } from '../src/core/transform.js';
+import {
+  buildAnthropicCandidate as transformRequest,
+  isCompressionProfitable,
+} from '../src/core/transform.js';
 import { DENSE_CONTENT_CHARS_PER_IMAGE } from '../src/core/render.js';
 import type { Message } from '../src/core/types.js';
 

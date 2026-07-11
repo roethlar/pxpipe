@@ -13,6 +13,8 @@ export {
   buildBaselineCountTokensBody,
   buildCacheablePrefixCountTokensBody,
   countCacheControlMarkers,
+  readCallerCacheControlTier,
+  type CallerCacheControlTier,
   type CountTokensBodies,
 } from './measurement.js';
 export {
@@ -38,6 +40,9 @@ export { createProxy, type ProxyConfig, type ProxyEvent } from './proxy.js';
 export {
   computeActualInputEff,
   computeBaselineInputEff,
+  accountAnthropicInput,
+  CACHE_CREATE_1H_RATE,
+  CACHE_CREATE_5M_RATE,
   CACHE_CREATE_RATE,
   CACHE_READ_RATE,
 } from './baseline.js';

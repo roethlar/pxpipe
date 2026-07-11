@@ -1,12 +1,11 @@
 /**
- * END-TO-END cache-alignment contract through the REAL proxy.
+ * Cache-alignment contract for the internal Anthropic candidate builder plus
+ * end-to-end safety/routing checks through the real proxy.
  *
- * Unlike anthropic-cache-align / gpt-cache-align (which call collapseHistory /
- * planGptCollapse directly), this drives `createProxy` against a FAKE upstream
- * and asserts on the bytes the proxy actually FORWARDS. That closes the gap the
- * unit tests can't see: routing, the gate, marker relocation, transform-once,
- * and — the headline — that the cacheable image PREFIX stays byte-identical as
- * the conversation grows turn-by-turn (the real Claude Code / OpenCode loop).
+ * The legacy Anthropic renderer remains inspectable through the explicitly
+ * internal `buildAnthropicCandidate`; the shipped proxy must reject that
+ * candidate until Slice 2 supplies exact-span provenance descriptors. OpenAI
+ * continues to exercise its existing real-proxy behavior unchanged.
  *
  *   fake api  = the upstream output (canned responses + count_tokens probe)
  *   our input = pxpipe's transform of the request body
@@ -26,6 +25,7 @@ import { createProxy } from '../src/core/proxy.js';
 import { countCacheControlMarkers } from '../src/core/measurement.js';
 import { HISTORY_SYNTHETIC_INTRO } from '../src/core/history.js';
 import {
+  buildAnthropicCandidate,
   PROJECT_GUIDANCE_MANIFEST_TAG,
   RUNTIME_CONTEXT_LABEL,
   RUNTIME_CONTEXT_MANIFEST_TAG,
@@ -360,32 +360,42 @@ async function driveAnthropicWithInfo(body: string): Promise<{
   return { cap, info: await infoPromise };
 }
 
+/** Inspect the legacy rendered candidate without granting it forwarding authority. */
+async function buildCandidateWithInfo(body: string): Promise<{
+  body: string;
+  info: TransformInfo;
+}> {
+  const candidate = await buildAnthropicCandidate(new TextEncoder().encode(body), FORCE);
+  return { body: new TextDecoder().decode(candidate.body), info: candidate.info };
+}
+
+async function buildCandidateBody(body: string): Promise<string> {
+  return (await buildCandidateWithInfo(body)).body;
+}
+
 // ===========================================================================
-describe('e2e cache alignment — Anthropic /v1/messages through the real proxy', () => {
+describe('Anthropic candidate cache alignment and shipped proxy safety shell', () => {
   it('never adds a cache_control marker; every caller marker is conserved', async () => {
     const body = anthropicProjectBody();
     const original = JSON.parse(body) as MessagesRequest;
     const inMarks = countCacheControlMarkers(new TextEncoder().encode(body));
-    const { cap, info } = await driveAnthropicWithInfo(body);
-    cap.restore();
+    const candidate = await buildCandidateWithInfo(body);
 
-    expect(cap.main).toHaveLength(1);
     expect(inMarks).toBe(3); // two native-system markers + the live-prompt marker
-    const outMarks = countCacheControlMarkers(new TextEncoder().encode(cap.main[0]!.body));
+    const outMarks = countCacheControlMarkers(new TextEncoder().encode(candidate.body));
     expect(outMarks).toBe(inMarks);
-    const forwarded = JSON.parse(cap.main[0]!.body) as MessagesRequest;
+    const forwarded = JSON.parse(candidate.body) as MessagesRequest;
     expect((forwarded.system as ContentBlock[]).slice(0, (original.system as ContentBlock[]).length))
       .toEqual(original.system);
-    expect(projectContract(cap.main[0]!.body, info).images.every((image) => !image.marked)).toBe(true);
+    expect(projectContract(candidate.body, candidate.info).images.every((image) => !image.marked)).toBe(true);
   });
 
   it('keeps the caller-owned live marker on the original live block after project pages', async () => {
     const input = anthropicProjectBody({ liveText: 'caller-owned live prompt' });
-    const { cap, info } = await driveAnthropicWithInfo(input);
-    cap.restore();
+    const candidate = await buildCandidateWithInfo(input);
 
-    const contract = projectContract(cap.main[0]!.body, info);
-    const body = JSON.parse(cap.main[0]!.body) as MessagesRequest;
+    const contract = projectContract(candidate.body, candidate.info);
+    const body = JSON.parse(candidate.body) as MessagesRequest;
     const carrier = body.messages.find(
       (message) =>
         Array.isArray(message.content) &&
@@ -398,26 +408,24 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
     );
     expect(live?.cache_control).toEqual({ type: 'ephemeral' });
     expect(contract.images.every((image) => !image.marked)).toBe(true);
-    expect(countCacheControlMarkers(new TextEncoder().encode(cap.main[0]!.body))).toBe(
+    expect(countCacheControlMarkers(new TextEncoder().encode(candidate.body))).toBe(
       countCacheControlMarkers(new TextEncoder().encode(input)),
     );
   });
 
   it('CACHE-STABLE: project images/ref/manifest/prefix ignore live-prompt changes', async () => {
     const project = largeProjectGuidance('same');
-    const run1 = await driveAnthropicWithInfo(anthropicProjectBody({
+    const run1 = await buildCandidateWithInfo(anthropicProjectBody({
       projectGuidance: project,
       liveText: 'first live request',
     }));
-    run1.cap.restore();
-    const run2 = await driveAnthropicWithInfo(anthropicProjectBody({
+    const run2 = await buildCandidateWithInfo(anthropicProjectBody({
       projectGuidance: project,
       liveText: 'different live request with volatile environment observations',
     }));
-    run2.cap.restore();
 
-    const a = projectContract(run1.cap.main[0]!.body, run1.info);
-    const b = projectContract(run2.cap.main[0]!.body, run2.info);
+    const a = projectContract(run1.body, run1.info);
+    const b = projectContract(run2.body, run2.info);
     expect(b.ref).toBe(a.ref);
     expect(b.images).toEqual(a.images);
     expect(b.manifest).toBe(a.manifest);
@@ -433,13 +441,11 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
     // NB: Anthropic's LAST history image is partial (it absorbs content as the
     // boundary moves), so the invariant is "all-but-last pages are a byte-
     // identical prefix" — not the whole list (that's the GPT sealed-section rule).
-    const cap1 = await driveAnthropic(anthropicBody({ turns: turns(30, 4000) }));
-    cap1.restore();
-    const cap2 = await driveAnthropic(anthropicBody({ turns: turns(120, 4000) }));
-    cap2.restore();
+    const candidate1 = await buildCandidateBody(anthropicBody({ turns: turns(30, 4000) }));
+    const candidate2 = await buildCandidateBody(anthropicBody({ turns: turns(120, 4000) }));
 
-    const a = anthropicImages(cap1.main[0]!.body).map((i) => i.data);
-    const b = anthropicImages(cap2.main[0]!.body).map((i) => i.data);
+    const a = anthropicImages(candidate1).map((i) => i.data);
+    const b = anthropicImages(candidate2).map((i) => i.data);
     expect(a.length).toBeGreaterThan(1);
     expect(b.length).toBeGreaterThan(a.length); // boundary advanced → pages appended
     expect(b[0]).toBe(a[0]); // the frozen prefix anchor never re-renders
@@ -450,49 +456,46 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
     expect(b.slice(0, a.length - 1)).toEqual(a.slice(0, a.length - 1));
     // Native system context contributes no movable image anchor; input had 0 markers.
     // (plain-string system), so the proxy must not invent one.
-    expect(countCacheControlMarkers(new TextEncoder().encode(cap1.main[0]!.body))).toBe(0);
+    expect(countCacheControlMarkers(new TextEncoder().encode(candidate1))).toBe(0);
   });
 
   it('CARRY-OVER (#11): finds frozen history pages by banner after a protected project prefix', async () => {
     const project = largeProjectGuidance('history-prefix');
-    const run1 = await driveAnthropicWithInfo(anthropicProjectBody({
+    const run1 = await buildCandidateWithInfo(anthropicProjectBody({
       projectGuidance: project,
       turns: turns(80, 4000),
     }));
-    run1.cap.restore();
-    const run2 = await driveAnthropicWithInfo(anthropicProjectBody({
+    const run2 = await buildCandidateWithInfo(anthropicProjectBody({
       projectGuidance: project,
       turns: turns(200, 4000),
     }));
-    run2.cap.restore();
 
-    const imgs1 = anthropicHistoryImages(run1.cap.main[0]!.body);
-    const imgs2 = anthropicHistoryImages(run2.cap.main[0]!.body);
+    const imgs1 = anthropicHistoryImages(run1.body);
+    const imgs2 = anthropicHistoryImages(run2.body);
     expect(imgs1.length).toBeGreaterThan(1);
     expect(imgs2.length).toBeGreaterThan(imgs1.length);
     // The final page can still grow; every earlier frozen history page is stable.
     expect(imgs2.slice(0, imgs1.length - 1)).toEqual(imgs1.slice(0, imgs1.length - 1));
     expect(run1.info.historyImageSha).toBe(await sha8(imgs1.map((image) => image.data).join('')));
     expect(run2.info.historyImageSha).toBe(await sha8(imgs2.map((image) => image.data).join('')));
-    expect(projectContract(run2.cap.main[0]!.body, run2.info).ref).toBe(
-      projectContract(run1.cap.main[0]!.body, run1.info).ref,
+    expect(projectContract(run2.body, run2.info).ref).toBe(
+      projectContract(run1.body, run1.info).ref,
     );
   });
 
   it('history collapse preserves caller marker ownership and keeps history pages unmarked', async () => {
     const input = anthropicProjectBody({ turns: turns(120, 4000) });
-    const run = await driveAnthropicWithInfo(input);
-    run.cap.restore();
+    const run = await buildCandidateWithInfo(input);
 
     expect(run.info.historyReason).toBe('collapsed');
-    const historyImages = anthropicHistoryImages(run.cap.main[0]!.body);
+    const historyImages = anthropicHistoryImages(run.body);
     expect(historyImages.length).toBeGreaterThan(0);
     expect(historyImages.every((image) => !image.marked)).toBe(true);
-    expect(projectContract(run.cap.main[0]!.body, run.info).images.every((image) => !image.marked)).toBe(true);
-    expect(countCacheControlMarkers(new TextEncoder().encode(run.cap.main[0]!.body))).toBe(
+    expect(projectContract(run.body, run.info).images.every((image) => !image.marked)).toBe(true);
+    expect(countCacheControlMarkers(new TextEncoder().encode(run.body))).toBe(
       countCacheControlMarkers(new TextEncoder().encode(input)),
     );
-    const forwarded = JSON.parse(run.cap.main[0]!.body) as MessagesRequest;
+    const forwarded = JSON.parse(run.body) as MessagesRequest;
     const syntheticIndex = forwarded.messages.findIndex(
       (message) =>
         Array.isArray(message.content) &&
@@ -505,23 +508,21 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
   it('RUNTIME SPLIT: volatile reminder siblings never re-render project pages or prefix', async () => {
     const project = largeProjectGuidance('runtime-stable');
     const historyTurns = turns(15, 4000);
-    const run1 = await driveAnthropicWithInfo(anthropicProjectBody({
+    const run1 = await buildCandidateWithInfo(anthropicProjectBody({
       projectGuidance: project,
       email: 'clean@example.invalid',
       date: '2026-07-10',
       turns: historyTurns,
     }));
-    run1.cap.restore();
-    const run2 = await driveAnthropicWithInfo(anthropicProjectBody({
+    const run2 = await buildCandidateWithInfo(anthropicProjectBody({
       projectGuidance: project,
       email: 'modified@example.invalid',
       date: '2026-07-11',
       turns: historyTurns,
     }));
-    run2.cap.restore();
 
-    const a = projectContract(run1.cap.main[0]!.body, run1.info);
-    const b = projectContract(run2.cap.main[0]!.body, run2.info);
+    const a = projectContract(run1.body, run1.info);
+    const b = projectContract(run2.body, run2.info);
     expect(b.ref).toBe(a.ref);
     expect(b.images).toEqual(a.images);
     expect(b.manifest).toBe(a.manifest);
@@ -530,13 +531,13 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
     expect(run1.info.historyReason).toBe('collapsed');
     expect(run2.info.historyReason).toBe('collapsed');
     expect(run2.info.historyImageSha).toBe(run1.info.historyImageSha);
-    expect(anthropicHistoryImages(run1.cap.main[0]!.body).length).toBeGreaterThan(0);
-    expect(anthropicHistoryImages(run2.cap.main[0]!.body)).toEqual(
-      anthropicHistoryImages(run1.cap.main[0]!.body),
+    expect(anthropicHistoryImages(run1.body).length).toBeGreaterThan(0);
+    expect(anthropicHistoryImages(run2.body)).toEqual(
+      anthropicHistoryImages(run1.body),
     );
 
-    const first = JSON.parse(run1.cap.main[0]!.body) as MessagesRequest;
-    const forwarded = JSON.parse(run2.cap.main[0]!.body) as MessagesRequest;
+    const first = JSON.parse(run1.body) as MessagesRequest;
+    const forwarded = JSON.parse(run2.body) as MessagesRequest;
     const systemTexts = (req: MessagesRequest) =>
       (Array.isArray(req.system) ? req.system : [])
         .filter((block): block is TextBlock => block.type === 'text')
@@ -577,18 +578,16 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
       req.system = [...(Array.isArray(req.system) ? req.system : []), { type: 'text', text: env }];
       return JSON.stringify(req);
     };
-    const first = await driveAnthropicWithInfo(body('/synthetic/one'));
-    first.cap.restore();
-    const second = await driveAnthropicWithInfo(body('/synthetic/two'));
-    second.cap.restore();
-    const contractA = projectContract(first.cap.main[0]!.body, first.info);
-    const contractB = projectContract(second.cap.main[0]!.body, second.info);
+    const first = await buildCandidateWithInfo(body('/synthetic/one'));
+    const second = await buildCandidateWithInfo(body('/synthetic/two'));
+    const contractA = projectContract(first.body, first.info);
+    const contractB = projectContract(second.body, second.info);
 
     expect(contractB.ref).toBe(contractA.ref);
     expect(contractB.images).toEqual(contractA.images);
     expect(contractB.manifest).toBe(contractA.manifest);
     expect(second.info.cachePrefixSha8).not.toBe(first.info.cachePrefixSha8);
-    const forwarded = JSON.parse(second.cap.main[0]!.body) as MessagesRequest;
+    const forwarded = JSON.parse(second.body) as MessagesRequest;
     expect(forwarded.system).toContainEqual({
       type: 'text',
       text: '<env>\nWorking directory: /synthetic/two\n</env>',
@@ -598,23 +597,21 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
   it('FIRST COLLAPSE: protected project contract/prefix stay stable before a frozen history chunk', async () => {
     const project = largeProjectGuidance('first-collapse');
     const body1 = anthropicProjectBody({ projectGuidance: project, turns: turns(15, 4000) });
-    const run1 = await driveAnthropicWithInfo(body1);
-    run1.cap.restore();
+    const run1 = await buildCandidateWithInfo(body1);
     const body2 = anthropicProjectBody({ projectGuidance: project, turns: turns(17, 4000) });
-    const run2 = await driveAnthropicWithInfo(body2);
-    run2.cap.restore();
+    const run2 = await buildCandidateWithInfo(body2);
 
-    const contract1 = projectContract(run1.cap.main[0]!.body, run1.info);
-    const contract2 = projectContract(run2.cap.main[0]!.body, run2.info);
+    const contract1 = projectContract(run1.body, run1.info);
+    const contract2 = projectContract(run2.body, run2.info);
     for (const [run, input, contract] of [
       [run1, body1, contract1],
       [run2, body2, contract2],
     ] as const) {
       expect(run.info.historyReason).toBe('collapsed');
-      expect(anthropicHistoryImages(run.cap.main[0]!.body).length).toBeGreaterThan(0);
-      expect(anthropicHistoryImages(run.cap.main[0]!.body).every((image) => !image.marked)).toBe(true);
+      expect(anthropicHistoryImages(run.body).length).toBeGreaterThan(0);
+      expect(anthropicHistoryImages(run.body).every((image) => !image.marked)).toBe(true);
       expect(contract.images.every((image) => !image.marked)).toBe(true);
-      expect(countCacheControlMarkers(new TextEncoder().encode(run.cap.main[0]!.body))).toBe(
+      expect(countCacheControlMarkers(new TextEncoder().encode(run.body))).toBe(
         countCacheControlMarkers(new TextEncoder().encode(input)),
       );
     }
@@ -630,34 +627,32 @@ describe('e2e cache alignment — Anthropic /v1/messages through the real proxy'
     const cap = await driveAnthropic(body);
     cap.restore();
     expect(anthropicImages(cap.main[0]!.body)).toHaveLength(0);
-    // "untouched" must mean the whole payload, not merely image-free.
-    expect(JSON.parse(cap.main[0]!.body)).toEqual(JSON.parse(body));
+    // "untouched" means exact caller bytes, not merely equivalent JSON.
+    expect(cap.main[0]!.body).toBe(body);
+    expect(cap.sidePaths).toEqual([]);
   });
 
-  it('ROUTING + AUTH: forwards to the configured upstream; only count_tokens side calls (dual probe with a marker)', async () => {
-    const cap = await driveAnthropic(anthropicBody({ slabChars: 80_000, turns: turns(4, 20) }));
-    // count_tokens is fire-and-forget — give it a tick before asserting.
-    await new Promise((r) => setTimeout(r, 30));
+  it('ROUTING + AUTH: rejects the legacy candidate before probes and forwards exact native bytes', async () => {
+    const input = anthropicProjectBody();
+    const { cap, info } = await driveAnthropicWithInfo(input);
     cap.restore();
 
     expect(cap.main).toHaveLength(1);
     expect(cap.main[0]!.url).toBe('http://anthropic.test/v1/messages');
     expect(cap.main[0]!.apiKey).toBe('sk-ant-test');
-    // The body carries a cache_control marker, so BOTH probes fire: the full-body
-    // baseline AND the truncated cacheable-prefix probe. Exactly two, both
-    // count_tokens, no other side endpoint leaks. A suppressed second probe → red.
-    expect(cap.sidePaths).toEqual([
-      '/v1/messages/count_tokens',
-      '/v1/messages/count_tokens',
-    ]);
+    expect(cap.main[0]!.body).toBe(input);
+    expect(info.compressed).toBe(false);
+    expect(info.reason).toBe('candidate_contract_invalid');
+    expect(info.admissionReason).toBe('candidate_contract_invalid');
+    // Structural rejection happens before any authenticated provider probe.
+    expect(cap.sidePaths).toEqual([]);
   });
 
   it('produces valid JSON with well-formed base64 PNGs on EVERY page', async () => {
-    const { cap, info } = await driveAnthropicWithInfo(anthropicProjectBody());
-    cap.restore();
-    const parsed = JSON.parse(cap.main[0]!.body);
+    const candidate = await buildCandidateWithInfo(anthropicProjectBody());
+    const parsed = JSON.parse(candidate.body);
     expect(Array.isArray(parsed.messages)).toBe(true);
-    const contract = projectContract(cap.main[0]!.body, info);
+    const contract = projectContract(candidate.body, candidate.info);
     const imgs = contract.images;
     expect(imgs.length).toBeGreaterThan(0);
     // EVERY page must be a real PNG (base64 PNG magic = 'iVBORw0KGgo'), not just

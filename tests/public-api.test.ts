@@ -273,7 +273,7 @@ describe('public library API', () => {
     }
   });
 
-  it('wraps the transformer with model gating and cache ownership metadata', async () => {
+  it('keeps standalone Anthropic transforms native when admission probes are unavailable', async () => {
     const unsupported = enc.encode(JSON.stringify({
       model: 'claude-sonnet-4-6',
       system: 'x'.repeat(20_000),
@@ -302,16 +302,37 @@ describe('public library API', () => {
       }],
     };
     const supported = enc.encode(JSON.stringify(supportedRequest));
-    const transformed = await transformAnthropicMessages({ body: supported, model: 'claude-fable-5' });
-    expect(transformed.applied).toBe(true);
-    expect(transformed.reason).toBe('applied');
-    expect(transformed.info.compressedChars).toBeGreaterThan(0);
-    expect(transformed.info.imageCount).toBeGreaterThan(0);
+    const realFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      throw new Error('standalone transforms must not probe the network');
+    }) as typeof fetch;
+    let transformed: Awaited<ReturnType<typeof transformAnthropicMessages>>;
+    try {
+      transformed = await transformAnthropicMessages({ body: supported, model: 'claude-fable-5' });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    expect(fetchCalls).toBe(0);
+    expect(transformed.applied).toBe(false);
+    expect(transformed.reason).toBe('passthrough');
+    expect(transformed.detail).toBe('admission_probe_unavailable');
+    expect(transformed.body).toBe(supported);
+    expect(dec.decode(transformed.body)).toBe(dec.decode(supported));
+    expect(transformed.info.compressed).toBe(false);
+    expect(transformed.info.compressedChars).toBe(0);
+    expect(transformed.info.imageCount).toBe(0);
+    expect(transformed.info.baselineProbeStatus).toBeUndefined();
+    expect(transformed.info.baselineTokens).toBeUndefined();
+    expect(transformed.info.candidateTokens).toBeUndefined();
+    expect(transformed.info.admissionSignedSavingsTokens).toBeUndefined();
+    expect(transformed.info.admissionRelativeSavings).toBeUndefined();
     const supportedOut = JSON.parse(dec.decode(transformed.body)) as any;
     expect(supportedOut.system).toBe(supportedRequest.system);
     expect(supportedOut.tools).toEqual(supportedRequest.tools);
-    // Task #21: pxpipe never adds its own cache_control markers.
-    // The caller sent zero markers, so the rewritten body also has zero.
+    // The caller sent zero markers, so exact native fallback still has zero.
     expect(transformed.cache.ownsCacheControl).toBe(false);
     expect(transformed.cache.markerCount).toBe(0);
   });

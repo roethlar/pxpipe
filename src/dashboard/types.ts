@@ -74,6 +74,8 @@ export interface RecentRow {
   input_tokens?: number;
   output_tokens?: number;
   cache_create?: number;
+  cache_create_5m?: number;
+  cache_create_1h?: number;
   cache_read?: number;
   actual_input?: number;
   baseline_input?: number;
@@ -132,6 +134,11 @@ export interface FullStatsSummary {
   outputTokensTotal: number;
   cacheHitEvents: number;
   eventsWithBaseline: number;
+  actualInputEffTotal: number;
+  baselineInputEffTotal: number;
+  savedInputEffTotal: number;
+  accountedInputEvents: number;
+  counterfactualInputEvents: number;
   origCharsTotal: number;
   imageBytesTotal: number;
   durationP50: number;

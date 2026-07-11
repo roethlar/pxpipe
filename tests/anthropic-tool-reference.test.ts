@@ -4,7 +4,7 @@ import {
   TOOL_REFERENCE_MANIFEST_TAG,
   makeToolReferenceBoundary,
   toolReferenceBoundaryRef,
-  transformRequest,
+  buildAnthropicCandidate as transformRequest,
 } from '../src/core/transform.js';
 import type { ContentBlock, MessagesRequest, TextBlock, ToolDef } from '../src/core/types.js';
 import {

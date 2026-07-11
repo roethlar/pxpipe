@@ -222,10 +222,24 @@ export interface TrackEvent {
   /** count_tokens on the ORIGINAL body (free endpoint). Absent on probe failure; excluded from savings rollup. */
   baseline_tokens?: number;
   /** count_tokens on the original body truncated at the last cache_control marker — gives cacheable_prefix_tokens.
-   *  With baseline_tokens, decomposes unproxied cost into (cacheable_prefix, cold_tail). Absent when no markers. */
+   *  With baseline_tokens, decomposes unproxied cost into (cacheable_prefix, cold_tail).
+   *  Explicit zero means the complete four-probe admission measured a marker-free prefix. */
   baseline_cacheable_tokens?: number;
-  /** Probe outcome. Dashboards must only attribute "$ saved" to rows where status === 'ok'. */
+  /** count_tokens on the complete proposed body and its cacheable prefix. */
+  candidate_tokens?: number;
+  candidate_cacheable_tokens?: number;
+  /** Four-probe outcome. Consumers attribute a counterfactual only when status === 'ok'. */
   baseline_probe_status?: 'ok' | 'partial' | 'failed';
+  /** Strict request-wide admission evidence. Values never contain request text. */
+  admission_reason?: string;
+  admission_cache_tier?: 'none' | '5m' | '1h' | 'conservative_1h';
+  baseline_cache_create_rate?: 1.25 | 2;
+  admission_original_effective_tokens?: number;
+  admission_candidate_effective_tokens?: number;
+  admission_signed_savings_tokens?: number;
+  admission_relative_savings?: number;
+  /** Hash-only process-local admission/breaker identity. */
+  admission_fingerprint?: string;
 
   // Errors:
   error?: string;
@@ -488,12 +502,52 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
     }
     if (
       info.baselineCacheableTokens !== undefined
-      && info.baselineCacheableTokens > 0
+      && (
+        info.baselineCacheableTokens > 0
+        || (info.baselineCacheableTokens === 0 && info.baselineProbeStatus === 'ok')
+      )
     ) {
       out.baseline_cacheable_tokens = info.baselineCacheableTokens;
     }
+    if (info.candidateTokens !== undefined && info.candidateTokens > 0) {
+      out.candidate_tokens = info.candidateTokens;
+    }
+    if (
+      info.candidateCacheableTokens !== undefined
+      && (
+        info.candidateCacheableTokens > 0
+        || (info.candidateCacheableTokens === 0 && info.baselineProbeStatus === 'ok')
+      )
+    ) {
+      out.candidate_cacheable_tokens = info.candidateCacheableTokens;
+    }
     if (info.baselineProbeStatus !== undefined) {
       out.baseline_probe_status = info.baselineProbeStatus;
+    }
+    if (info.admissionReason !== undefined) out.admission_reason = info.admissionReason;
+    if (info.admissionCacheTier !== undefined) {
+      out.admission_cache_tier = info.admissionCacheTier;
+    }
+    if (info.baselineCacheCreateRate !== undefined) {
+      out.baseline_cache_create_rate = info.baselineCacheCreateRate;
+    }
+    if (Number.isFinite(info.admissionOriginalEffectiveTokens)) {
+      out.admission_original_effective_tokens = info.admissionOriginalEffectiveTokens;
+    }
+    if (Number.isFinite(info.admissionCandidateEffectiveTokens)) {
+      out.admission_candidate_effective_tokens = info.admissionCandidateEffectiveTokens;
+    }
+    if (Number.isFinite(info.admissionSignedSavingsTokens)) {
+      out.admission_signed_savings_tokens = info.admissionSignedSavingsTokens;
+    }
+    if (Number.isFinite(info.admissionRelativeSavings)) {
+      out.admission_relative_savings = info.admissionRelativeSavings;
+    }
+    if (
+      info.admissionFingerprint !== undefined
+      && /^(?:pxa_|af_)?[0-9a-f]{16,64}$/i.test(info.admissionFingerprint)
+    ) {
+      out.admission_fingerprint = info.admissionFingerprint;
     }
   }
   if (env) {

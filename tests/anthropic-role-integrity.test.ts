@@ -12,7 +12,7 @@ import {
   firstUserText,
   projectGuidancePageLabel,
   sha8,
-  transformRequest,
+  buildAnthropicCandidate as transformRequest,
 } from '../src/core/transform.js';
 import type {
   ContentBlock,

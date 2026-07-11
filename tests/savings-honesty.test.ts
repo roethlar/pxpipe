@@ -19,7 +19,13 @@
  * Run just this file:  pnpm vitest run tests/savings-honesty.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { computeBaselineInputEff, computeActualInputEff, CACHE_CREATE_RATE, CACHE_READ_RATE } from '../src/core/baseline.js';
+import {
+  accountAnthropicInput,
+  CACHE_CREATE_1H_RATE,
+  CACHE_CREATE_5M_RATE,
+  CACHE_READ_RATE,
+  type AnthropicAccountingInput,
+} from '../src/core/baseline.js';
 import {
   computeOpenAIBaselineInputEff,
   computeOpenAIActualInputEff,
@@ -95,49 +101,106 @@ describe('GPT savings honesty (vs the real o200k cached-rate model)', () => {
 
 // ===========================================================================
 describe('Anthropic savings honesty (cache-create / cache-read aware)', () => {
-  const baselines = [0, 1_000, 30_000];
-  const cacheables = [0, 5_000, 20_000];
-  const inputs = [100, 10_000];
-  const ccs = [0, 20_000];
-  const crs = [0, 20_000];
-  const prevs = [0, 10_000, 25_000];
+  const account = (
+    overrides: Partial<AnthropicAccountingInput> = {},
+  ) => accountAnthropicInput({
+    compressed: true,
+    probeStatus: 'ok',
+    usagePresent: true,
+    baselineTokens: 30_000,
+    baselineCacheableTokens: 20_000,
+    inputTokens: 100,
+    cacheCreateTokens: 2_000,
+    cacheReadTokens: 0,
+    cacheCreate5mTokens: 2_000,
+    baselineCacheCreateRate: CACHE_CREATE_5M_RATE,
+    ...overrides,
+  });
 
-  const sweep = (
-    f: (baseline: number, cacheable: number, input: number, cc: number, cr: number, prev: number) => void,
-  ) => {
-    for (const baseline of baselines)
-      for (const cacheable of cacheables)
-        for (const input of inputs)
-          for (const cc of ccs) for (const cr of crs) for (const prev of prevs) f(baseline, cacheable, input, cc, cr, prev);
-  };
+  it('credits only a transformed row with an explicit complete four-probe result', () => {
+    const rejected: Partial<AnthropicAccountingInput>[] = [
+      { compressed: false },
+      { probeStatus: undefined },
+      { probeStatus: 'partial' },
+      { probeStatus: 'failed' },
+      { usagePresent: false },
+      { baselineTokens: undefined },
+      { baselineCacheableTokens: undefined },
+    ];
+    for (const override of rejected) {
+      const result = account(override);
+      expect(result.creditSaving).toBe(false);
+      expect(result.savedInputEff).toBe(0);
+      expect(result.baselineInputEff).toBe(result.actualInputEff);
+    }
+  });
 
-  it('credits ZERO when the cacheable-prefix probe is missing (can not measure → claim nothing)', () => {
-    sweep((baseline, cacheable, input, cc, cr, prev) => {
-      if (cacheable > 0) return;
-      const actual = computeActualInputEff(input, cc, cr);
-      // baseline<=0 returns 0 (no baseline); baselineCacheable<=0 returns actual (no credit).
-      const eff = computeBaselineInputEff(baseline, cacheable, input, cc, cr, false, prev);
-      if (baseline <= 0) expect(eff).toBe(0);
-      else expect(eff - actual).toBe(0); // saved 0
+  it('prices an exact marker-free zero prefix as an ordinary cold request', () => {
+    const result = account({ baselineCacheableTokens: 0 });
+    expect(result.creditSaving).toBe(true);
+    expect(result.actualInputEff).toBe(2_600);
+    expect(result.baselineInputEff).toBe(30_000);
+    expect(result.savedInputEff).toBe(27_400);
+  });
+
+  it('prices five-minute creation at 1.25x and one-hour or unknown creation at 2x', () => {
+    const fiveMinute = account();
+    const oneHour = account({
+      cacheCreate5mTokens: undefined,
+      cacheCreate1hTokens: 2_000,
+      baselineCacheCreateRate: CACHE_CREATE_1H_RATE,
     });
+    const unknown = account({
+      cacheCreate5mTokens: undefined,
+      cacheCreate1hTokens: undefined,
+      baselineCacheCreateRate: undefined,
+    });
+
+    expect(fiveMinute.actualInputEff).toBe(2_600);
+    expect(fiveMinute.baselineInputEff).toBe(35_000);
+    expect(oneHour.actualInputEff).toBe(4_100);
+    expect(oneHour.baselineInputEff).toBe(50_000);
+    expect(unknown.actualInputEff).toBe(oneHour.actualInputEff);
+    expect(unknown.baselineInputEff).toBe(oneHour.baselineInputEff);
+  });
+
+  it('prices any unclassified cache-create remainder at 2x', () => {
+    const result = account({
+      cacheCreateTokens: 3_000,
+      cacheCreate5mTokens: 1_000,
+      cacheCreate1hTokens: 1_000,
+    });
+    // 100 input + 1k*1.25 + 1k*2 + 1k unknown*2.
+    expect(result.actualInputEff).toBe(5_350);
   });
 
   it('OVERCLAIM GUARD: pricing the text counterfactual WARM never claims more than COLD', () => {
-    sweep((baseline, cacheable, input, cc, cr, prev) => {
-      if (!(baseline > 0 && cacheable > 0)) return;
-      const warm = computeBaselineInputEff(baseline, cacheable, input, cc, cr, true, prev);
-      const cold = computeBaselineInputEff(baseline, cacheable, input, cc, cr, false, prev);
-      expect(warm).toBeLessThanOrEqual(cold + 1e-9); // warm counterfactual is cheaper → less saved
-    });
+    const cold = account({ warm: false, prevCacheable: 0 });
+    const warm = account({ warm: true, prevCacheable: 10_000 });
+    expect(warm.baselineInputEff).toBeLessThanOrEqual(cold.baselineInputEff);
+    expect(warm.savedInputEff).toBeLessThanOrEqual(cold.savedInputEff);
   });
 
-  it('baseline-eff is non-negative and never exceeds re-creating the whole baseline at 1.25×', () => {
-    sweep((baseline, cacheable, input, cc, cr, prev) => {
-      if (!(baseline > 0 && cacheable > 0)) return;
-      const cold = computeBaselineInputEff(baseline, cacheable, input, cc, cr, false, prev);
-      expect(cold).toBeGreaterThanOrEqual(0);
-      expect(cold).toBeLessThanOrEqual(baseline * 1.25 + 1e-9); // can't fabricate a bigger counterfactual
+  it('preserves an admitted negative result instead of clamping it', () => {
+    const loss = account({
+      baselineTokens: 2_000,
+      baselineCacheableTokens: 1_900,
+      inputTokens: 3_000,
+      cacheCreateTokens: 5_000,
+      cacheCreate5mTokens: undefined,
+      baselineCacheCreateRate: undefined,
     });
+    expect(loss.savedInputEff).toBe(-9_100);
+    expect(loss.savedInputEff).toBeLessThan(0);
+  });
+
+  it('baseline-eff is non-negative and bounded by conservative 2x recreation', () => {
+    const result = account({
+      cacheCreate5mTokens: undefined,
+      baselineCacheCreateRate: undefined,
+    });
+    expect(result.baselineInputEff).toBeGreaterThanOrEqual(0);
+    expect(result.baselineInputEff).toBeLessThanOrEqual(30_000 * CACHE_CREATE_1H_RATE);
   });
 });
 
@@ -146,12 +209,13 @@ describe('Anthropic savings honesty (cache-create / cache-read aware)', () => {
 // RIGHT per-model figures, or the dashboard silently misprices a family.
 describe('per-model pricing is applied correctly (Fable vs Opus vs GPT)', () => {
   it('Anthropic cache multipliers are SHARED policy across Claude models (Fable AND Opus)', () => {
-    // 1.25× create / 0.1× read is Anthropic ephemeral-cache POLICY, identical for
-    // every Claude model — so the Anthropic baseline math is intentionally model-
+    // 1.25× five-minute create / 2× one-hour create / 0.1× read is Anthropic
+    // ephemeral-cache POLICY, identical for every Claude model — so the math is model-
     // independent. (Per-model TEXT token counts come from the real count_tokens
     // probe, NOT a static tokenizer — so Fable-vs-Opus tokenizer differences are
     // resolved upstream, not here.)
-    expect(CACHE_CREATE_RATE).toBe(1.25);
+    expect(CACHE_CREATE_5M_RATE).toBe(1.25);
+    expect(CACHE_CREATE_1H_RATE).toBe(2);
     expect(CACHE_READ_RATE).toBe(0.1);
   });
 

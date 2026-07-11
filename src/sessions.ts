@@ -30,8 +30,8 @@ import * as crypto from 'node:crypto';
 import * as readline from 'node:readline';
 import type { TrackEvent } from './core/tracker.js';
 import {
-  computeActualInputEff,
-  computeBaselineInputEff,
+  accountAnthropicInput,
+  CACHE_CREATE_1H_RATE,
   deriveBaselineWarmth,
 } from './core/baseline.js';
 
@@ -52,8 +52,8 @@ export interface SessionSummary {
    *  useful only as a rough "we shaved X kB off the wire" callout. Not
    *  load-bearing math; the real number is `tokensSavedEst`. */
   charsSaved: number;
-  /** Real input-side tokens saved: sum of `baseline_tokens − (input +
-   *  cache_create×1.25 + cache_read×0.10)` across events that carry both
+  /** Real input-side tokens saved: sum of the shared tier-aware counterfactual
+   *  minus actual input cost across transformed events that carry both
    *  a /v1/messages/count_tokens probe and an upstream usage block.
    *  Events missing either side contribute to requestCount but not here.
    *  No estimation — can go negative when a compression net-lost. */
@@ -180,52 +180,54 @@ export async function aggregateSessions(
     const inp = ev.input_tokens ?? 0;
     const cc = ev.cache_create_tokens ?? 0;
     const cr = ev.cache_read_tokens ?? 0;
-    const haveUsage = inp > 0 || cc > 0 || cr > 0;
+    const usagePresent =
+      typeof ev.input_tokens === 'number'
+      || typeof ev.output_tokens === 'number'
+      || typeof ev.cache_create_tokens === 'number'
+      || typeof ev.cache_read_tokens === 'number';
     const baseline = ev.baseline_tokens;
-    if (
-      typeof baseline === 'number' &&
-      baseline > 0 &&
-      haveUsage
-    ) {
-      const cacheable = ev.baseline_cacheable_tokens ?? 0;
-      // New rows carry the digest of pxpipe's exact vouched prefix. Older JSONL
-      // rows predate that field, so retain system_sha8 strictly as a historical
-      // compatibility fallback.
-      const prefixSha = ev.cache_prefix_sha8 ?? ev.system_sha8;
-      const completionSec = Date.parse(ev.ts) / 1000;
-      const requestStartSec = completionSec - Math.max(0, ev.duration_ms || 0) / 1000;
-      const prev = warmth.get(id);
-      // Warmth is cr-only; a completed same-prefix prior only refines the
-      // reused/grown split after cr>0 has proved warmth.
-      const { warm, prevCacheable } = deriveBaselineWarmth(
-        prev,
-        requestStartSec,
-        cacheable,
-        cr,
-        CACHE_TTL_SEC,
-        prefixSha,
-      );
-      const baselineEff = computeBaselineInputEff(
-        baseline,
-        cacheable,
-        inp,
-        cc,
-        cr,
-        warm,
-        prevCacheable,
-      );
-      const actualEff = computeActualInputEff(inp, cc, cr);
-      const tokensSaved = baselineEff - actualEff;
-      s.tokensSavedEst += Math.round(tokensSaved);
-      s.charsSaved += Math.round(tokensSaved * 4);
+    const cacheable = ev.baseline_cacheable_tokens ?? 0;
+    // New rows carry the digest of pxpipe's exact vouched prefix. Older JSONL
+    // rows predate that field, so retain system_sha8 strictly as a historical
+    // compatibility fallback.
+    const prefixSha = ev.cache_prefix_sha8 ?? ev.system_sha8;
+    const completionSec = Date.parse(ev.ts) / 1000;
+    const requestStartSec = completionSec - Math.max(0, ev.duration_ms || 0) / 1000;
+    const prev = warmth.get(id);
+    // Warmth is cr-only; a completed same-prefix prior only refines the
+    // reused/grown split after cr>0 has proved warmth.
+    const { warm, prevCacheable } = deriveBaselineWarmth(
+      prev,
+      requestStartSec,
+      cacheable,
+      cr,
+      CACHE_TTL_SEC,
+      prefixSha,
+    );
+    const accounting = accountAnthropicInput({
+      compressed: ev.compressed === true,
+      probeStatus: ev.baseline_probe_status,
+      usagePresent,
+      baselineTokens: baseline,
+      baselineCacheableTokens: cacheable,
+      inputTokens: inp,
+      cacheCreateTokens: cc,
+      cacheReadTokens: cr,
+      cacheCreate5mTokens: ev.cache_create_5m_tokens,
+      cacheCreate1hTokens: ev.cache_create_1h_tokens,
+      warm,
+      prevCacheable,
+      // TrackEvent has no unchanged-marker TTL yet; price unknown creation at 2x.
+      baselineCacheCreateRate:
+        ev.baseline_cache_create_rate ?? CACHE_CREATE_1H_RATE,
+    });
+    if (accounting.creditSaving) {
+      s.tokensSavedEst += Math.round(accounting.savedInputEff);
+      s.charsSaved += Math.round(accounting.savedInputEff * 4);
     }
     // Record this completed row's prefix size for future cr>0 split estimates.
     // Carry prior cacheable when this row had no probe.
-    if (haveUsage) {
-      const completionSec = Date.parse(ev.ts) / 1000;
-      const cacheable = ev.baseline_cacheable_tokens ?? 0;
-      const prefixSha = ev.cache_prefix_sha8 ?? ev.system_sha8;
-      const prev = warmth.get(id);
+    if (accounting.haveUsage) {
       const sameKnownPrefix =
         prefixSha !== undefined && prev?.prefixSha !== undefined && prefixSha === prev.prefixSha;
       warmth.set(id, {

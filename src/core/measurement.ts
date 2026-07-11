@@ -10,6 +10,8 @@ export interface CountTokensBodies {
   readonly cacheablePrefixBody: Uint8Array | null;
 }
 
+export type CallerCacheControlTier = 'none' | '5m' | '1h' | 'conservative_1h';
+
 /** Fields accepted by /v1/messages/count_tokens. Any other field returns 400 "Unknown parameter". */
 const COUNT_TOKENS_FIELDS = new Set([
   'model',
@@ -59,6 +61,65 @@ function hasCacheControl(x: unknown): boolean {
     && x !== null
     && (x as { cache_control?: unknown }).cache_control != null
   );
+}
+
+function cacheControlTier(x: unknown): Exclude<CallerCacheControlTier, 'none'> | null {
+  if (!hasCacheControl(x)) return null;
+  const cacheControl = (x as { cache_control?: unknown }).cache_control;
+  if (!cacheControl || typeof cacheControl !== 'object') return 'conservative_1h';
+  const ttl = (cacheControl as { ttl?: unknown }).ttl;
+  if (ttl === '5m') return '5m';
+  if (ttl === '1h') return '1h';
+  return 'conservative_1h';
+}
+
+/**
+ * Resolve the caller-owned breakpoint used by the cacheable-prefix probe.
+ * Search order intentionally matches buildCacheablePrefixCountTokensBody.
+ * Missing or unfamiliar TTLs are conservatively one-hour; no marker is exact.
+ */
+export function readCallerCacheControlTier(bytes: BytesLike): CallerCacheControlTier {
+  const b = toUint8Array(bytes);
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>;
+  } catch {
+    return 'none';
+  }
+
+  const messages = obj.messages;
+  if (Array.isArray(messages)) {
+    for (let mi = messages.length - 1; mi >= 0; mi--) {
+      const message = messages[mi];
+      if (!message || typeof message !== 'object') continue;
+      const content = (message as { content?: unknown }).content;
+      if (Array.isArray(content)) {
+        for (let bi = content.length - 1; bi >= 0; bi--) {
+          const tier = cacheControlTier(content[bi]);
+          if (tier) return tier;
+        }
+      }
+      const tier = cacheControlTier(message);
+      if (tier) return tier;
+    }
+  }
+
+  const system = obj.system;
+  if (Array.isArray(system)) {
+    for (let si = system.length - 1; si >= 0; si--) {
+      const tier = cacheControlTier(system[si]);
+      if (tier) return tier;
+    }
+  }
+
+  const tools = obj.tools;
+  if (Array.isArray(tools)) {
+    for (let ti = tools.length - 1; ti >= 0; ti--) {
+      const tier = cacheControlTier(tools[ti]);
+      if (tier) return tier;
+    }
+  }
+  return 'none';
 }
 
 /** Return tool_use ids with no matching tool_result. count_tokens rejects orphans;

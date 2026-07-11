@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { newSummary, fold, renderTextReport, summaryToJson } from '../src/stats.js';
 import type { TrackEvent } from '../src/core/tracker.js';
+import {
+  accountAnthropicInput,
+  CACHE_CREATE_1H_RATE,
+  CACHE_CREATE_5M_RATE,
+} from '../src/core/baseline.js';
 
 function ev(partial: Partial<TrackEvent>): TrackEvent {
   return {
@@ -111,6 +116,157 @@ describe('stats aggregator', () => {
     expect(s.outputTokensTotal).toBe(21);
     expect(s.cacheReadTokensTotal).toBe(10000);
     expect(s.cacheCreateTokensTotal).toBe(5000);
+  });
+
+  it('uses the shared signed accounting for 5m, 1h, unknown, negative, and excluded rows', () => {
+    const fixtures: Array<{
+      name: string;
+      row: Partial<TrackEvent>;
+      baselineRate?: 1.25 | 2;
+    }> = [
+      {
+        name: 'five-minute',
+        baselineRate: CACHE_CREATE_5M_RATE,
+        row: {
+          compressed: true,
+          baseline_probe_status: 'ok',
+          baseline_tokens: 10_000,
+          baseline_cacheable_tokens: 8_000,
+          input_tokens: 100,
+          cache_create_tokens: 1_000,
+          cache_create_5m_tokens: 1_000,
+          cache_create_1h_tokens: 0,
+          cache_read_tokens: 0,
+        },
+      },
+      {
+        name: 'one-hour',
+        baselineRate: CACHE_CREATE_1H_RATE,
+        row: {
+          compressed: true,
+          baseline_probe_status: 'ok',
+          baseline_tokens: 10_000,
+          baseline_cacheable_tokens: 8_000,
+          input_tokens: 100,
+          cache_create_tokens: 1_000,
+          cache_create_5m_tokens: 0,
+          cache_create_1h_tokens: 1_000,
+          cache_read_tokens: 0,
+        },
+      },
+      {
+        name: 'unknown split and marker tier',
+        row: {
+          compressed: true,
+          baseline_probe_status: 'ok',
+          baseline_tokens: 10_000,
+          baseline_cacheable_tokens: 8_000,
+          input_tokens: 100,
+          cache_create_tokens: 1_000,
+          cache_read_tokens: 0,
+        },
+      },
+      {
+        name: 'signed negative',
+        row: {
+          compressed: true,
+          baseline_probe_status: 'ok',
+          baseline_tokens: 3_000,
+          baseline_cacheable_tokens: 0,
+          input_tokens: 1_000,
+          cache_create_tokens: 2_000,
+          cache_create_1h_tokens: 2_000,
+          cache_read_tokens: 0,
+        },
+      },
+      {
+        name: 'passthrough',
+        row: {
+          compressed: false,
+          baseline_probe_status: 'ok',
+          baseline_tokens: 10_000,
+          baseline_cacheable_tokens: 8_000,
+          input_tokens: 100,
+          cache_create_tokens: 1_000,
+          cache_create_5m_tokens: 1_000,
+          cache_read_tokens: 0,
+        },
+      },
+      {
+        name: 'failed probes',
+        row: {
+          compressed: true,
+          baseline_probe_status: 'partial',
+          baseline_tokens: 10_000,
+          input_tokens: 100,
+          cache_create_tokens: 1_000,
+          cache_create_5m_tokens: 1_000,
+          cache_read_tokens: 0,
+        },
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      const row = ev({
+        first_user_sha8: `session-${fixture.name}`,
+        baseline_cache_create_rate: fixture.baselineRate,
+        ...fixture.row,
+      });
+      const expected = accountAnthropicInput({
+        compressed: row.compressed === true,
+        probeStatus: row.baseline_probe_status,
+        usagePresent:
+          typeof row.input_tokens === 'number'
+          || typeof row.output_tokens === 'number'
+          || typeof row.cache_create_tokens === 'number'
+          || typeof row.cache_read_tokens === 'number',
+        baselineTokens: row.baseline_tokens,
+        baselineCacheableTokens: row.baseline_cacheable_tokens ?? 0,
+        inputTokens: row.input_tokens ?? 0,
+        cacheCreateTokens: row.cache_create_tokens ?? 0,
+        cacheReadTokens: row.cache_read_tokens ?? 0,
+        cacheCreate5mTokens: row.cache_create_5m_tokens,
+        cacheCreate1hTokens: row.cache_create_1h_tokens,
+        warm: false,
+        prevCacheable: 0,
+        baselineCacheCreateRate: fixture.baselineRate ?? CACHE_CREATE_1H_RATE,
+      });
+      const summary = newSummary();
+      fold(summary, row);
+      expect(summary.actualInputEffTotal, fixture.name).toBe(expected.actualInputEff);
+      expect(summary.baselineInputEffTotal, fixture.name).toBe(expected.baselineInputEff);
+      expect(summary.savedInputEffTotal, fixture.name).toBe(expected.savedInputEff);
+      expect(summary.accountedInputEvents, fixture.name).toBe(1);
+      expect(summary.counterfactualInputEvents, fixture.name).toBe(
+        expected.creditSaving ? 1 : 0,
+      );
+      if (fixture.name === 'passthrough' || fixture.name === 'failed probes') {
+        expect(summary.savedInputEffTotal).toBe(0);
+      }
+    }
+  });
+
+  it('exposes the signed accounting totals in text and JSON', () => {
+    const s = newSummary();
+    fold(s, ev({
+      compressed: true,
+      baseline_probe_status: 'ok',
+      baseline_tokens: 3_000,
+      baseline_cacheable_tokens: 0,
+      input_tokens: 1_000,
+      cache_create_tokens: 2_000,
+      cache_create_1h_tokens: 2_000,
+      cache_read_tokens: 0,
+    }));
+    expect(s.savedInputEffTotal).toBeLessThan(0);
+    expect(renderTextReport(s)).toContain('signed saved:');
+    expect(summaryToJson(s)).toMatchObject({
+      actualInputEffTotal: s.actualInputEffTotal,
+      baselineInputEffTotal: s.baselineInputEffTotal,
+      savedInputEffTotal: s.savedInputEffTotal,
+      accountedInputEvents: 1,
+      counterfactualInputEvents: 1,
+    });
   });
 
   it('buckets by cwd and tracks system_sha8 reuse', () => {

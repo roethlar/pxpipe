@@ -123,6 +123,73 @@ describe('toTrackEvent', () => {
     expect(out.web_search_requests).toBeUndefined();
   });
 
+  it('persists strict four-probe admission evidence, including known-zero prefixes', () => {
+    const out = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 100,
+      info: {
+        compressed: true,
+        origChars: 8_000,
+        compressedChars: 8_000,
+        imageCount: 1,
+        imageBytes: 500,
+        staticChars: 0,
+        dynamicChars: 0,
+        dynamicBlockCount: 0,
+        baselineTokens: 10_000,
+        baselineCacheableTokens: 0,
+        candidateTokens: 5_000,
+        candidateCacheableTokens: 0,
+        baselineProbeStatus: 'ok',
+        admissionReason: 'admitted',
+        admissionCacheTier: '5m',
+        baselineCacheCreateRate: 1.25,
+        admissionOriginalEffectiveTokens: 10_000,
+        admissionCandidateEffectiveTokens: 5_000,
+        admissionSignedSavingsTokens: 5_000,
+        admissionRelativeSavings: 0.5,
+        admissionFingerprint: '0123456789abcdef0123456789abcdef',
+      },
+    });
+
+    expect(out).toMatchObject({
+      baseline_tokens: 10_000,
+      baseline_cacheable_tokens: 0,
+      candidate_tokens: 5_000,
+      candidate_cacheable_tokens: 0,
+      baseline_probe_status: 'ok',
+      admission_reason: 'admitted',
+      admission_cache_tier: '5m',
+      baseline_cache_create_rate: 1.25,
+      admission_original_effective_tokens: 10_000,
+      admission_candidate_effective_tokens: 5_000,
+      admission_signed_savings_tokens: 5_000,
+      admission_relative_savings: 0.5,
+      admission_fingerprint: '0123456789abcdef0123456789abcdef',
+    });
+  });
+
+  it('does not turn an unresolved zero prefix into measured evidence', () => {
+    const out = toTrackEvent({
+      method: 'POST',
+      path: '/v1/messages',
+      status: 200,
+      durationMs: 100,
+      info: {
+        compressed: false,
+        origChars: 0,
+        baselineCacheableTokens: 0,
+        candidateCacheableTokens: 0,
+        baselineProbeStatus: 'partial',
+      },
+    });
+    expect(out.baseline_cacheable_tokens).toBeUndefined();
+    expect(out.candidate_cacheable_tokens).toBeUndefined();
+    expect(out.baseline_probe_status).toBe('partial');
+  });
+
   it('surfaces bucket_chars and history_text_chars when present', () => {
     // Phase 1 of Task #18: per-block char attribution by content shape.
     // The rolling cpt regression in tests/proxy-usage.test.ts and the

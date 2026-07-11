@@ -6,7 +6,7 @@ import {
   TOOL_REFERENCE_MANIFEST_TAG,
   sha8,
   toolReferenceBoundaryRef,
-  transformRequest,
+  buildAnthropicCandidate as transformRequest,
 } from '../src/core/transform.js';
 import type {
   ContentBlock,

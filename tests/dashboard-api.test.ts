@@ -500,7 +500,16 @@ describe('server-observed warmth: text follows actual cache_read', () => {
     systemSha8 = 'stable-system',
     cachePrefixSha8?: string,
     historyImageSha?: string,
+    cacheTier: '5m' | '1h' | 'unknown' = '5m',
   ): unknown {
+    const createTokens = usage.cache_creation_input_tokens;
+    const cacheCreation = createTokens > 0 && cacheTier !== 'unknown'
+      ? {
+          cache_creation: cacheTier === '5m'
+            ? { ephemeral_5m_input_tokens: createTokens }
+            : { ephemeral_1h_input_tokens: createTokens },
+        }
+      : {};
     return {
       ts: '2026-05-19T00:00:00Z',
       method: 'POST',
@@ -508,7 +517,7 @@ describe('server-observed warmth: text follows actual cache_read', () => {
       model: 'claude-opus-4',
       status: 200,
       duration_ms: 100,
-      usage,
+      usage: { ...usage, ...cacheCreation },
       info: {
         compressed: true,
         firstUserSha8: sid,
@@ -518,9 +527,61 @@ describe('server-observed warmth: text follows actual cache_read', () => {
         baselineProbeStatus: 'ok',
         baselineTokens: 30000, // text counterfactual: full prefix + tail
         baselineCacheableTokens: cacheable, // prefix up to the cache_control marker
+        ...(cacheTier === 'unknown'
+          ? {}
+          : { baselineCacheCreateRate: cacheTier === '5m' ? 1.25 : 2 }),
       },
     };
   }
+
+  it('credits only compressed rows with an explicit complete probe status', async () => {
+    const make = (sid: string) => antEvt(
+      {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 2_000,
+        cache_read_input_tokens: 20_000,
+      },
+      22_000,
+      sid,
+    ) as { info: { compressed: boolean; baselineProbeStatus?: 'ok' | 'partial' } };
+    const passthrough = make('strict-passthrough');
+    passthrough.info.compressed = false;
+    const partial = make('strict-partial');
+    partial.info.baselineProbeStatus = 'partial';
+    const missing = make('strict-missing');
+    delete missing.info.baselineProbeStatus;
+
+    dash.update(passthrough as never);
+    dash.update(partial as never);
+    dash.update(missing as never);
+
+    const recent = (await dash.serveRecent().json()) as RecentPayload;
+    expect(recent.recent).toHaveLength(3);
+    for (const row of recent.recent) {
+      expect(row.session_saved_so_far_delta).toBeUndefined();
+      expect(row.baseline_input).toBeUndefined();
+    }
+    const stats = (await dash.serveStats().json()) as StatsPayload;
+    expect(stats.saved_input_tokens).toBe(0);
+  });
+
+  it('prices five-minute creation at 1.25x and one-hour or unknown creation at 2x', async () => {
+    const usage = {
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_creation_input_tokens: 20_000,
+      cache_read_input_tokens: 0,
+    };
+    dash.update(antEvt(usage, 20_000, 'tier-5m', 'stable', undefined, undefined, '5m') as never);
+    dash.update(antEvt(usage, 20_000, 'tier-1h', 'stable', undefined, undefined, '1h') as never);
+    dash.update(antEvt(usage, 20_000, 'tier-unknown', 'stable', undefined, undefined, 'unknown') as never);
+
+    const rows = ((await dash.serveRecent().json()) as RecentPayload).recent;
+    expect(rows.map((row) => row.actual_input)).toEqual([25_100, 40_100, 40_100]);
+    expect(rows.map((row) => row.baseline_input)).toEqual([35_000, 50_000, 50_000]);
+    expect(rows.map((row) => row.session_saved_so_far_delta)).toEqual([9_900, 9_900, 9_900]);
+  });
 
   it('prices text cold when the actual image request has cache_read=0', async () => {
     // Turn 1 records a prior prefix size, but it must not make a later cr=0 row
@@ -728,11 +789,13 @@ describe('server-observed warmth: text follows actual cache_read', () => {
         system_sha8: 'old-system',
         history_image_sha8: 'stable-history',
         baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 20_000,
         input_tokens: 100,
         output_tokens: 50,
         cache_create_tokens: 20_000,
+        cache_create_5m_tokens: 20_000,
         cache_read_tokens: 0,
       }),
       ev({
@@ -742,11 +805,13 @@ describe('server-observed warmth: text follows actual cache_read', () => {
         system_sha8: 'new-system',
         history_image_sha8: 'stable-history',
         baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 22_000,
         input_tokens: 100,
         output_tokens: 50,
         cache_create_tokens: 2_000,
+        cache_create_5m_tokens: 2_000,
         cache_read_tokens: 20_000,
       }),
     ]);
@@ -767,11 +832,13 @@ describe('server-observed warmth: text follows actual cache_read', () => {
         first_user_sha8: 'overlap',
         system_sha8: 'stable-system',
         baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 30_000,
         baseline_cacheable_tokens: 20_000,
         input_tokens: 100,
         output_tokens: 50,
         cache_create_tokens: 20_000,
+        cache_create_5m_tokens: 20_000,
         cache_read_tokens: 0,
       }),
       ev({
@@ -784,11 +851,13 @@ describe('server-observed warmth: text follows actual cache_read', () => {
         first_user_sha8: 'overlap',
         system_sha8: 'stable-system',
         baseline_probe_status: 'ok',
+        baseline_cache_create_rate: 1.25,
         baseline_tokens: 32_000,
         baseline_cacheable_tokens: 22_000,
         input_tokens: 100,
         output_tokens: 50,
         cache_create_tokens: 2_000,
+        cache_create_5m_tokens: 2_000,
         cache_read_tokens: 20_000,
       }),
     ]);

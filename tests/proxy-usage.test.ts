@@ -1,5 +1,15 @@
 import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { createProxy, type ProxyEvent } from '../src/core/proxy.js';
+import {
+  buildAnthropicCandidate,
+  PROJECT_GUIDANCE_MANIFEST_TAG,
+  RUNTIME_CONTEXT_LABEL,
+  RUNTIME_CONTEXT_MANIFEST_TAG,
+} from '../src/core/transform.js';
+import {
+  DIRECT_PROJECT_GUIDANCE,
+  makeCapturedRequest,
+} from './fixtures/anthropic-context.js';
 
 // These proxy-contract tests deliberately exercise the opt-in Sol transform.
 // Snapshot the developer shell so the suite is deterministic now that Sol is
@@ -85,17 +95,43 @@ describe('proxy usage extraction', () => {
     expect(captured!.firstByteMs).toBeTypeOf('number');
   });
 
-  it('transforms OpenCode /anthropic/messages (no /v1) and records the model', async () => {
+  it('rejects the legacy runtime-tail/manifest candidate byte-exact before count_tokens', async () => {
+    const capturedRequest = makeCapturedRequest({
+      projectGuidance:
+        DIRECT_PROJECT_GUIDANCE + '\n' +
+        'Role-bound project guidance row. '.repeat(100),
+      email: 'owner@example.invalid',
+      date: '2026-07-10',
+    });
+    capturedRequest.model = 'claude-fable-5';
+    capturedRequest.max_tokens = 1;
+    const reqBody = JSON.stringify(capturedRequest);
+    const reqBytes = new TextEncoder().encode(reqBody);
+    const transform = { charsPerToken: 1, minCompressChars: 1 };
+
+    // Lock this regression to the shipped unsafe candidate: it moves runtime
+    // facts into a generated user tail and adds privileged manifests.
+    const legacyCandidate = await buildAnthropicCandidate(reqBytes, transform);
+    const candidateText = new TextDecoder().decode(legacyCandidate.body);
+    const candidateRequest = JSON.parse(candidateText) as {
+      system?: Array<{ text?: string }>;
+    };
+    const candidateSystem = (candidateRequest.system ?? [])
+      .map((block) => block.text ?? '')
+      .join('\n');
+    expect(legacyCandidate.info.compressed).toBe(true);
+    expect(candidateSystem).toContain(`<${PROJECT_GUIDANCE_MANIFEST_TAG} version="1">`);
+    expect(candidateSystem).toContain(`<${RUNTIME_CONTEXT_MANIFEST_TAG} version="1">`);
+    expect(candidateText).toContain(RUNTIME_CONTEXT_LABEL);
+
     const upstreamRequests: Request[] = [];
+    let countTokenCalls = 0;
     const restore = mockUpstream(async (req) => {
-      upstreamRequests.push(req.clone());
-      const url = req.url;
-      if (url.endsWith('/count_tokens')) {
-        return new Response(JSON.stringify({ input_tokens: 9000 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
+      if (req.url.endsWith('/count_tokens')) {
+        countTokenCalls += 1;
+        throw new Error('count_tokens must not run before contract validation');
       }
+      upstreamRequests.push(req.clone());
       return new Response(
         JSON.stringify({
           id: 'msg_1',
@@ -112,24 +148,10 @@ describe('proxy usage extraction', () => {
     const proxy = createProxy({
       upstream: 'http://ocproxy.test',
       apiKey: 'sk-anthropic-test',
-      transform: { charsPerToken: 1, minCompressChars: 1 },
+      transform,
       onRequest: (e) => {
         captured = e;
       },
-    });
-
-    const reqBody = JSON.stringify({
-      model: 'claude-fable-5',
-      max_tokens: 1,
-      system: 'System instruction. '.repeat(900),
-      messages: [{
-        role: 'user',
-        content: [{
-          type: 'tool_result',
-          tool_use_id: 'toolu_opencode_fixture',
-          content: 'OpenCode tool output row. '.repeat(6000),
-        }],
-      }],
     });
 
     const res = await proxy(
@@ -145,12 +167,17 @@ describe('proxy usage extraction', () => {
 
     const main = upstreamRequests.find((r) => r.url === 'http://ocproxy.test/anthropic/messages');
     expect(main).toBeDefined();
+    expect(new Uint8Array(await main!.arrayBuffer())).toEqual(reqBytes);
+    expect(countTokenCalls).toBe(0);
     expect(captured?.model).toBe('claude-fable-5');
-    expect(captured?.info?.compressed).toBe(true);
-    // count_tokens probe mirrors the request path under the same prefix.
-    expect(
-      upstreamRequests.some((r) => r.url === 'http://ocproxy.test/anthropic/messages/count_tokens'),
-    ).toBe(true);
+    expect(captured?.info?.compressed).toBe(false);
+    expect(captured?.info?.reason).toBe('candidate_contract_invalid');
+    expect(captured?.info?.admissionReason).toBe('candidate_contract_invalid');
+    expect(captured?.info?.baselineProbeStatus).toBeUndefined();
+    expect(captured?.info?.baselineTokens).toBeUndefined();
+    expect(captured?.info?.candidateTokens).toBeUndefined();
+    expect(captured?.info?.admissionSignedSavingsTokens).toBeUndefined();
+    expect(captured?.info?.admissionRelativeSavings).toBeUndefined();
   });
 
   it('routes GPT 5.6 Sol chat completions to OpenAI, transforms once, and normalizes usage', async () => {
@@ -686,171 +713,35 @@ describe('proxy usage extraction', () => {
     expect(captures[0]!.reqBodySha8).toBe(captures[1]!.reqBodySha8);
   });
 
-  // The proxy makes ONE parallel side call: /v1/messages/count_tokens on
-  // the PRE-COMPRESSION body. That number lands on the dashboard as the
-  // baseline against which we measure savings. count_tokens is free
-  // (no billing) and is the only side path we whitelist — any other
-  // endpoint would be an unexpected leak.
-  it('calls /v1/messages/count_tokens (baseline probe) and no other side endpoints', async () => {
-    const sidePaths: string[] = [];
-    const restore = mockUpstream((req) => {
-      const url = new URL(req.url);
-      if (url.pathname !== '/v1/messages') sidePaths.push(url.pathname);
-      // count_tokens response shape: { input_tokens: number }
-      if (url.pathname === '/v1/messages/count_tokens') {
-        return new Response(JSON.stringify({ input_tokens: 123 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(
-        JSON.stringify({
-          id: 'msg_x',
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'text', text: 'ok' }],
-          model: 'claude-opus-4-5',
-          stop_reason: 'end_turn',
-          usage: { input_tokens: 1, output_tokens: 1 },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
+  it('keeps a caller-cached native request byte-exact without probes or savings evidence', async () => {
+    const bodyWithMarkers = JSON.stringify({
+      model: 'claude-fable-5',
+      max_tokens: 16,
+      system: [
+        {
+          type: 'text',
+          text: 'native caller-owned cache boundary',
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+      messages: [{ role: 'user', content: 'hi' }],
     });
-
-    const proxy = createProxy({ upstream: 'http://mock', onRequest: () => {} });
-    const res = await proxy(
-      new Request('http://proxy/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: SAMPLE_REQ_BODY,
-      }),
-    );
-    await res.text();
-    await new Promise((r) => setTimeout(r, 20));
-    restore();
-
-    // No cache_control markers in SAMPLE_REQ_BODY → second probe is skipped.
-    // count_tokens hit exactly once, no other side paths.
-    expect(sidePaths).toEqual(['/v1/messages/count_tokens']);
-  });
-
-  // When the request body carries any `cache_control` marker, the proxy
-  // fires a SECOND count_tokens probe on the body truncated at the last
-  // marker. The difference between the two probe results is the
-  // cacheable-prefix vs cold-tail split that lets the dashboard compute
-  // a cache-aware baseline instead of a cold-every-time approximation.
-  it('fires a SECOND count_tokens probe when body has cache_control markers', async () => {
-    const bodiesSeen: string[] = [];
+    const mainBodies: string[] = [];
+    let probeCalls = 0;
     const restore = mockUpstream(async (req) => {
       const url = new URL(req.url);
       if (url.pathname === '/v1/messages/count_tokens') {
-        bodiesSeen.push(await req.text());
-        // Full body returns N; truncated returns M < N. The proxy doesn't
-        // care which response goes to which probe — it just attaches both.
-        const len = bodiesSeen.length;
-        return new Response(
-          JSON.stringify({ input_tokens: len === 1 ? 9000 : 6000 }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
+        probeCalls += 1;
+        throw new Error('native requests must not call count_tokens');
       }
+      mainBodies.push(await req.clone().text());
       return new Response(
         JSON.stringify({
           id: 'msg_x',
           type: 'message',
           role: 'assistant',
           content: [{ type: 'text', text: 'ok' }],
-          model: 'claude-opus-4-5',
-          stop_reason: 'end_turn',
-          usage: {
-            input_tokens: 1,
-            output_tokens: 1,
-            cache_creation_input_tokens: 5000,
-            cache_read_input_tokens: 0,
-          },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-
-    // Realistic shape: a long system prompt cached, then the user turn left
-    // uncacheable. Marker lives on the LAST system block — that's the
-    // canonical "cache everything above this line" layout Claude Code uses.
-    const bodyWithMarkers = JSON.stringify({
-      model: 'claude-3-5-haiku-latest',
-      system: [
-        { type: 'text', text: 'You are helpful.' },
-        {
-          type: 'text',
-          text: 'A long preamble...',
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      messages: [{ role: 'user', content: 'hi' }],
-    });
-
-    let captured: ProxyEvent | undefined;
-    const proxy = createProxy({
-      upstream: 'http://mock',
-      onRequest: (e) => { captured = e; },
-    });
-    const res = await proxy(
-      new Request('http://proxy/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: bodyWithMarkers,
-      }),
-    );
-    await res.text();
-    await new Promise((r) => setTimeout(r, 30));
-    restore();
-
-    // Two probes fired (parallel, order indeterminate). At least one of the
-    // posted bodies must DIFFER from the other — the second probe is the
-    // truncated prefix, not a duplicate of the first.
-    expect(bodiesSeen).toHaveLength(2);
-    expect(bodiesSeen[0]).not.toBe(bodiesSeen[1]);
-
-    // Both numbers landed on info; baselineCacheableTokens is the smaller one
-    // (truncated body has fewer tokens than the full body). Whichever probe
-    // got the 9000 response is `baselineTokens`; the 6000 is `baselineCacheableTokens`.
-    expect(captured!.info?.baselineTokens).toBeDefined();
-    expect(captured!.info?.baselineCacheableTokens).toBeDefined();
-    const full = captured!.info!.baselineTokens!;
-    const cacheable = captured!.info!.baselineCacheableTokens!;
-    expect(new Set([full, cacheable])).toEqual(new Set([9000, 6000]));
-  });
-
-  // The two probes are independent. If the cacheable-prefix probe 4xx's
-  // (e.g. upstream rejects the synthesized sentinel message), the main
-  // forward succeeds and the FULL probe's baseline still lands. The
-  // dashboard's per-event math degrades cleanly to cold_tail = baseline.
-  it('survives cacheable-prefix probe failure without losing the full-body baseline', async () => {
-    let probeCount = 0;
-    const restore = mockUpstream((req) => {
-      const url = new URL(req.url);
-      if (url.pathname === '/v1/messages/count_tokens') {
-        probeCount += 1;
-        // First probe (full body) succeeds; second (truncated) fails.
-        // The proxy fires them in parallel so order matters — assume the
-        // longer body arrives first because it's queued first.
-        if (probeCount === 1) {
-          return new Response(JSON.stringify({ input_tokens: 7777 }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-        return new Response(JSON.stringify({ error: 'bad' }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(
-        JSON.stringify({
-          id: 'msg_x',
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'text', text: 'ok' }],
-          model: 'claude-opus-4-5',
+          model: 'claude-fable-5',
           stop_reason: 'end_turn',
           usage: { input_tokens: 1, output_tokens: 1 },
         }),
@@ -858,22 +749,11 @@ describe('proxy usage extraction', () => {
       );
     });
 
-    const bodyWithMarkers = JSON.stringify({
-      model: 'claude-3-5-haiku-latest',
-      system: [
-        {
-          type: 'text',
-          text: 'preamble',
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      messages: [{ role: 'user', content: 'hi' }],
-    });
-
     let captured: ProxyEvent | undefined;
     const proxy = createProxy({
       upstream: 'http://mock',
-      onRequest: (e) => { captured = e; },
+      transform: {},
+      onRequest: (event) => { captured = event; },
     });
     const res = await proxy(
       new Request('http://proxy/v1/messages', {
@@ -884,111 +764,19 @@ describe('proxy usage extraction', () => {
     );
     expect(res.status).toBe(200);
     await res.text();
-    await new Promise((r) => setTimeout(r, 30));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     restore();
 
-    expect(probeCount).toBe(2);
-    // Whichever probe got the success response must have landed. Both
-    // succeed → both land. One fails → only the other lands. The contract
-    // we care about: ONE failure doesn't poison the OTHER.
-    // Probe order is parallel + non-deterministic in mock-fetch land,
-    // so just assert that at least one of the two baseline fields is set.
-    const haveFull = captured!.info?.baselineTokens !== undefined;
-    const haveCacheable = captured!.info?.baselineCacheableTokens !== undefined;
-    expect(haveFull || haveCacheable).toBe(true);
-  });
-
-  // baselineTokens from the count_tokens probe must land on info so the
-  // dashboard can roll it into the saved% denominator. This is the wiring
-  // that makes the headline number real instead of estimated.
-  it('attaches baselineTokens from count_tokens probe to info', async () => {
-    const restore = mockUpstream((req) => {
-      const url = new URL(req.url);
-      if (url.pathname === '/v1/messages/count_tokens') {
-        return new Response(JSON.stringify({ input_tokens: 4242 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(
-        JSON.stringify({
-          id: 'msg_x',
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'text', text: 'ok' }],
-          model: 'claude-opus-4-5',
-          stop_reason: 'end_turn',
-          usage: { input_tokens: 1, output_tokens: 1 },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    let captured: ProxyEvent | undefined;
-    const proxy = createProxy({
-      upstream: 'http://mock',
-      onRequest: (e) => { captured = e; },
-    });
-    const res = await proxy(
-      new Request('http://proxy/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: SAMPLE_REQ_BODY,
-      }),
-    );
-    await res.text();
-    await new Promise((r) => setTimeout(r, 20));
-    restore();
-
-    expect(captured).toBeDefined();
-    expect(captured!.info?.baselineTokens).toBe(4242);
-  });
-
-  // count_tokens is best-effort. If the probe 4xx's (e.g. upstream rejects
-  // a malformed model field, or the field-whitelist drops something the
-  // user added), the main /v1/messages forward must still succeed and the
-  // dashboard event just won't carry a baselineTokens. No exception thrown
-  // to the caller.
-  it('survives count_tokens failure without breaking /v1/messages', async () => {
-    const restore = mockUpstream((req) => {
-      const url = new URL(req.url);
-      if (url.pathname === '/v1/messages/count_tokens') {
-        return new Response(JSON.stringify({ error: 'bad model' }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(
-        JSON.stringify({
-          id: 'msg_x',
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'text', text: 'ok' }],
-          model: 'claude-opus-4-5',
-          stop_reason: 'end_turn',
-          usage: { input_tokens: 1, output_tokens: 1 },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    let captured: ProxyEvent | undefined;
-    const proxy = createProxy({
-      upstream: 'http://mock',
-      onRequest: (e) => { captured = e; },
-    });
-    const res = await proxy(
-      new Request('http://proxy/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: SAMPLE_REQ_BODY,
-      }),
-    );
-    expect(res.status).toBe(200);
-    await res.text();
-    await new Promise((r) => setTimeout(r, 20));
-    restore();
-
-    expect(captured).toBeDefined();
-    expect(captured!.info?.baselineTokens).toBeUndefined();
+    expect(probeCalls).toBe(0);
+    expect(mainBodies).toEqual([bodyWithMarkers]);
+    expect(captured?.info?.compressed).toBe(false);
+    expect(captured?.info?.baselineProbeStatus).toBeUndefined();
+    expect(captured?.info?.baselineTokens).toBeUndefined();
+    expect(captured?.info?.baselineCacheableTokens).toBeUndefined();
+    expect(captured?.info?.candidateTokens).toBeUndefined();
+    expect(captured?.info?.candidateCacheableTokens).toBeUndefined();
+    expect(captured?.info?.admissionSignedSavingsTokens).toBeUndefined();
+    expect(captured?.info?.admissionRelativeSavings).toBeUndefined();
   });
 
   // ---- Ground-truth output measurement (Task #22) ----------------------

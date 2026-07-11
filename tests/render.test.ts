@@ -20,7 +20,7 @@ import {
 } from '../src/core/render.js';
 import { encodeGrayPng, bytesToBase64 } from '../src/core/png.js';
 import {
-  transformRequest,
+  buildAnthropicCandidate as transformRequest,
   isCompressionProfitable,
   maxCharsPerImage,
   estimateImageCount,

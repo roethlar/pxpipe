@@ -33,8 +33,8 @@ import * as readline from 'node:readline';
 import type { ProxyEvent } from './core/proxy.js';
 import type { TrackEvent } from './core/tracker.js';
 import {
-  computeActualInputEff,
-  computeBaselineInputEff,
+  accountAnthropicInput,
+  CACHE_CREATE_1H_RATE,
   deriveBaselineWarmth,
 } from './core/baseline.js';
 import {
@@ -110,7 +110,7 @@ interface ImageEntry {
  *  this lives in memory and gets serialized on every poll.
  *
  *  The "input" numbers (`actual_input`, `baseline_input`) are input-side
- *  only — input + cache_create×1.25 + cache_read×0.10 — because that's
+ *  only — input + tier-priced cache creation + cache_read×0.10 — because that's
  *  the slice the proxy can move. `output_tokens` is reported separately so
  *  the operator can see what fraction of the bill is unaffected by
  *  compression (and decide whether the headline % makes sense for their
@@ -130,8 +130,10 @@ export interface RecentRow {
    *  turn moves the headline less than a cache-create-heavy one. */
   output_tokens?: number;
   cache_create?: number;
+  cache_create_5m?: number;
+  cache_create_1h?: number;
   cache_read?: number;
-  /** input + cache_create×1.25 + cache_read×0.10, from the upstream usage
+  /** input + tier-priced cache creation + cache_read×0.10, from the upstream usage
    *  block. Missing when the request 4xx'd or wasn't /v1/messages. */
   actual_input?: number;
   /** /v1/messages/count_tokens(originalBody).input_tokens. Missing when the
@@ -166,10 +168,11 @@ export interface RecentRow {
  *      cache_read>0 ⇒ a warm cache existed for both paths; cache_read===0 ⇒ cold
  *      for both, so text re-creates its prefix too (no phantom warm read on a
  *      cold turn — that would fabricate a loss out of a real token win):
- *        warm:  baseline_input_eff = reused×0.10 + grown×1.25 + cold_tail×1.0
+ *        warm:  baseline_input_eff = reused×0.10 + grown×create_rate + cold_tail×1.0
  *               where reused = min(prevCacheable, cacheable), grown = cacheable − reused
- *        cold:  baseline_input_eff = cacheable×1.25 + cold_tail×1.0
- *      actual_input_eff   = input + cache_create×1.25 + cache_read×0.10
+ *        cold:  baseline_input_eff = cacheable×create_rate + cold_tail×1.0
+ *      actual_input_eff   = input + cache_create_5m×1.25 + cache_create_1h×2.0
+ *                           + unknown_cache_create×2.0 + cache_read×0.10
  *      output_equiv       = output × 5                (input-token-equivalent at the 5× output rate)
  *      saved              = baseline_input_eff − actual_input_eff
  *      baseline_total     = baseline_input_eff + output_equiv
@@ -227,7 +230,7 @@ interface Totals {
   requests: number;
   compressedRequests: number;
   /** Sum of weighted actual input tokens we paid for, across all events that
-   *  also carried a baseline_tokens measurement (input + cache_create×1.25 +
+   *  also carried a baseline_tokens measurement (input + tier-priced cache creation +
    *  cache_read×0.10). */
   actualInputWeighted: number;
   /** Sum of the cache-aware baseline (see formula above) across the same
@@ -325,7 +328,7 @@ const OUTPUT_TOKEN_RATE = 5.0;
  *  Source: https://docs.claude.com/en/docs/about-claude/pricing — Opus 4.7
  *  input is $5/Mtok (same as Opus 4.5 / 4.6; the previous "$2.50" value
  *  here was a regression). Cache-write 5m = $6.25/Mtok (1.25×),
- *  cache-read = $0.50/Mtok (0.10×).
+ *  cache-write 1h = $10/Mtok (2×), cache-read = $0.50/Mtok (0.10×).
  *
  *  This is exposed on /proxy-stats as `pricing_assumptions.input_per_mtok`
  *  so the operator can see what we assumed and override if they're
@@ -611,39 +614,7 @@ export class DashboardState {
       // GPT's prefix discount is automatic: cached_tokens>0 ⇒ it read warm.
       warmForRow = (u?.cached_tokens ?? 0) > 0;
     } else {
-      haveUsage = u !== undefined && (inp > 0 || out > 0 || cc > 0 || cr > 0);
       const baseline = info?.baselineTokens;
-
-      // Honest gating: only attribute savings when BOTH baseline probes
-      // resolved (status === 'ok'). When the cacheable-prefix probe failed
-      // (status === 'partial') we previously fell through to cacheable=0,
-      // which silently charges the unproxied counterfactual the cold-input
-      // rate on tokens that actually would have been cache-discounted —
-      // fabricating "$ saved". Excluding the row is the only honest move
-      // until the probe succeeds.
-      const probeOk = info?.baselineProbeStatus === 'ok'
-        // Back-compat: hosts that haven't adopted baselineProbeStatus yet
-        // still see fields land; we accept legacy rows where the full-body
-        // probe resolved AND (either no markers existed OR cacheable did too).
-        || (info?.baselineProbeStatus === undefined && baseline !== undefined && baseline > 0);
-      haveBaseline = typeof baseline === 'number' && baseline > 0 && probeOk;
-
-      // Weighted INPUT cost we actually paid this turn.
-      actualInputEff = haveUsage ? computeActualInputEff(inp, cc, cr) : 0;
-
-      // pxpipe only reduces input by imaging the static slab. An UNCOMPRESSED
-      // row had its body forwarded untouched, so its unproxied counterfactual
-      // IS exactly what it paid — crediting the cache-modeled baseline there
-      // (which prices the prefix at the cache-READ rate) fabricates savings on
-      // passthrough traffic. Only credit the counterfactual when the row was
-      // actually compressed AND we have a usable probe.
-      creditSaving = haveBaseline && haveUsage && compressed;
-
-      // Cache-aware, server-observed baseline. INVARIANT: pxpipe is credited ONLY
-      // for the text it imaged away — NEVER for caching. The imagined text path
-      // gets the same observed cache state as the actual request: cr>0 means warm
-      // for both, cr===0 means cold for both. No wall-clock-only inference.
-      // Uncompressed rows fall back to actualInputEff → zero savings.
       const cacheable = info?.baselineCacheableTokens ?? 0;
       // If cr>0 proved warmth, a completed prior with the same prefix refines the
       // reused/grown split for the text baseline. Use request start for that
@@ -669,17 +640,31 @@ export class DashboardState {
         DashboardState.CACHE_TTL_SEC,
         prefixShaNow,
       );
-      baselineInputEff = creditSaving
-        ? computeBaselineInputEff(
-            baseline as number,
-            cacheable,
-            inp,
-            cc,
-            cr,
-            warm,
-            prevCacheable,
-          )
-        : actualInputEff;
+      const accounting = accountAnthropicInput({
+        compressed,
+        probeStatus: info?.baselineProbeStatus,
+        usagePresent:
+          typeof u?.input_tokens === 'number'
+          || typeof u?.output_tokens === 'number'
+          || typeof u?.cache_creation_input_tokens === 'number'
+          || typeof u?.cache_read_input_tokens === 'number',
+        baselineTokens: baseline,
+        baselineCacheableTokens: cacheable,
+        inputTokens: inp,
+        cacheCreateTokens: cc,
+        cacheReadTokens: cr,
+        cacheCreate5mTokens: u?.cache_creation?.ephemeral_5m_input_tokens,
+        cacheCreate1hTokens: u?.cache_creation?.ephemeral_1h_input_tokens,
+        warm,
+        prevCacheable,
+        baselineCacheCreateRate:
+          info?.baselineCacheCreateRate ?? CACHE_CREATE_1H_RATE,
+      });
+      haveUsage = accounting.haveUsage;
+      haveBaseline = accounting.haveBaseline;
+      creditSaving = accounting.creditSaving;
+      actualInputEff = accounting.actualInputEff;
+      baselineInputEff = accounting.baselineInputEff;
       // Record this completed turn's prefix size for future cr>0 split estimates.
       // Carry the prior cacheable when this row has no probe.
       if (typeof sidNow === 'string' && sidNow.length > 0 && haveUsage) {
@@ -872,6 +857,12 @@ export class DashboardState {
       input_tokens: haveUsage ? inp : undefined,
       output_tokens: haveUsage ? out : undefined,
       cache_create: haveUsage ? cc : undefined,
+      cache_create_5m: haveUsage
+        ? u?.cache_creation?.ephemeral_5m_input_tokens
+        : undefined,
+      cache_create_1h: haveUsage
+        ? u?.cache_creation?.ephemeral_1h_input_tokens
+        : undefined,
       cache_read: haveUsage ? cacheReadForRow : undefined,
       actual_input: haveUsage ? round1(actualInputEff) : undefined,
       baseline_input: creditSaving ? round1(baselineInputEff) : undefined,
@@ -952,21 +943,8 @@ export class DashboardState {
         cacheReadForRow = (t as { cached_tokens?: number }).cached_tokens ?? 0;
         warmForRow = ((t as { cached_tokens?: number }).cached_tokens ?? 0) > 0;
       } else {
-        haveUsage = inp > 0 || out > 0 || cc > 0 || cr > 0;
-        const baseline = (t as { baseline_tokens?: number }).baseline_tokens;
-        const cacheable = (t as { baseline_cacheable_tokens?: number })
-          .baseline_cacheable_tokens ?? 0;
-        const probeStatus = (t as { baseline_probe_status?: string }).baseline_probe_status;
-        // Same gating rule as update(): require an explicit 'ok' status when
-        // present; fall back to "have a baseline number" for legacy JSONL.
-        const probeOk = probeStatus === 'ok'
-          || (probeStatus === undefined && typeof baseline === 'number' && baseline > 0);
-        haveBaseline = typeof baseline === 'number' && baseline > 0 && probeOk;
-        actualInputEff = haveUsage ? computeActualInputEff(inp, cc, cr) : 0;
-        // Mirror update(): only credit the cache-modeled counterfactual on
-        // compressed rows. Uncompressed/passthrough rows fall back to the
-        // actual cost so they show zero saved (no fabricated savings).
-        creditSaving = haveBaseline && haveUsage && compressed;
+        const baseline = t.baseline_tokens;
+        const cacheable = t.baseline_cacheable_tokens ?? 0;
         // Warm/cold is reconstructed from server-observed cr only. Persisted
         // completion ts + duration_ms are used only to find a prior prefix size
         // for the reused/grown split after cr>0 has proved warmth.
@@ -987,17 +965,31 @@ export class DashboardState {
           DashboardState.CACHE_TTL_SEC,
           prefixShaR,
         );
-        baselineInputEff = creditSaving
-          ? computeBaselineInputEff(
-              baseline as number,
-              cacheable,
-              inp,
-              cc,
-              cr,
-              warmR,
-              prevCacheableR,
-            )
-          : actualInputEff;
+        const accounting = accountAnthropicInput({
+          compressed,
+          probeStatus: t.baseline_probe_status,
+          usagePresent:
+            typeof t.input_tokens === 'number'
+            || typeof t.output_tokens === 'number'
+            || typeof t.cache_create_tokens === 'number'
+            || typeof t.cache_read_tokens === 'number',
+          baselineTokens: baseline,
+          baselineCacheableTokens: cacheable,
+          inputTokens: inp,
+          cacheCreateTokens: cc,
+          cacheReadTokens: cr,
+          cacheCreate5mTokens: t.cache_create_5m_tokens,
+          cacheCreate1hTokens: t.cache_create_1h_tokens,
+          warm: warmR,
+          prevCacheable: prevCacheableR,
+          baselineCacheCreateRate:
+            t.baseline_cache_create_rate ?? CACHE_CREATE_1H_RATE,
+        });
+        haveUsage = accounting.haveUsage;
+        haveBaseline = accounting.haveBaseline;
+        creditSaving = accounting.creditSaving;
+        actualInputEff = accounting.actualInputEff;
+        baselineInputEff = accounting.baselineInputEff;
         if (typeof sidR === 'string' && sidR.length > 0 && haveUsage) {
           const sameKnownPrefix =
             prefixShaR !== undefined &&
@@ -1064,6 +1056,8 @@ export class DashboardState {
         input_tokens: t.input_tokens,
         output_tokens: t.output_tokens,
         cache_create: t.cache_create_tokens,
+        cache_create_5m: t.cache_create_5m_tokens,
+        cache_create_1h: t.cache_create_1h_tokens,
         cache_read: gpt ? cacheReadForRow : t.cache_read_tokens,
         actual_input: haveUsage ? round1(actualInputEff) : undefined,
         baseline_input:
@@ -1173,7 +1167,7 @@ export class DashboardState {
       allCounterfactualBill > 0 ? (saved / allCounterfactualBill) * 100 : 0;
 
     // Direct observed split — actual $ per request, partitioned by which
-    // path ran. Token-equivalent (input × 1.0 + cache_create × 1.25 +
+    // path ran. Token-equivalent (input × 1.0 + tier-priced cache creation +
     // cache_read × 0.10 + output × 5) → $ at the assumed Opus 4.7 input
     // rate. Same $/Mtok rate is applied to both buckets, so the bias from
     // the rate assumption cancels in the delta. Selection bias from the

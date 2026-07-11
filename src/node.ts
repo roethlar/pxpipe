@@ -14,6 +14,10 @@ import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createProxy, parseGatewayHeaders, resolveUpstreams, type ProxyConfig } from './core/proxy.js';
 import {
+  ProcessCompressionBreaker,
+  buildCompressionFingerprint,
+} from './node-admission.js';
+import {
   parseExportArgv,
   runExportCore,
   type ExportParsed,
@@ -908,6 +912,7 @@ async function main(): Promise<void> {
   // one-time cache-create amortization — so closing the loop would not
   // change decisions. Re-run that reconciliation before wiring one in.
   const tracker: Tracker = new FileTracker(opts.eventsFile);
+  const compressionBreaker = new ProcessCompressionBreaker();
 
   // Sidecar dir for oversized 4xx request-body samples. Lives next to the
   // events.jsonl so a single `rm -rf` cleans up both. Lazy-mkdir'd on first
@@ -947,6 +952,9 @@ async function main(): Promise<void> {
       if (forcePassthrough || !dashboard.getCompressionEnabled()) return { compress: false };
       // Active path: provider-specific defaults and break-even gates.
       return {};
+    },
+    compressionCoordinator: {
+      acquire: (input) => compressionBreaker.acquire(buildCompressionFingerprint(input)),
     },
     onRequest: async (e) => {
       // Feed the dashboard BEFORE tracker.emit — toTrackEvent strips

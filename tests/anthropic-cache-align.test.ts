@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { collapseHistory } from '../src/core/history.js';
-import { transformRequest } from '../src/core/transform.js';
+import { buildAnthropicCandidate as transformRequest } from '../src/core/transform.js';
 import { countCacheControlMarkers } from '../src/core/measurement.js';
 import type { Message } from '../src/core/types.js';
 

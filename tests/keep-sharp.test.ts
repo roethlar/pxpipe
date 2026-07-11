@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { transformRequest } from '../src/core/transform.js';
+import { buildAnthropicCandidate as transformRequest } from '../src/core/transform.js';
 import { transformAnthropicMessages } from '../src/core/library.js';
 
 const enc = new TextEncoder();
@@ -174,17 +174,18 @@ describe('keepSharp fidelity hint', () => {
     expect(hasImage).toBe(true);
   });
 
-  it('is reachable through the public library wrapper', async () => {
+  it('keeps the public library wrapper native without an admission transport', async () => {
     // Fable is the supported model by default; the wrapper gates on
     // `input.model`, so set it to a Fable alias to run the real transform.
-    const result = await transformAnthropicMessages({
-      body: makeReq(
+    const input = makeReq(
         [
           { type: 'tool_result', tool_use_id: 'keep_me', content: BIG },
           { type: 'tool_result', tool_use_id: 'image_me', content: BIG },
         ],
         'claude-fable-5',
-      ),
+      );
+    const result = await transformAnthropicMessages({
+      body: input,
       model: 'claude-fable-5',
       options: {
         // multiCol defaults to 1; PxpipeOptions intentionally narrows the
@@ -194,8 +195,9 @@ describe('keepSharp fidelity hint', () => {
       },
     });
 
-    // The model gate let the transform run, and the sharp block stayed text.
-    expect(result.applied).toBe(true);
+    expect(result.applied).toBe(false);
+    expect(result.body).toBe(input);
+    expect(result.info.reason).toBe('admission_probe_unavailable');
     const tr = userBlocks(result.body).find((b) => b.tool_use_id === 'keep_me');
     const text =
       typeof tr?.content === 'string'
@@ -203,6 +205,6 @@ describe('keepSharp fidelity hint', () => {
         : (tr?.content ?? []).find((b: any) => b.type === 'text')?.text;
     expect(text).toBe(BIG);
     const imaged = userBlocks(result.body).find((b) => b.tool_use_id === 'image_me');
-    expect(Array.isArray(imaged?.content) && imaged.content.some((b: any) => b.type === 'image')).toBe(true);
+    expect(Array.isArray(imaged?.content) && imaged.content.some((b: any) => b.type === 'image')).toBe(false);
   });
 });

@@ -14,6 +14,13 @@
 import * as fs from 'node:fs';
 import * as readline from 'node:readline';
 import type { TrackEvent } from './core/tracker.js';
+import { isAnthropicMessagesPath } from './core/applicability.js';
+import {
+  accountAnthropicInput,
+  CACHE_CREATE_1H_RATE,
+  deriveBaselineWarmth,
+  type BaselineWarmthPrev,
+} from './core/baseline.js';
 
 // ---- pure aggregator ------------------------------------------------------
 
@@ -39,6 +46,14 @@ export interface Summary {
   /** Number of events that carried any usage data at all. Denominator for
    *  cacheHitEvents. */
   eventsWithUsage: number;
+  /** Tier-priced Anthropic input accounting over every usage-bearing Messages
+   *  row. Passthrough/incomplete-probe rows contribute actual on both sides,
+   *  hence exactly zero signed saving. */
+  actualInputEffTotal: number;
+  baselineInputEffTotal: number;
+  savedInputEffTotal: number;
+  accountedInputEvents: number;
+  counterfactualInputEvents: number;
   durationMs: number[];
   firstByteMs: number[];
   skipReasons: Map<string, number>;
@@ -48,6 +63,9 @@ export interface Summary {
    *  property name is retained for dashboard/API compatibility. */
   systemShaHist: Map<string, number>;
   unknownTags: Map<string, number>;
+  /** Internal completed-prefix state for the shared warm reused/grown split.
+   *  It is deliberately omitted from summaryToJson. */
+  baselineWarmth: Map<string, BaselineWarmthPrev>;
 }
 
 export function newSummary(): Summary {
@@ -66,12 +84,18 @@ export function newSummary(): Summary {
     cacheReadTokensTotal: 0,
     cacheHitEvents: 0,
     eventsWithUsage: 0,
+    actualInputEffTotal: 0,
+    baselineInputEffTotal: 0,
+    savedInputEffTotal: 0,
+    accountedInputEvents: 0,
+    counterfactualInputEvents: 0,
     durationMs: [],
     firstByteMs: [],
     skipReasons: new Map(),
     byCwd: new Map(),
     systemShaHist: new Map(),
     unknownTags: new Map(),
+    baselineWarmth: new Map(),
   };
 }
 
@@ -106,6 +130,60 @@ export function fold(s: Summary, ev: TrackEvent): Summary {
     s.cacheCreateTokensTotal += ev.cache_create_tokens ?? 0;
     s.cacheReadTokensTotal += ev.cache_read_tokens ?? 0;
     if ((ev.cache_read_tokens ?? 0) > 0) s.cacheHitEvents++;
+  }
+
+  if (isAnthropicMessagesPath(ev.path)) {
+    const inputTokens = ev.input_tokens ?? 0;
+    const cacheCreateTokens = ev.cache_create_tokens ?? 0;
+    const cacheReadTokens = ev.cache_read_tokens ?? 0;
+    const cacheable = ev.baseline_cacheable_tokens ?? 0;
+    const sessionId = ev.first_user_sha8;
+    const prefixSha = ev.cache_prefix_sha8 ?? ev.system_sha8;
+    const completionSec = Date.parse(ev.ts) / 1000;
+    const requestStartSec = completionSec - Math.max(0, ev.duration_ms || 0) / 1000;
+    const prev = sessionId ? s.baselineWarmth.get(sessionId) : undefined;
+    const { warm, prevCacheable } = deriveBaselineWarmth(
+      prev,
+      requestStartSec,
+      cacheable,
+      cacheReadTokens,
+      undefined,
+      prefixSha,
+    );
+    const accounting = accountAnthropicInput({
+      compressed: ev.compressed === true,
+      probeStatus: ev.baseline_probe_status,
+      usagePresent: hasUsage,
+      baselineTokens: ev.baseline_tokens,
+      baselineCacheableTokens: cacheable,
+      inputTokens,
+      cacheCreateTokens,
+      cacheReadTokens,
+      cacheCreate5mTokens: ev.cache_create_5m_tokens,
+      cacheCreate1hTokens: ev.cache_create_1h_tokens,
+      warm,
+      prevCacheable,
+      baselineCacheCreateRate: ev.baseline_cache_create_rate ?? CACHE_CREATE_1H_RATE,
+    });
+    if (accounting.haveUsage) {
+      s.accountedInputEvents++;
+      s.actualInputEffTotal += accounting.actualInputEff;
+      s.baselineInputEffTotal += accounting.baselineInputEff;
+      s.savedInputEffTotal += accounting.savedInputEff;
+      if (accounting.creditSaving) s.counterfactualInputEvents++;
+    }
+
+    if (sessionId && accounting.haveUsage && Number.isFinite(completionSec)) {
+      const sameKnownPrefix =
+        prefixSha !== undefined
+        && prev?.prefixSha !== undefined
+        && prefixSha === prev.prefixSha;
+      s.baselineWarmth.set(sessionId, {
+        ts: completionSec,
+        cacheable: cacheable > 0 ? cacheable : (sameKnownPrefix ? prev.cacheable : 0),
+        prefixSha,
+      });
+    }
   }
 
   if (ev.cwd) {
@@ -199,6 +277,9 @@ export function renderTextReport(s: Summary): string {
   lines.push(
     `  cache hit rate (by events):  ${fmtPct(s.cacheHitEvents, s.eventsWithUsage)}`,
   );
+  lines.push(`  effective actual:   ${fmtN(Math.round(s.actualInputEffTotal)).padStart(12)}`);
+  lines.push(`  effective baseline: ${fmtN(Math.round(s.baselineInputEffTotal)).padStart(12)}`);
+  lines.push(`  signed saved:       ${fmtN(Math.round(s.savedInputEffTotal)).padStart(12)}`);
   lines.push('');
 
   if (s.skipReasons.size > 0) {
@@ -310,6 +391,11 @@ export function summaryToJson(s: Summary): Record<string, unknown> {
     cacheReadTokensTotal: s.cacheReadTokensTotal,
     cacheHitEvents: s.cacheHitEvents,
     eventsWithUsage: s.eventsWithUsage,
+    actualInputEffTotal: s.actualInputEffTotal,
+    baselineInputEffTotal: s.baselineInputEffTotal,
+    savedInputEffTotal: s.savedInputEffTotal,
+    accountedInputEvents: s.accountedInputEvents,
+    counterfactualInputEvents: s.counterfactualInputEvents,
     durationP50: percentile(sortedDur, 50),
     durationP95: percentile(sortedDur, 95),
     firstByteP50: percentile(sortedFB, 50),

@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   computeBaselineInputEff,
   computeActualInputEff,
+  accountAnthropicInput,
   deriveBaselineWarmth,
+  CACHE_CREATE_1H_RATE,
+  CACHE_CREATE_5M_RATE,
   CACHE_CREATE_RATE,
   CACHE_READ_RATE,
   CACHE_TTL_SEC,
@@ -20,9 +23,9 @@ describe('computeBaselineInputEff (warmth-aware)', () => {
   const cc = 0;
   const cr = 0;
 
-  it('credits nothing (returns actual) when the probe could not split the prefix', () => {
+  it('distinguishes a known marker-free prefix from a missing prefix probe', () => {
     const actual = computeActualInputEff(inp, cc, cr);
-    expect(computeBaselineInputEff(5000, 0, inp, cc, cr, true, 0)).toBe(actual);
+    expect(computeBaselineInputEff(5000, 0, inp, cc, cr, true, 0)).toBe(5000);
     expect(computeBaselineInputEff(5000, -1, inp, cc, cr, false, 0)).toBe(actual);
   });
 
@@ -34,7 +37,7 @@ describe('computeBaselineInputEff (warmth-aware)', () => {
   it('cold turn re-creates the whole cacheable prefix at the create rate', () => {
     // baseline=5000, cacheable=4000, coldTail=1000. No warm cache for text.
     const got = computeBaselineInputEff(5000, 4000, inp, cc, cr, false, 0);
-    expect(got).toBe(4000 * CACHE_CREATE_RATE + 1000 * 1.0);
+    expect(got).toBe(4000 * CACHE_CREATE_1H_RATE + 1000 * 1.0);
   });
 
   it('defaults to the cold (warmth-free) path when warm is omitted', () => {
@@ -52,7 +55,7 @@ describe('computeBaselineInputEff (warmth-aware)', () => {
   it('warm growth turn reads the reused prefix and creates only the growth', () => {
     // prev cached 3000, prefix grew to 4000: reused=3000, grown=1000.
     const got = computeBaselineInputEff(5000, 4000, inp, cc, cr, true, 3000);
-    expect(got).toBe(3000 * CACHE_READ_RATE + 1000 * CACHE_CREATE_RATE + 1000 * 1.0);
+    expect(got).toBe(3000 * CACHE_READ_RATE + 1000 * CACHE_CREATE_1H_RATE + 1000 * 1.0);
   });
 
   it('caps reused at the current cacheable when the prefix shrank', () => {
@@ -66,6 +69,83 @@ describe('computeBaselineInputEff (warmth-aware)', () => {
     const cold = computeBaselineInputEff(5000, 4000, inp, cc, cr, false, 0);
     const warm = computeBaselineInputEff(5000, 4000, inp, cc, cr, true, 4000);
     expect(cold).toBeGreaterThan(warm);
+  });
+});
+
+describe('tier-aware signed accounting', () => {
+  it('prices known five-minute and one-hour creation at their real rates', () => {
+    expect(computeActualInputEff(100, 1_000, 200, 1_000, 0)).toBe(
+      100 + 1_000 * CACHE_CREATE_5M_RATE + 200 * CACHE_READ_RATE,
+    );
+    expect(computeActualInputEff(100, 1_000, 200, 0, 1_000)).toBe(
+      100 + 1_000 * CACHE_CREATE_1H_RATE + 200 * CACHE_READ_RATE,
+    );
+  });
+
+  it('prices an absent or inconsistent cache-create split conservatively at one-hour', () => {
+    expect(computeActualInputEff(100, 1_000, 0)).toBe(2_100);
+    expect(computeActualInputEff(100, 1_000, 0, 300, 200)).toBe(
+      100 + 300 * CACHE_CREATE_5M_RATE + 700 * CACHE_CREATE_1H_RATE,
+    );
+  });
+
+  it('credits a counterfactual only for a compressed row with all four probes', () => {
+    const common = {
+      usagePresent: true,
+      baselineTokens: 10_000,
+      baselineCacheableTokens: 8_000,
+      inputTokens: 1_000,
+      cacheCreateTokens: 500,
+      cacheReadTokens: 0,
+      cacheCreate5mTokens: 500,
+      baselineCacheCreateRate: CACHE_CREATE_5M_RATE,
+    } as const;
+    const actual = computeActualInputEff(1_000, 500, 0, 500, 0);
+
+    for (const input of [
+      { ...common, compressed: false, probeStatus: 'ok' as const },
+      { ...common, compressed: true, probeStatus: 'partial' as const },
+      { ...common, compressed: true, probeStatus: 'failed' as const },
+      { ...common, compressed: true },
+    ]) {
+      expect(accountAnthropicInput(input)).toMatchObject({
+        creditSaving: false,
+        actualInputEff: actual,
+        baselineInputEff: actual,
+        savedInputEff: 0,
+      });
+    }
+
+    expect(accountAnthropicInput({
+      ...common,
+      compressed: true,
+      probeStatus: 'ok',
+    })).toMatchObject({
+      creditSaving: true,
+      actualInputEff: actual,
+    });
+  });
+
+  it('requires an explicit measured zero for a marker-free prefix', () => {
+    const common = {
+      compressed: true,
+      probeStatus: 'ok' as const,
+      usagePresent: true,
+      baselineTokens: 5_000,
+      inputTokens: 1_000,
+      cacheCreateTokens: 0,
+      cacheReadTokens: 0,
+    };
+    expect(accountAnthropicInput(common).creditSaving).toBe(false);
+    expect(accountAnthropicInput({
+      ...common,
+      baselineCacheableTokens: 0,
+    })).toMatchObject({
+      creditSaving: true,
+      baselineInputEff: 5_000,
+      actualInputEff: 1_000,
+      savedInputEff: 4_000,
+    });
   });
 });
 

@@ -7,8 +7,8 @@
  *
  *   1. SYSTEM CONTEXT — native system content stays in its API role
  *                       (no longer billed as text), live content preserved.
- *   2. HISTORY COLLAPSE — old closed turns become images; recent turns stay as
- *                         legible text (the working set the model still acts on).
+ *   2. HISTORY SAFETY — old and recent turns stay in their caller-owned roles;
+ *                       synthetic history is rejected by the shipped proxy.
  *   3. TOOLS IN RECENT TURNS — a tool_use/tool_result in the recent tail stays
  *                              text (usable), and no tool_result is ever orphaned
  *                              from its tool_use across the image boundary.
@@ -121,8 +121,8 @@ describe('design: native SYSTEM context (Anthropic)', () => {
 });
 
 // ===========================================================================
-describe('design: HISTORY COLLAPSE (Anthropic)', () => {
-  it('images OLD turns but keeps RECENT turns as legible text', async () => {
+describe('design: HISTORY ROLE SAFETY (Anthropic)', () => {
+  it('keeps OLD and RECENT turns native until same-role history imaging exists', async () => {
     const turns = Array.from({ length: 30 }, (_, i) => ({
       role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
       content: `TURNMARK_${i} ${big(4000)}`,
@@ -132,14 +132,11 @@ describe('design: HISTORY COLLAPSE (Anthropic)', () => {
       JSON.stringify({ model: 'claude-fable-5', max_tokens: 16, system: 'short', messages: turns }),
     );
     const hay = JSON.stringify(out);
-    expect(imageCount(out)).toBeGreaterThan(0);
+    expect(imageCount(out)).toBe(0);
     // Recent turns survive as legible text BODY (the working set the model still reasons over).
     expect(hay).toContain('TURNMARK_29 ' + 'x'.repeat(100));
     expect(hay).toContain('TURNMARK_28 ' + 'x'.repeat(100));
-    // A mid-history turn's BODY was collapsed into an image → its content is not legible text.
-    // Its bare identifier may appear in the verbatim fact-sheet beside the image (by design —
-    // precision-critical tokens are preserved as text); the 4000-char body is not.
-    expect(hay).not.toContain('TURNMARK_5 ' + 'x'.repeat(100));
+    expect(hay).toContain('TURNMARK_5 ' + 'x'.repeat(100));
   });
 });
 
@@ -166,7 +163,7 @@ describe('design: TOOLS IN RECENT TURNS (Anthropic)', () => {
     );
     const hay = JSON.stringify(out);
 
-    expect(imageCount(out)).toBeGreaterThan(0);
+    expect(imageCount(out)).toBe(0);
     // The recent tool round-trip stays usable (text, not imaged).
     expect(hay).toContain('tool_RECENT');
     expect(hay).toContain('RECENTRESULT');

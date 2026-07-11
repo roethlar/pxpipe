@@ -2,7 +2,11 @@
 // Presentation only; server code (src/dashboard.ts, src/node.ts) needs no edits.
 
 import { HTMX_JS, ALPINE_JS } from './vendor.js';
-import { CACHE_CREATE_RATE, CACHE_READ_RATE } from '../core/baseline.js';
+import {
+  CACHE_CREATE_1H_RATE,
+  CACHE_CREATE_5M_RATE,
+  CACHE_READ_RATE,
+} from '../core/baseline.js';
 import type {
   StatsPayload,
   RecentPayload,
@@ -516,18 +520,21 @@ export function renderRecentFragment(p: RecentPayload): string {
                 ? `<a class="row-view" href="#" hx-get="/fragments/context-map?req=${viewId}" hx-target="#frag-context-map" hx-swap="innerHTML">Details →</a>`
                 : `<span class="muted">—</span>`;
             const saved = e.session_saved_so_far_delta;
-            // A loss that disappears when the newly written prefix is repriced at
-            // the read rate is just the one-time cache-create premium — the
-            // purchase price of the cheap cache reads on the turns that follow.
-            // Mark it so create turns don't read as gate failures.
             const cc = e.cache_create ?? 0;
+            const cc1h = Math.min(cc, Math.max(0, e.cache_create_1h ?? 0));
+            const cc5m = Math.min(cc - cc1h, Math.max(0, e.cache_create_5m ?? 0));
+            const ccUnknown = cc - cc1h - cc5m;
+            const createPremium =
+              cc1h * (CACHE_CREATE_1H_RATE - CACHE_READ_RATE) +
+              cc5m * (CACHE_CREATE_5M_RATE - CACHE_READ_RATE) +
+              ccUnknown * (CACHE_CREATE_1H_RATE - CACHE_READ_RATE);
             const createLoss =
               saved != null &&
               saved < 0 &&
               cc > 0 &&
-              saved + cc * (CACHE_CREATE_RATE - CACHE_READ_RATE) > 0;
+              saved + createPremium > 0;
             const createNote = createLoss
-              ? ` <span class="mk-create" title="Cache-create turn: this loss is the one-time ${CACHE_CREATE_RATE}× premium for writing ${numFmt(cc)} tokens to cache. Later turns re-read that prefix at ${CACHE_READ_RATE}×, which typically recoups it.">create</span>`
+              ? ` <span class="mk-create" title="This row wrote ${numFmt(cc)} cache tokens at their reported tier. The full negative value remains included in session totals.">create</span>`
               : '';
             const savedCell = saved == null
               ? `<td class="num muted">—</td>`
