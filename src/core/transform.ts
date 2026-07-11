@@ -454,6 +454,7 @@ function bumpPassthrough(
     | 'not_profitable'
     | 'kept_sharp'
     | 'exact_identifier'
+    | 'terminal_control'
     | 'too_many_images'
     | 'render_error'
     | 'unsupported_shape',
@@ -643,6 +644,7 @@ export interface TransformInfo {
     not_profitable?: number;
     kept_sharp?: number;
     exact_identifier?: number;
+    terminal_control?: number;
     too_many_images?: number;
     render_error?: number;
     unsupported_shape?: number;
@@ -2278,10 +2280,42 @@ function exactNativeResult(
   return { body, info, replacements: [], changedSpans: [] };
 }
 
+/**
+ * Terminal output is stateful: C0/C1 controls can erase, recolor, or replace
+ * adjacent printable text. Exact imaging cannot preserve those effects, so any
+ * control other than LF makes the complete source container native. This also
+ * catches both 7-bit ESC-prefixed and 8-bit CSI/OSC forms before rendering.
+ */
+function hasTerminalControl(text: string): boolean {
+  for (const ch of text) {
+    const codepoint = ch.codePointAt(0)!;
+    if (codepoint === 0x0a) continue;
+    if (
+      codepoint <= 0x1f
+      || (codepoint >= 0x7f && codepoint <= 0x9f)
+    ) return true;
+  }
+  return false;
+}
+
+/** Scan the whole tool_result before considering any individual text part. */
+function toolResultHasTerminalControl(content: unknown): boolean {
+  if (typeof content === 'string') return hasTerminalControl(content);
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return false;
+    const record = part as Record<string, unknown>;
+    return record.type === 'text'
+      && typeof record.text === 'string'
+      && hasTerminalControl(record.text);
+  });
+}
+
 async function renderExactBucket(
   text: string,
   o: Required<TransformOptions>,
 ): Promise<ExactRenderedBucket | undefined> {
+  if (hasTerminalControl(text)) return undefined;
   try {
     const pages = await renderTextToPngsExact(text, { cols: o.cols });
     if (
@@ -2442,6 +2476,9 @@ async function transformSafeAnthropicRequest(
     } else if (project.text.length < o.minCompressChars) {
       info.projectDisposition = 'native_below_threshold';
       bumpPassthrough(info, 'below_threshold');
+    } else if (hasTerminalControl(project.text)) {
+      info.projectDisposition = 'native_render_error';
+      bumpPassthrough(info, 'terminal_control');
     } else {
       const rendered = await renderExactBucket(project.text, o);
       if (!rendered) {
@@ -2470,6 +2507,10 @@ async function transformSafeAnthropicRequest(
         if (!block || typeof block !== 'object' || block.type !== 'tool_result') continue;
         if (!isExactToolResultBlock(block) || block.is_error === true) {
           bumpPassthrough(info, 'unsupported_shape');
+          continue;
+        }
+        if (toolResultHasTerminalControl(block.content)) {
+          bumpPassthrough(info, 'terminal_control');
           continue;
         }
 

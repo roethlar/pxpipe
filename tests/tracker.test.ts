@@ -256,7 +256,10 @@ describe('toTrackEvent', () => {
     expect(emptyBucketMap.bucket_chars).toBeUndefined();
   });
 
-  it('persists a kept-sharp-only passthrough reason', () => {
+  it.each([
+    ['kept-sharp', { kept_sharp: 1 }],
+    ['terminal-control', { terminal_control: 2 }],
+  ])('persists a %s-only passthrough reason', (_label, reasons) => {
     const out = toTrackEvent({
       method: 'POST',
       path: '/v1/messages',
@@ -271,11 +274,11 @@ describe('toTrackEvent', () => {
         staticChars: 0,
         dynamicChars: 0,
         dynamicBlockCount: 0,
-        passthroughReasons: { kept_sharp: 1 },
+        passthroughReasons: reasons,
       },
     });
 
-    expect(out.passthrough_reasons).toEqual({ kept_sharp: 1 });
+    expect(out.passthrough_reasons).toEqual(reasons);
   });
 
   it('persists measured zero image chars for a runtime-only transform', () => {

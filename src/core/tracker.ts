@@ -150,6 +150,11 @@ export interface TrackEvent {
     below_threshold?: number;
     not_profitable?: number;
     kept_sharp?: number;
+    exact_identifier?: number;
+    terminal_control?: number;
+    too_many_images?: number;
+    render_error?: number;
+    unsupported_shape?: number;
   };
   /** Unrecognized tag names in the static slab — canary for Claude Code releases adding new dynamic tags. */
   unknown_static_tags?: string[];
@@ -464,11 +469,7 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
     }
     if (info.passthroughReasons) {
       const pr = info.passthroughReasons;
-      if (
-        (pr.below_threshold ?? 0) > 0 ||
-        (pr.not_profitable ?? 0) > 0 ||
-        (pr.kept_sharp ?? 0) > 0
-      ) {
+      if (Object.values(pr).some((count) => (count ?? 0) > 0)) {
         out.passthrough_reasons = pr;
       }
     }
