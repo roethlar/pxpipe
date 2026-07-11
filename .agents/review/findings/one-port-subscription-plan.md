@@ -1,7 +1,7 @@
 # one-port-subscription-plan: One-service persistent subscription routing plan
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: In Review — R4 closes the R3 durability, ownership, and isolation gaps
+**Status**: Verified — independently accepted at R4
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `2aeca41cc385789d4456c3473a22cb112c389e84` (base
 `cc79310e5476f62e09aa1dbe4ee51b6204380002`)
@@ -203,6 +203,23 @@ The R3 envelope exited zero after 74 turns, matched the custom schema, and
 returned both pinned SHAs exactly. Eight ancillary Bash attempts were denied;
 the review completed without tracked changes, live calls, or web access. R4's
 coder adjudication above addresses every returned item plus the concurrent audit.
+
+- R4 (2026-07-11T05:53:35Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, read-only disposable worktree
+  `/Users/michael/Dev/pxpipe-review-one-port-plan-r4`.
+  - Reviewed SHA: `e882aff623336028b7b767fbb35c755c82e827e3`.
+  - Base SHA: `e2025475bd1e9c82dd1a6fc898ad7b8639586878`.
+  - Verdict: **accepted**.
+  - Must-fix: none.
+  - Should-fix: none.
+  - Open questions: none.
+
+The R4 envelope exited zero after 44 turns, matched the custom schema, and
+returned both pinned SHAs exactly. Six ancillary Bash attempts were denied; the
+review completed without tracked changes, live calls, or web access. A separate
+read-only audit also found every R3/installer gap closed at this intake. The
+owner-approved simple-use outcome and clean R4 verdict authorize implementation
+of the plan slices, not push, merge, upstream contribution, or a live model call.
 
 The R2 envelope exited zero after 82 turns, matched the custom schema, and
 returned both pinned SHAs exactly. Three ancillary Bash attempts were denied;

@@ -1,7 +1,7 @@
 # One-port subscription routing
 
-Status: **AMENDED R4 2026-07-11 — SIMPLE-USE OUTCOME REMAINS OWNER-APPROVED;
-UPDATED SAFETY CONTRACT AWAITS CLAUDE REVIEW BEFORE IMPLEMENTATION**.
+Status: **APPROVED FOR IMPLEMENTATION 2026-07-11 — CLAUDE R4 ACCEPTED AT
+`e882aff`; SIMPLE-USE OUTCOME REMAINS OWNER-APPROVED**.
 
 Plan base: `cc79310` on `fix/provenance-safe-compression`. The corrected local
 package source `59e2b9a` is installed and passed its no-network capture.
