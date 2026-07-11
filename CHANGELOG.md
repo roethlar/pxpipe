@@ -44,6 +44,9 @@ actions; none is implied by this entry or by a local installation.
 - Sequential request guards prove that model identifiers, system text, request
   bytes, hashes, and input order do not leak between Sonnet, Fable, Sol, or Grok
   requests.
+- CLI help, dashboard labels, and renderer documentation now state the same
+  boundary. GPT/Grok selections are explicitly text-only, removed image paths
+  are labeled historical, and the old live demos are marked unsupported.
 
 ### Telemetry
 

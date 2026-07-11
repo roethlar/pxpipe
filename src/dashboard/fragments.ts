@@ -60,10 +60,10 @@ export function renderToggleFragment(enabled: boolean): string {
   // NOTE: "PASSTHROUGH MODE", "Disable compression", "Enable compression" are asserted by tests.
   const banner = enabled
     ? ''
-    : `<div class="banner"><strong>PASSTHROUGH MODE</strong> — compression is off. Every request goes to Claude unchanged: no images, no savings. Use this to A/B test, or if the upstream API is having problems.</div>`;
+    : `<div class="banner"><strong>PASSTHROUGH MODE</strong> — compression is off. Every request body goes unchanged to its selected upstream: no images, no savings. Use this to A/B test, or if the upstream API is having problems.</div>`;
   // Button POSTs the OPPOSITE of current state; 2s poll keeps it fresh.
   const confirm = enabled
-    ? ` hx-confirm="Turn compression off?\n\nRequests will pass straight through to Claude, unchanged. Restarting the proxy turns it back on."`
+    ? ` hx-confirm="Turn compression off?\n\nRequest bodies will pass straight upstream, unchanged. Restarting the proxy turns it back on."`
     : '';
   return (
     banner +
@@ -77,7 +77,7 @@ export function renderToggleFragment(enabled: boolean): string {
   );
 }
 
-// ---- compress scope (which models get imaged) ----------------------------
+// ---- compression scope ----------------------------------------------------
 
 /** Chip catalog — UNION with env scope + active set, so env-var models stay toggleable. Labels are cosmetic. */
 const MODEL_CATALOG: ReadonlyArray<{ id: string; label: string }> = [
@@ -143,25 +143,25 @@ export function renderModelsFragment(
   const scopeMatchesStartup = activeScope.size === configuredScope.size
     && [...activeScope].every((id) => configuredScope.has(id));
   const persistenceHint = scopeMatchesStartup
-    ? 'selection saved for restart'
-    : 'runtime only · set PXPIPE_MODELS to persist';
+    ? 'startup selection restored on restart'
+    : 'runtime only · restart restores the installed selection';
   const moot = enabled ? '' : ` <span class="hint">compression is off, so this has no effect right now</span>`;
   return (
     `<div class="models">` +
-    `<span class="models-label">Image Claude models</span>` +
+    `<span class="models-label">Anthropic compression models</span>` +
     claudeChips +
-    `<span class="hint">everything else is sent as normal text · ${persistenceHint}</span>${moot}` +
+    `<span class="hint">only exact in-place spans can become images · ${persistenceHint}</span>${moot}` +
     `</div>` +
     `<div class="models">` +
-    `<span class="models-label">Image Grok models</span>` +
+    `<span class="models-label">Grok scope · text only</span>` +
     grokChips +
     otherChips +
-    `<span class="hint">opt-in only · OpenAI Responses path · ${persistenceHint}</span>${moot}` +
+    `<span class="hint">saved for compatibility; requests stay byte-for-byte unchanged · ${persistenceHint}</span>` +
     `</div>` +
     `<div class="models">` +
-    `<span class="models-label">Image GPT models</span>` +
+    `<span class="models-label">GPT scope · text only</span>` +
     gptChips +
-    `<span class="hint">imaging only, no Anthropic cache_control · one scope for all families · ${persistenceHint}</span>${moot}` +
+    `<span class="hint">saved for compatibility; requests stay byte-for-byte unchanged · ${persistenceHint}</span>` +
     `</div>`
   );
 }
@@ -175,7 +175,7 @@ void INPUT_USD_PER_MTOK; // suppress unused-var; renderHeaderFragment uses the s
 // Lifetime hero. Reads the SAME cumulative weighted totals as the header strip
 // (serveStats), so the headline and the "$ saved" tiles can never disagree, and
 // the number stops swinging on tiny per-session samples. Cache-weighted on
-// purpose ("lifeweight"): it answers "did pxpipe move my real, cache-discounted
+// purpose ("lifeweight"): it answers "did pxpipe change my real, cache-discounted
 // bill since this proxy started", not a raw token count.
 export function renderSessionSummaryFragment(s: StatsPayload): string {
   const measured = s.compressed_requests ?? 0;
@@ -184,7 +184,7 @@ export function renderSessionSummaryFragment(s: StatsPayload): string {
       `<div class="hero hero-empty">` +
       `<div class="hero-eyebrow">Since start</div>` +
       `<div class="hero-headline">Warming up…</div>` +
-      `<div class="hero-sub">Point Claude Code at this proxy and send a message. The moment a request flows through, your running savings show up right here.</div>` +
+      `<div class="hero-sub">Send a Claude Code request through this proxy. Once a request is safely compressed, its measured result appears here.</div>` +
       `</div>`
     );
   }
@@ -209,7 +209,7 @@ export function renderSessionSummaryFragment(s: StatsPayload): string {
     `<div class="hero-sub">` +
     `<strong>${kFmt(actualW)}</strong> effective tokens vs <strong>${kFmt(baselineW)}</strong> if this same context ` +
     `stayed plain text — both counted after normal cache discounts since this proxy started. ` +
-    `Your latest messages and Claude's live output are never compressed.` +
+    `Your own conversation text and each live model reply stay as text.` +
     `</div>` +
     `<div class="hero-meta">` +
     `Cache-aware — cached reads counted at their real ~0.1× weight, not full price · ` +
@@ -257,13 +257,15 @@ export function renderHeaderFragment(s: StatsPayload, port: number): string {
   const splitReady = s.split_sufficient_sample;
   const cAvg = s.compressed_avg_usd_per_request ?? 0;
   const pAvg = s.passthrough_avg_usd_per_request ?? 0;
+  const savedTokens = s.saved_input_tokens ?? 0;
+  const savedUsd = s.saved_usd ?? 0;
   const costTile = splitReady
     ? statTile(
         'Cost per request',
         `$${cAvg.toFixed(4)}`,
-        `vs $${pAvg.toFixed(4)} without pxpipe`,
+        `vs $${pAvg.toFixed(4)} on passthrough requests`,
         cAvg <= pAvg ? 'pos' : 'neg',
-        'Average real cost of a request with imaging on vs off (passthrough), measured on your own traffic.',
+        'Average observed cost on compressed requests vs passthrough requests. These are different samples, so read this with the sample counts.',
       )
     : statTile(
         'Cost per request',
@@ -277,18 +279,18 @@ export function renderHeaderFragment(s: StatsPayload, port: number): string {
     `<div class="strip">` +
     statTile('Requests', numFmt(s.requests), `${numFmt(s.compressed_requests)} turned into images`) +
     statTile(
-      'Input tokens saved',
-      numFmt(s.saved_input_tokens),
+      'Input tokens saved/lost',
+      numFmt(savedTokens),
       'vs sending the same context as text',
-      'pos',
-      'Bulky context (system prompt, tool output, old turns) sent as compact images instead of text. Cache-aware, input side only — recent turns and the live output stay text.',
+      savedTokens >= 0 ? 'pos' : 'neg',
+      'Only recognized Anthropic project guidance and eligible prose inside successful tool results can become images. System instructions, tool definitions, ordinary history, your prompts, and live output stay text.',
     ) +
     statTile(
-      'Estimated saved',
-      `$${(s.saved_usd ?? 0).toFixed(2)}`,
+      'Estimated input cost',
+      savedUsd >= 0 ? `$${savedUsd.toFixed(2)} saved` : `$${Math.abs(savedUsd).toFixed(2)} more`,
       `at $${pa.input_per_mtok}/M input tokens`,
-      '',
-      'A rough dollar figure: saved tokens × the input price. Actual savings depend on your plan and caching — see the math drawer.',
+      savedUsd >= 0 ? 'pos' : 'neg',
+      'A rough signed estimate: saved/lost tokens × the input price. Your subscription may not map to this dollar rate.',
     ) +
     costTile +
     `</div>`;
@@ -296,10 +298,10 @@ export function renderHeaderFragment(s: StatsPayload, port: number): string {
   // math drawer
   const savedMath =
     `<div><span class="k">formula:</span> <span class="v">saved = baseline − actual</span></div>` +
-    `<div><span class="k">weights:</span> <span class="v">input×1.0, cache_create×1.25, cache_read×0.10</span></div>` +
+    `<div><span class="k">weights:</span> <span class="v">input×1.0, cache_create×${pa.cache_write_5m_multiplier} (5m) or ×${pa.cache_write_1h_multiplier} (1h/unknown), cache_read×${pa.cache_read_multiplier}</span></div>` +
     `<div class="sp"></div>` +
     mathRow('baseline', s.baseline_input_weighted, '(cache-aware: cacheable×weight + cold_tail)') +
-    mathRow('actual', s.actual_input_weighted, '(input + cc×1.25 + cr×0.10 from usage)') +
+    mathRow('actual', s.actual_input_weighted, `(input + cc5m×${pa.cache_write_5m_multiplier} + cc1h/unknown×${pa.cache_write_1h_multiplier} + cr×${pa.cache_read_multiplier} from usage)`) +
     mathRow('saved', s.saved_input_tokens, `<span class="op">=</span> baseline − actual`) +
     `<span class="src">output excluded — identical with/without compression</span>`;
 
@@ -353,10 +355,10 @@ export function renderHeaderFragment(s: StatsPayload, port: number): string {
   const drawer =
     `<details class="drawer" id="math-drawer">` +
     `<summary>Show the math &amp; honesty receipts</summary>` +
-    `<div class="drawer-intro">Every number above, derived from the same per-event log. The proxy only moves <em>input</em> tokens; output is shown on both sides so percentages stay honest.</div>` +
+    `<div class="drawer-intro">Every number above comes from the same per-event log. The proxy can only replace eligible Anthropic <em>input</em> spans in place; output is shown on both sides so percentages stay honest.</div>` +
     `<div class="math-grid">` +
-    mathBlock('Input tokens saved', savedMath) +
-    mathBlock('Dollars saved', usdMath) +
+    mathBlock('Input tokens saved/lost', savedMath) +
+    mathBlock('Estimated input cost difference', usdMath) +
     mathBlock('Compressed vs passthrough, per request', splitMath) +
     mathBlock('Share of total spend (diagnostic)', pctMath) +
     mathBlock('Token-equivalent (what the weekly cap counts)', tokeqMath) +
@@ -391,13 +393,13 @@ export interface ContextMapData {
 
 const CTXMAP_BUCKETS: ReadonlyArray<readonly [string, string]> = [
   ['project_guidance', 'Project guidance'],
-  ['tool_reference', 'Tool reference'],
-  ['static_slab', 'System prompt + tool docs'],
-  ['reminder', 'System-reminder blocks'],
+  ['tool_reference', 'Tool reference — legacy'],
+  ['static_slab', 'System prompt + tool docs — legacy'],
+  ['reminder', 'System-reminder blocks — legacy'],
   ['tool_result_prose', 'Tool results — prose'],
-  ['tool_result_log', 'Tool results — logs'],
-  ['tool_result_json', 'Tool results — JSON'],
-  ['history', 'Older conversation turns'],
+  ['tool_result_log', 'Tool results — logs — legacy'],
+  ['tool_result_json', 'Tool results — JSON — legacy'],
+  ['history', 'Older conversation turns — legacy'],
 ];
 
 /** Image-vs-text breakdown for one request. */
@@ -437,7 +439,7 @@ export function renderContextMapFragment(
 
   const ids = c.imageIds ?? [];
   const gallery = ids.length
-    ? `<div class="pages-title">${ids.length} image page${ids.length === 1 ? '' : 's'} sent to Claude — click one to read the exact text behind it:</div>` +
+    ? `<div class="pages-title">${ids.length} image page${ids.length === 1 ? '' : 's'} sent upstream — click one to read the exact text behind it:</div>` +
       `<div class="pages">` +
       ids
         .map(
@@ -470,11 +472,17 @@ export function renderContextMapFragment(
   const subnote = !showCompare
     ? 'Billed tokens count cache discounts (reads at 0.1×) — no trustworthy text baseline for this request yet.'
     : !warm
-      ? `No warm text cache this turn — the text counterfactual's prefix is priced at the 1.25× create rate (the same event the imaged path pays), identical basis to the Saved column. The gap is purely token count. ${rawPhrase}`
+      ? `No warm text cache this turn — the text counterfactual's prefix is priced at its recorded cache-create tier (the same event the imaged path pays), identical basis to the Saved column. The gap is purely token count. ${rawPhrase}`
       : pct < 0 && rawShrink > 0
           ? `Billed = after cache discounts (reads at 0.1×), same basis as the Saved column. The raw text is ${rawShrink}% smaller, but most of it would have been a cheap cache-read — so imaging it cost more.`
           : `Billed = after cache discounts (reads at 0.1×), same basis as the Saved column. ${rawPhrase}`;
   const title = isLatest ? 'Latest request' : 'Selected request';
+  const nativeRows = c.restored
+    ? `<div class="ctx-row"><span class="ctx-lbl">Historical request</span><span class="ctx-val">counts only</span></div>` +
+      `<div class="split-note">This saved row can include pre-correction behavior. The log did not retain enough source text to prove which other spans stayed verbatim.</div>`
+    : `<div class="ctx-row"><span class="ctx-lbl">System instructions + tool definitions</span><span class="ctx-val">verbatim</span></div>` +
+      `<div class="ctx-row"><span class="ctx-lbl">Your prompts + ordinary conversation history</span><span class="ctx-val">verbatim</span></div>` +
+      `<div class="split-note">Current requests keep these as text; successful tool-result prose is the only conversation-contained image exception.</div>`;
 
   return (
     `<div class="ctxmap">` +
@@ -489,9 +497,9 @@ export function renderContextMapFragment(
     `</div>` +
     `<div class="split-col split-txt">` +
     `<div class="split-head">Kept as plain text <span class="split-sum">byte-exact</span></div>` +
-    `<div class="ctx-row"><span class="ctx-lbl">Your latest messages</span><span class="ctx-val">verbatim</span></div>` +
-    `<div class="ctx-row"><span class="ctx-lbl">Claude's reply (output)</span><span class="ctx-val">${kFmt(c.output)} tok</span></div>` +
-    `<div class="split-note">never imaged — safe for IDs, hashes and exact numbers.</div>` +
+    nativeRows +
+    `<div class="ctx-row"><span class="ctx-lbl">Live model reply (output)</span><span class="ctx-val">${kFmt(c.output)} tok</span></div>` +
+    `<div class="split-note">Live output is never imaged.</div>` +
     `</div>` +
     `</div>` +
     gallery +
@@ -569,10 +577,10 @@ export function renderRecentFragment(p: RecentPayload): string {
     `<th>Endpoint</th>` +
     `<th>Model</th>` +
     `<th title="Was this request's context compressed into an image?">Sent as</th>` +
-    `<th class="num" title="Tokens served from Claude's cache (cheap)">Cache hits</th>` +
+    `<th class="num" title="Tokens served from the upstream model cache (cheap)">Cache hits</th>` +
     `<th class="num" title="Billing-equivalent input if kept as plain text, after cache create/read rates">As text</th>` +
-    `<th class="num" title="Actual billing-equivalent input after imaging, after cache create/read rates">Sent</th>` +
-    `<th class="num" title="As-text minus Sent; negative means imaging cost more">Saved/lost</th>` +
+    `<th class="num" title="Actual billing-equivalent input after any compression and cache create/read rates">Sent</th>` +
+    `<th class="num" title="As-text minus Sent; negative means compression cost more">Saved/lost</th>` +
     `<th></th>` +
     `</tr></thead><tbody>${body}</tbody></table>`
   );
@@ -628,7 +636,7 @@ export function renderLatestFragment(inp: LatestFragmentInput): string {
       sourceText == null
         ? `<div class="evicted">source text wasn't captured for this image</div>`
         : `<div class="pairing">` +
-          `<div class="pair-col"><div class="pair-head pair-img">What Claude sees · image</div><div class="frame frame-sm"><img src="${imgSrc}" alt="rendered page" /></div></div>` +
+          `<div class="pair-col"><div class="pair-head pair-img">What the model sees · image</div><div class="frame frame-sm"><img src="${imgSrc}" alt="rendered page" /></div></div>` +
           `<div class="pair-mid">made from ↓</div>` +
           `<div class="pair-col"><div class="pair-head pair-txt">The original text · byte-exact</div><pre class="src-pane">${escapeHtml(sourceText)}</pre></div>` +
           `</div>`;
@@ -1104,7 +1112,7 @@ export function renderPage(port: number): string {
     <span class="flame-dot"></span>
     <div>
       <div class="wordmark">pxpipe</div>
-      <div class="tagline">See exactly what got turned into images to shrink your Claude Code bill.</div>
+      <div class="tagline">See exactly what changed and whether the measured result saved or cost tokens.</div>
     </div>
   </div>
   <div class="controls">

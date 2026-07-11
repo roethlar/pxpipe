@@ -67,8 +67,7 @@
     "proxy",
     "token-optimization",
     "prompt-cache",
-    "vision-tokens",
-    "cloudflare-workers"
+    "vision-tokens"
   ],
   "engines": {
     "node": ">=18"

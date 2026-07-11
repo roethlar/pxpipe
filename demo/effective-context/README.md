@@ -1,5 +1,12 @@
 # Demo 2 — effective context (recall at scale)
 
+> [!CAUTION]
+> **Pre-correction historical material — unsupported; do not run.** This demo
+> uses the retired multi-process `/tmp` setup, can launch subscription clients,
+> and exercises compression paths the current proxy removed. It remains only as
+> an experiment receipt; its commands and capability claims are not current
+> setup guidance.
+
 **What it measures:** does pxpipe stay *sharp* in a context big enough to overload
 the plain column? This is the **capability** story, not cost — and it's the one that
 matters, because the cost A/B ([`../cost-ab/`](../cost-ab/README.md)) came out

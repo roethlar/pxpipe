@@ -174,16 +174,20 @@ describe('serveFragment', () => {
     const offHtml = await off.text();
     expect(offHtml).toContain('PASSTHROUGH MODE');
     expect(offHtml).toContain('Enable compression');
+    expect(offHtml).toContain('selected upstream');
+    expect(offHtml).not.toContain('goes to Claude');
     dash.handleCompressionToggle({ enabled: true });
   });
 
-  it('renders opt-in GPT 5.5/5.6 chips and mutates the single model scope', async () => {
+  it('keeps GPT scope visible but states that current requests remain text-only', async () => {
     const prev = process.env.PXPIPE_MODELS;
     try {
       delete process.env.PXPIPE_MODELS;
       setAllowedModelBases(null); // reset to built-in Fable-only default
       const off = await (await dash.serveFragment('models', url, 1234)).text();
-      expect(off).toContain('Image GPT models');
+      expect(off).toContain('GPT scope · text only');
+      expect(off).not.toContain('Image GPT models');
+      expect(off).toContain('requests stay byte-for-byte unchanged');
       expect(off).not.toContain('<div class="models" style="display:none">');
       expect(off).toContain('GPT 5.6 Sol</button>');
       expect(off).toContain('GPT 5.5</button>');
@@ -216,12 +220,13 @@ describe('serveFragment', () => {
       expect(saved).toContain('Fable 5 ✓');
       expect(saved).toContain('GPT 5.6 Sol ✓');
       expect(saved).toContain('Grok 4.5 ✓');
-      expect(saved).toContain('selection saved for restart');
+      expect(saved).toContain('startup selection restored on restart');
       expect(saved).not.toContain('set PXPIPE_MODELS');
 
       dash.handleModelsToggle('grok-4.5', false);
       const changed = await (await dash.serveFragment('models', url, 1234)).text();
-      expect(changed).toContain('runtime only · set PXPIPE_MODELS to persist');
+      expect(changed).toContain('runtime only · restart restores the installed selection');
+      expect(changed).not.toContain('set PXPIPE_MODELS');
     } finally {
       setAllowedModelBases(null);
       if (prev === undefined) delete process.env.PXPIPE_MODELS;
@@ -235,6 +240,9 @@ describe('serveFragment', () => {
     ]);
     const header = await (await dash.serveFragment('header', url, 4711)).text();
     expect(header).toContain('4711');
+    expect(header).toContain('Only recognized Anthropic project guidance');
+    expect(header).toContain('cache_create×1.25 (5m) or ×2 (1h/unknown)');
+    expect(header).not.toContain('system prompt, tool output, old turns');
     await dash.replay(tmp.eventsFile);
     const recent = await (await dash.serveFragment('recent', url, 4711)).text();
     expect(recent).toContain('<table');

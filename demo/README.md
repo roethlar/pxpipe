@@ -1,5 +1,11 @@
 # pxpipe demos
 
+> [!CAUTION]
+> **Pre-correction historical material — unsupported; do not run.** These demos
+> use the retired multi-process `/tmp` setup, can launch subscription clients,
+> and describe compression paths the current proxy removed. They remain only as
+> experiment receipts. No live A/B run is authorized by the current correction.
+
 Two demos, two questions, two honest verdicts.
 
 | folder | question | status |

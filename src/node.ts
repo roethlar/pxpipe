@@ -36,14 +36,14 @@ import {
 } from './dashboard.js';
 
 /** Runtime config. The core transform tuning comes from DEFAULTS in
- *  transform.ts; startup knobs cover deployment plus emergency GPT scope
+ *  transform.ts; startup knobs cover deployment plus emergency model scope
  *  control. No CLI flags beyond --help/--version. */
 interface RuntimeConfig {
   port: number;
   /** Interface to bind. Defaults to 127.0.0.1 (loopback only) — the dashboard
-   *  is unauthenticated and serves captured request context, so it must not be
-   *  exposed to the LAN by default. Set HOST=0.0.0.0 to opt into all interfaces
-   *  (e.g. reaching the dashboard from another device / the host of a container). */
+   *  is unauthenticated and exposes service controls, usage/session data, and
+   *  any in-memory rendered previews, so it must not be exposed to the LAN by
+   *  default. Set HOST=0.0.0.0 to opt into all interfaces. */
   host: string;
   upstream: string;
   openAIUpstream: string;
@@ -131,15 +131,17 @@ function parseProvider(v: string | undefined): 'cloudflare-ai-gateway' | undefin
 }
 
 function printHelp(): void {
-  console.log(`pxpipe — token-saving proxy for Claude Code
+  console.log(`pxpipe — safety-first local proxy for Claude Code
 
 Usage:
   pxpipe                run the proxy (no flags)
   pxpipe export [...]   render files/diff to PNG pages + cost report (see pxpipe export --help)
 
-The proxy compresses eligible tools, schemas, reminders, tool_results,
-and history; tracks events to disk; and measures real saved_pct via
-/v1/messages/count_tokens. Dashboard controls can disable compression live.
+The proxy can replace only eligible Anthropic project guidance and safe prose
+inside successful tool results, in their original containers, after measuring a
+whole-request token win. OpenAI-compatible requests pass through unchanged.
+Telemetry stores counts, hashes, status, and usage — not request or error bodies.
+Dashboard controls can disable compression live.
 
 Stats, sessions, and cleanup tools live in the dashboard at
   http://127.0.0.1:<port>/  (default port 47821)
@@ -152,7 +154,8 @@ Environment:
   PORT                    listen port (default 47821)
   HOST                    interface to bind (default 127.0.0.1, loopback only).
                           Set 0.0.0.0 to expose the dashboard off-host — note it
-                          is unauthenticated and serves captured request context.
+                          is unauthenticated and exposes controls, statistics,
+                          and any in-memory rendered previews.
   PXPIPE_UPSTREAM         upstream API base for every API family
   ANTHROPIC_UPSTREAM      Anthropic API base; overrides PXPIPE_UPSTREAM
                            (default https://api.anthropic.com)
@@ -163,20 +166,17 @@ Environment:
                           families through one gateway base URL
   PXPIPE_GATEWAY_BASE_URL gateway base URL (required with PXPIPE_PROVIDER)
   PXPIPE_GATEWAY_HEADERS  extra upstream headers: JSON object or k=v;k2=v2
-  PXPIPE_MODELS           comma-separated model bases to image (Claude/GPT/Grok);
-                          default claude-fable-5 (Sol/Opus/GPT-5.5/Grok opt-in);
-                          off disables
+  PXPIPE_MODELS           comma-separated model bases eligible for compression;
+                          default claude-fable-5; off disables. OpenAI-compatible
+                          requests remain unchanged even when listed.
   PXPIPE_CONFIG           JSON config path (default ~/.config/pxpipe/config.json)
                           supports {"models": [...]} or {"models": "off"}
   PXPIPE_LOG              JSONL events path (default ~/.pxpipe/events.jsonl)
-  PXPIPE_DUMP_DIR         debug: write every rendered PNG here (what the model
-                          sees); off unless set. Compress arm only.
+  PXPIPE_DUMP_DIR         debug: write rendered PNGs here; off unless set. These
+                          files can contain selected request text.
 
 Use with Claude Code:
   ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude
-
-Use with OpenAI-compatible GPT clients:
-  OPENAI_BASE_URL=http://127.0.0.1:47821/v1
 `);
 }
 
@@ -1003,7 +1003,8 @@ async function main(): Promise<void> {
     if (!isLoopbackHost) {
       console.warn(
         `[pxpipe] WARNING: bound to ${opts.host} — the unauthenticated dashboard ` +
-          `(captured request context + kill switch) is reachable off-host. ` +
+          `(service controls + usage/session data + in-memory previews) is ` +
+          `reachable off-host. ` +
           `Unset HOST to restrict to loopback.`,
       );
     }

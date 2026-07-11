@@ -1,5 +1,12 @@
 # Demo 1 — cost A/B
 
+> [!CAUTION]
+> **Pre-correction historical material — unsupported; do not run.** This demo
+> uses the retired multi-process `/tmp` setup, can launch subscription clients,
+> and measures compression paths the current proxy removed. It remains only as
+> an experiment receipt; its commands and savings claims are not current setup
+> guidance.
+
 **What it measures:** does pxpipe cost less on a real coding task? **Honest verdict:
 ~break-even on cost.** The compression is real (~55% fewer *real* tokens, verified)
 but it lands in `cache_read` — cheap at `$` (0.1×), and its weight against a Pro/Max

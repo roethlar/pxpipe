@@ -138,7 +138,7 @@ the focused tests fail, restore them, and observe them pass. Then run:
 pnpm run typecheck
 pnpm test
 pnpm run build
-pnpm run package:macos-local
+pnpm run package:macos-local -- --output /Users/michael/Dev/pxpipe-deploy
 ```
 
 Finally run the packed proxy from an isolated temporary directory on an unused

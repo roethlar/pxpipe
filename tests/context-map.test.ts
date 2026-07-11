@@ -47,7 +47,14 @@ describe('renderContextMapFragment — cache-aware headline', () => {
     }), []);
 
     expect(html).toContain('Project guidance');
-    expect(html).toContain('Tool reference');
+    expect(html).toContain('Tool reference — legacy');
+  });
+
+  it('does not apply the current native-text guarantee to restored historical rows', () => {
+    const html = renderContextMapFragment(ctx({ restored: true }), []);
+    expect(html).toContain('Historical request');
+    expect(html).toContain('pre-correction behavior');
+    expect(html).not.toContain('System instructions + tool definitions</span><span class="ctx-val">verbatim');
   });
 
   it('says "smaller" only when the cache-weighted baseline actually beats what was sent', () => {
@@ -111,8 +118,8 @@ describe('renderContextMapFragment — cache-aware headline', () => {
 describe('renderContextMapFragment — cold vs warm honesty', () => {
   // The headline/sub-line must not claim a 0.1× read discount on a turn whose
   // actual request had no cache read. On a cold turn the text baseline's prefix
-  // is priced at the 1.25× create rate too, so "cached text" / "reads at 0.1×"
-  // would be counting unobserved cache as savings.
+  // is priced at its recorded create tier too, so "cached text" /
+  // "reads at 0.1×" would be counting unobserved cache as savings.
   it('COLD turn (no warmth): no read discount claimed, text is not called "cached"', () => {
     const html = renderContextMapFragment(
       ctx({
