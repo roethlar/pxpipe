@@ -19,21 +19,25 @@ in the files linked below rather than being copied here.
   remain untouched pending an explicit owner decision.
 - Upstream `main` was `8b525a1` at the final correction recheck. Its Grok
   imaging conflicts with the later exact-pass-through rule and was not imported.
+- One-port subscription routing Slices 1 and 2 are independently accepted.
+  Slice 3's transactional installer and exact Codex/Grok client configuration
+  are implemented at `44c121e` and pending independent Claude review; the
+  canonical status and guard evidence live in
+  `docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md` and `.agents/review/index.md`.
 - The glyph-escape workstream remains separate and is not the purpose of this
   branch.
 
 ## Next
 
-- Amend `docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md` to preserve exact OpenAI
-  pass-through and the one-command installed setup, then obtain a fresh Claude
-  plan verdict before implementation.
+- Run independent Claude review of one-port Slice 3. If accepted, proceed to
+  the separately scoped owner-facing package and local validation in Slice 4.
 - Any live subscription smoke, corrected live A/B matrix, push, merge, or
   upstream contribution remains separately owner-gated.
 
 ## Blockers
 
-- One-port implementation is blocked only on its focused plan amendment and
-  independent review.
+- One-port Slice 3 is blocked only on its independent Claude implementation
+  review; Slice 4 has not started.
 - No blocker remains for the installed no-hijack correction.
 
 ## Verification
