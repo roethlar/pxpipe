@@ -9,8 +9,9 @@ review head `8c9180b` after independently confirming four guards and the full
 gate. The exact reviewed package was then written to the durable deploy
 directory. Two install attempts exposed a legitimate launchd transition that
 the strict startup check rejected; both rolled back exactly. The bounded retry
-fix is `c1521f8` and awaits Claude review. No real client command or live model
-request ran.
+fix is `c1521f8`; Claude Code 2.1.207 / Sonnet 5 accepted review head `e5c4ed6`
+after independently reproducing the failure and confirming the final PID and
+listener guards. No real client command or live model request ran.
 
 Plan base: `cc79310` on `fix/provenance-safe-compression`. The corrected local
 package source `59e2b9a` is installed and passed its no-network capture.

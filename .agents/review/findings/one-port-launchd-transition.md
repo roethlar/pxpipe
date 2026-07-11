@@ -2,7 +2,7 @@
 
 **Severity**: MEDIUM — a valid local update rolls back safely but cannot install
 while launchd briefly retains a PID before reporting the job as running
-**Status**: Pending independent review
+**Status**: Accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `c1521f8cbf963a7f9a29b896310345a451187a89` (base
 `50f13d432c7c54ec4d4fa937713e1083a9dd3514`)
@@ -87,4 +87,29 @@ subscription/model request, push, or merge is authorized by this review.
 
 ## Reviewer comments
 
-Pending.
+- R1 (2026-07-11T12:02:51Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-launchd-transition-r1`.
+  - Reviewed SHA: `e5c4ed65416af4b4da0415345d437d85f71b9c30`.
+  - Base SHA: `50f13d432c7c54ec4d4fa937713e1083a9dd3514`.
+  - `guard_confirmed: true`.
+  - Verdict: **accepted**; no material finding.
+  - Trace proof: every transitional sample is discarded. Only a fresh later
+    `running` sample supplies the PID used by both exact listener checks.
+  - Red/green proof: restoring the immediate throw reproduced the real
+    `inconsistent running-state output` failure. Removing it restored a
+    cohesive successful install fixture.
+  - Bound proof: increasing the persistent fixture from 20 to 500 samples still
+    exhausted the 15-poll limit, failed closed, and restored cohesive absence.
+  - Existing foreign/duplicate listener, wrong-binding, startup-absence,
+    rollback, recovery, and legacy-adoption guards remained green.
+  - Final reviewer gate: 66 focused tests, typecheck, all 1,151 tests across 58
+    files, production build and version smoke, both shell syntax checks,
+    packager syntax, and diff check passed.
+  - Final tracked status was clean; only the pre-existing review-scaffolding
+    `node_modules` symlink was untracked.
+
+The JSON envelope exited zero after 43 turns, matched the required schema,
+returned both pinned SHAs exactly, and reported no permission denial, web
+search, or fetch. Claude ran no package, installer, service, client, credential,
+or product request beyond the review itself.
