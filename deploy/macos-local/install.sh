@@ -7,6 +7,7 @@ umask 077
 LABEL="com.pxpipe.proxy"
 HOST_BIND="127.0.0.1"
 PORT="${PXPIPE_PORT:-47821}"
+PERSISTED_MODELS="claude-fable-5,gpt-5.6-sol,grok-4.5"
 GUI_DOMAIN="gui/$(id -u)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 INSTALL_ROOT="$HOME/Library/Application Support/pxpipe"
@@ -59,6 +60,7 @@ write_plist() {
   <dict>
     <key>HOST</key><string>$HOST_BIND</string>
     <key>PORT</key><string>$PORT</string>
+    <key>PXPIPE_MODELS</key><string>$(xml_escape "$PERSISTED_MODELS")</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

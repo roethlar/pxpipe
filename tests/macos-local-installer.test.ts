@@ -9,6 +9,7 @@ const REPO = path.resolve(import.meta.dirname, '..');
 const INSTALLER_SOURCE = path.join(REPO, 'deploy', 'macos-local', 'install.sh');
 const PACKAGER_SOURCE = path.join(REPO, 'scripts', 'package-macos-local.mjs');
 const VERSION = '0.8.0-provenance-safe.1';
+const INSTALLED_MODELS = 'claude-fable-5,gpt-5.6-sol,grok-4.5';
 const DOLLAR = String.fromCharCode(36);
 const roots: string[] = [];
 
@@ -186,12 +187,16 @@ describe.skipIf(process.platform === 'win32')('local macOS package installer', (
     const result = runInstaller(bundle, harness, [], {
       ...harness.env,
       PXPIPE_PORT: '47991',
+      PXPIPE_MODELS: 'off',
     });
 
     expect(result.status, result.stderr).toBe(0);
     const plist = fs.readFileSync(plistPath(harness), 'utf8');
     expect(plist).toContain('<key>HOST</key><string>127.0.0.1</string>');
     expect(plist).toContain('<key>PORT</key><string>47991</string>');
+    expect(plist).toContain(
+      '<key>PXPIPE_MODELS</key><string>' + INSTALLED_MODELS + '</string>',
+    );
     expect(plist).not.toContain('0.0.0.0');
     expect(fs.readlinkSync(path.join(installRoot(harness), 'current'))).toBe(
       path.join(installRoot(harness), 'releases', bundle.commit),
