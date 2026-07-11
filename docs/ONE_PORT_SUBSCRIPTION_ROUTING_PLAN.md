@@ -4,11 +4,10 @@ Status: **APPROVED FOR IMPLEMENTATION 2026-07-11 — CLAUDE R4 ACCEPTED AT
 `e882aff`; SIMPLE-USE OUTCOME REMAINS OWNER-APPROVED**.
 
 Implementation checkpoint (2026-07-11): Slices 1–3 are independently accepted.
-Slice 3 implementation is `44c121e`; Claude Code 2.1.207 / Sonnet 5 accepted its
-review head `9923abd` after independently confirming four guards. Slice 4 has
-not started. No package was written to the durable deploy directory, no
-installation or client command ran, and no live model request was made by Slice
-3.
+Slice 4 implementation is committed at `c39745d` and awaits Claude review. Its
+37 focused tests, full test suite, typecheck, production build, and built-command
+smoke check pass. No package was written to the durable deploy directory, no
+installation or real client command ran, and no live model request was made.
 
 Plan base: `cc79310` on `fix/provenance-safe-compression`. The corrected local
 package source `59e2b9a` is installed and passed its no-network capture.

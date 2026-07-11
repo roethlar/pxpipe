@@ -19,24 +19,26 @@ in the files linked below rather than being copied here.
   remain untouched pending an explicit owner decision.
 - Upstream `main` was `8b525a1` at the final correction recheck. Its Grok
   imaging conflicts with the later exact-pass-through rule and was not imported.
-- One-port subscription routing Slices 1–3 are independently accepted.
-  Slice 3's transactional installer and exact Codex/Grok client configuration
-  are implemented at `44c121e` and independently accepted at reviewed head
-  `9923abd`; the canonical status and guard evidence live in
+- One-port subscription routing Slices 1–3 are independently accepted. Slice 4
+  is implemented at `c39745d` with its complete local gate green and awaits
+  Claude review. No new package, installation, real client command, or model
+  request has run; canonical status and guard evidence live in
   `docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md` and `.agents/review/index.md`.
 - The glyph-escape workstream remains separate and is not the purpose of this
   branch.
 
 ## Next
 
-- Proceed to the separately scoped owner-facing package and local validation in
-  one-port Slice 4; do not run a live subscription/model request.
+- Complete Claude review of one-port Slice 4. If accepted, package the exact
+  reviewed head to the durable deploy directory, install it, run the two
+  sandboxed offline parser checks, and verify one listener plus installed source.
 - Any live subscription smoke, corrected live A/B matrix, push, merge, or
   upstream contribution remains separately owner-gated.
 
 ## Blockers
 
-- No blocker remains for one-port Slice 3. Slice 4 has not started.
+- No blocker remains for Claude review. Packaging and installation wait for its
+  accepted verdict.
 - No blocker remains for the installed no-hijack correction.
 
 ## Verification
