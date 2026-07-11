@@ -970,7 +970,6 @@ async function verifyServiceOwnsListener(
       throw new InstallerValidationError('launchctl returned malformed running-state output');
     }
     if (loadedJob.state !== 'running') {
-      if (loadedJob.pid !== undefined) throw new InstallerValidationError('launchctl returned inconsistent running-state output');
       await sleep(100);
       continue;
     }

@@ -55,6 +55,7 @@ interface Harness {
   readonly lsofPorts: number[];
   readonly bootstrapPointers: string[];
   startupPrintMisses: number;
+  startupPidStateMisses: number;
   listenerMisses: number;
   invocation: number;
   nonce: number;
@@ -109,7 +110,7 @@ function loadedJobFromPlist(target: Harness, plist: string): LoadedJob {
   };
 }
 
-function printLoadedJob(target: Harness): string {
+function printLoadedJob(target: Harness, state = 'running'): string {
   const logs = path.join(target.home, 'Library', 'Logs', 'pxpipe');
   const job = target.loadedJob ?? {
     path: target.paths.launchAgent,
@@ -128,7 +129,7 @@ function printLoadedJob(target: Harness): string {
   const environment = Object.entries(job.environment)
     .map(([key, value]) => `\t\t${key} => ${value}`)
     .join('\n');
-  return `gui/${UID}/com.pxpipe.proxy = {\n\tactive count = 1\n\tpath = ${job.path}\n\ttype = LaunchAgent\n\tstate = running\n\n\tprogram = ${job.program}\n\targuments = {\n${job.arguments.map((argument) => `\t\t${argument}`).join('\n')}\n\t}\n\n\tstdout path = ${job.stdout}\n\tstderr path = ${job.stderr}\n\tinherited environment = {\n\t\tSSH_AUTH_SOCK => /var/run/com.apple.launchd.fixture/Listeners\n\t}\n\n\tdefault environment = {\n\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n\t}\n\n\tenvironment = {\n\t\tOSLogRateLimit => 64\n${environment}\n\t\tXPC_SERVICE_NAME => com.pxpipe.proxy\n\t}\n\n\tpid = ${target.jobPid}\n\tspawn type = daemon (3)\n\tjetsam properties = {\n\t\tstate = active\n\t}\n\tresource coalition = {\n\t\tstate = active\n\t}\n}\n`;
+  return `gui/${UID}/com.pxpipe.proxy = {\n\tactive count = 1\n\tpath = ${job.path}\n\ttype = LaunchAgent\n\tstate = ${state}\n\n\tprogram = ${job.program}\n\targuments = {\n${job.arguments.map((argument) => `\t\t${argument}`).join('\n')}\n\t}\n\n\tstdout path = ${job.stdout}\n\tstderr path = ${job.stderr}\n\tinherited environment = {\n\t\tSSH_AUTH_SOCK => /var/run/com.apple.launchd.fixture/Listeners\n\t}\n\n\tdefault environment = {\n\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n\t}\n\n\tenvironment = {\n\t\tOSLogRateLimit => 64\n${environment}\n\t\tXPC_SERVICE_NAME => com.pxpipe.proxy\n\t}\n\n\tpid = ${target.jobPid}\n\tspawn type = daemon (3)\n\tjetsam properties = {\n\t\tstate = active\n\t}\n\tresource coalition = {\n\t\tstate = active\n\t}\n}\n`;
 }
 
 async function setBundleSource(target: Harness, sourceCommit: string): Promise<void> {
@@ -196,6 +197,7 @@ async function makeHarness(): Promise<Harness> {
     lsofPorts: [],
     bootstrapPointers: [],
     startupPrintMisses: 0,
+    startupPidStateMisses: 0,
     listenerMisses: 0,
     invocation: 0,
     nonce: 0,
@@ -236,6 +238,10 @@ async function makeHarness(): Promise<Harness> {
           '',
           `Bad request.\nCould not find service "com.pxpipe.proxy" in domain for user gui: ${UID}\n`,
         );
+      }
+      if (state.loaded && state.startupPidStateMisses > 0) {
+        state.startupPidStateMisses -= 1;
+        return result(0, printLoadedJob(state, 'spawn scheduled'));
       }
       return state.loaded
         ? result(0, printLoadedJob(state))
@@ -541,6 +547,23 @@ describe('runnable macOS local installer app', () => {
       version: VERSION,
       port: 49123,
     });
+  });
+
+  it('waits for launchd to finish a non-running transition that still reports the job PID', async () => {
+    harness.startupPidStateMisses = 1;
+
+    await expect(run(harness)).resolves.toBe('changed');
+
+    await expectCohesiveInstalledState(harness);
+    expect(harness.startupPidStateMisses).toBe(0);
+  });
+
+  it('never accepts a persistent non-running launchd state even when it reports a PID', async () => {
+    harness.startupPidStateMisses = 20;
+
+    await expect(run(harness)).rejects.toThrow('installed pxpipe job did not acquire its selected port');
+
+    await expectCohesiveAbsentState(harness);
   });
 
   it('is a true no-op on an already-correct reinstall', async () => {
