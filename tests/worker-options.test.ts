@@ -66,8 +66,11 @@ describe('Worker provider-sensitive transform options', () => {
     });
   });
 
-  it('keeps OpenAI tool compression on when the shared Worker option is absent', async () => {
-    const workerOptions = transformOptionsFromEnv({});
+  it('cannot reactivate OpenAI rewriting through Worker environment options', async () => {
+    const workerOptions = transformOptionsFromEnv({
+      COMPRESS: 'true',
+      COMPRESS_TOOLS: 'true',
+    });
     const body = encode({
       model: 'gpt-5.6',
       messages: [
@@ -92,15 +95,21 @@ describe('Worker provider-sensitive transform options', () => {
 
     const result = await transformOpenAIChatCompletions(body, {
       ...workerOptions,
+      collapseHistory: true,
       charsPerToken: 1,
       minCompressChars: 1,
     });
     const out = decode<any>(result.body);
 
-    expect(Object.prototype.hasOwnProperty.call(workerOptions, 'compressTools')).toBe(false);
-    expect(result.info.compressed).toBe(true);
-    expect(out.tools[0].function.parameters.description).toBeUndefined();
-    expect(out.tools[0].function.parameters.properties.path.description).toBeUndefined();
+    expect(workerOptions.compress).toBe(true);
+    expect(workerOptions.compressTools).toBe(true);
+    expect(result.body).toEqual(body);
+    expect(result.info.compressed).toBe(false);
+    expect(result.info.imageCount).toBe(0);
+    expect(result.info.imageTokens).toBeUndefined();
+    expect(result.info.baselineImagedTokens).toBeUndefined();
+    expect(out.tools[0].function.parameters.description).toBe('OPENAI_ROOT_ANNOTATION');
+    expect(out.tools[0].function.parameters.properties.path.description).toBe('OPENAI_PATH_ANNOTATION');
   });
 
   it('uses Anthropic project-on/tool-and-reminder-native defaults from an empty Worker env', async () => {

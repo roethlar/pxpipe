@@ -1,25 +1,20 @@
 /**
- * END-TO-END savings-MATH contract through the REAL proxy.
+ * END-TO-END savings contract through the REAL proxy.
  *
- * The GPT cases retain the image-vs-text gate checks. Safe Anthropic candidates
- * must pass all four provider measurements; any probe failure stays native and
- * must not report hypothetical savings.
+ * OpenAI Chat remains byte-exact and therefore reports no compression or
+ * counterfactual savings. Safe Anthropic candidates must pass all four provider
+ * measurements; any probe failure stays native and reports no hypothetical savings.
  *
  *   fake api  = the upstream output plus a count_tokens tripwire
  *   our input = pxpipe's decision, read off the forwarded bytes and event
  *
- * CRITICAL: these run with REALISTIC gate settings (transform: {} → defaults).
- * The cache tests used charsPerToken:1 to FORCE imaging — that would rig this
- * gate (text looks infinitely expensive → always images), so it is NOT used here.
- *
- * The GPT side is cross-checked against a REAL o200k tokenizer (the gpt-tokenizer
- * dep), so "the text would have cost N tokens" is ground truth, not self-report.
+ * These run with the production default options. Large OpenAI inputs deliberately
+ * exceed every old image threshold so the byte-exact guard catches reactivation.
  *
  * Run just this file:  pnpm vitest run tests/savings-math-e2e.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createProxy, type ProxyEvent } from '../src/core/proxy.js';
-import { countTokens as o200k } from 'gpt-tokenizer/encoding/o200k_base';
 import {
   DIRECT_PROJECT_GUIDANCE,
   makeCapturedRequest,
@@ -139,55 +134,31 @@ const antBody = (opts: { model?: string; slabChars?: number }) => {
 };
 
 // ===========================================================================
-describe('savings math — GPT, cross-checked against the real o200k tokenizer', () => {
-  it('NO NET LOSS: when it images, the images cost fewer tokens than the text they replaced', async () => {
-    const { event } = await driveAndCapture('/v1/chat/completions', gptBody(60_000));
-    expect(event.info?.compressed).toBe(true);
-    const imageTokens = event.info!.imageTokens!;
-    const baseline = event.info!.baselineImagedTokens!;
-    expect(imageTokens).toBeGreaterThan(0);
-    expect(baseline).toBeGreaterThan(0);
-    // THE money guarantee: vision tokens added < text tokens removed.
-    expect(imageTokens).toBeLessThan(baseline);
-  });
-
-  it('GROUND TRUTH: baselineImagedTokens is a real o200k token count, not a char count', async () => {
-    // A chars-vs-tokens regression would inflate this ~4-5x; assert it tracks the
-    // real tokenizer within a tight tolerance (matched exactly in practice).
-    const sys = slab(60_000);
-    const realTok = o200k(sys);
-    const { event } = await driveAndCapture('/v1/chat/completions', gptBody(60_000));
-    const baseline = event.info!.baselineImagedTokens!;
-    expect(Math.abs(baseline - realTok)).toBeLessThanOrEqual(Math.max(5, realTok * 0.02));
-  });
-
-  it('GATE SIGN: profitable iff the gate believes images < text', async () => {
-    for (const sysChars of [2_000, 20_000, 60_000]) {
-      const { event } = await driveAndCapture('/v1/chat/completions', gptBody(sysChars));
-      const g = event.info?.gateEval;
-      if (!g) continue; // below the char floor → gate never ran
-      expect(g.profitable).toBe(g.imageTokens < g.textTokens);
-    }
-  });
-
-  it('DECLINES A LOSER: refuses to image content where imaging would cost more than the real text', async () => {
-    // 2000-char slab: ~374 real tokens, but it would render to a ~1400-token image.
-    const sys = slab(2_000);
-    const realTok = o200k(sys);
-    const { event, out } = await driveAndCapture('/v1/chat/completions', gptBody(2_000));
-    expect(event.info?.compressed).toBe(false);
-    expect(event.info?.gateEval?.profitable).toBe(false);
-    // The would-be image cost genuinely exceeds the real text cost → declining is correct.
-    expect(event.info!.gateEval!.imageTokens).toBeGreaterThan(realTok);
-    // And nothing was imaged: the forwarded body has no image parts.
-    expect(out).not.toContain('image_url');
-  });
-
-  it('BELOW THRESHOLD: a tiny system is forwarded byte-for-byte (no gate, no image)', async () => {
-    const body = gptBody(300);
+describe('savings math — OpenAI unchanged requests', () => {
+  it('forwards a formerly profitable long request byte-exact and reports no savings evidence', async () => {
+    const body = gptBody(60_000);
     const { event, out } = await driveAndCapture('/v1/chat/completions', body);
     expect(event.info?.compressed).toBe(false);
-    expect(JSON.parse(out)).toEqual(JSON.parse(body));
+    expect(out).toBe(body);
+    expect(event.info?.imageCount).toBe(0);
+    expect(event.info?.imageTokens).toBeUndefined();
+    expect(event.info?.baselineImagedTokens).toBeUndefined();
+    expect(event.info?.gateEval).toBeUndefined();
+    expect(event.info?.baselineProbeStatus).toBeUndefined();
+    expect(event.info?.admissionSignedSavingsTokens).toBeUndefined();
+    expect(event.info?.admissionRelativeSavings).toBeUndefined();
+  });
+
+  it('does not revive OpenAI rewriting at any former size threshold', async () => {
+    for (const sysChars of [300, 2_000, 20_000]) {
+      const body = gptBody(sysChars);
+      const { event, out } = await driveAndCapture('/v1/chat/completions', body);
+      expect(out).toBe(body);
+      expect(event.info?.compressed).toBe(false);
+      expect(event.info?.gateEval).toBeUndefined();
+      expect(event.info?.imageTokens).toBeUndefined();
+      expect(event.info?.baselineImagedTokens).toBeUndefined();
+    }
   });
 });
 

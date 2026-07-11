@@ -13,6 +13,9 @@ import {
   type HistoryTurn,
 } from '../src/core/openai-history.js';
 
+// These are pure planning-utility tests. The shipped Chat and Responses entry
+// points are pass-through; testing a planner here does not enable it there.
+
 // Always-profitable predicate for tests that exercise the planner mechanics.
 const yes = () => true;
 const no = () => false;

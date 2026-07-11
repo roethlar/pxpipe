@@ -12,7 +12,7 @@ import {
 let ambientPxpipeModels: string | undefined;
 beforeAll(() => {
   ambientPxpipeModels = process.env.PXPIPE_MODELS;
-  process.env.PXPIPE_MODELS = 'claude-fable-5,gpt-5.6-sol';
+  process.env.PXPIPE_MODELS = 'claude-fable-5,gpt-5.6-sol,grok-4.5';
 });
 afterAll(() => {
   if (ambientPxpipeModels === undefined) delete process.env.PXPIPE_MODELS;
@@ -33,6 +33,16 @@ function mockUpstream(handler: (req: Request) => Promise<Response> | Response) {
   return () => {
     globalThis.fetch = real;
   };
+}
+
+async function sha8(body: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(body) as BufferSource,
+  );
+  return Array.from(new Uint8Array(digest).subarray(0, 4))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 const SAMPLE_REQ_BODY = JSON.stringify({
@@ -177,7 +187,7 @@ describe('proxy usage extraction', () => {
     expect(captured?.info?.admissionRelativeSavings).toBeGreaterThan(0.1);
   });
 
-  it('routes GPT 5.6 Sol chat completions to OpenAI, transforms once, and normalizes usage', async () => {
+  it('routes GPT 5.6 Sol chat completions to OpenAI byte-exact and normalizes usage', async () => {
     const upstreamRequests: Request[] = [];
     const restore = mockUpstream(async (req) => {
       upstreamRequests.push(req.clone());
@@ -232,17 +242,20 @@ describe('proxy usage extraction', () => {
     expect(upstreamRequests).toHaveLength(1);
     expect(upstreamRequests[0]!.url).toBe('https://api.openai.test/v1/chat/completions');
     expect(upstreamRequests[0]!.headers.get('authorization')).toBe('Bearer sk-test');
-    const sent = JSON.parse(await upstreamRequests[0]!.text()) as any;
-    const firstUser = sent.messages.find((m: any) => m.role === 'user');
-    expect(firstUser.content[0].type).toBe('image_url');
-    expect(firstUser.content[0].image_url.url).toMatch(/^data:image\/png;base64,/);
+    expect(await upstreamRequests[0]!.text()).toBe(reqBody);
     expect(captured).toBeDefined();
     expect(captured!.usage?.input_tokens).toBe(55);
     expect(captured!.usage?.output_tokens).toBe(7);
+    expect(captured!.info?.compressed).toBe(false);
+    expect(captured!.info?.imageCount).toBe(0);
+    expect(captured!.info?.imageTokens).toBeUndefined();
+    expect(captured!.info?.baselineImagedTokens).toBeUndefined();
     expect(captured!.info?.baselineProbeStatus).toBeUndefined();
+    expect(captured!.info?.admissionSignedSavingsTokens).toBeUndefined();
+    expect(captured!.reqBodySha8).toBe(await sha8(reqBody));
   });
 
-  it('transforms provider-prefixed OpenAI chat but forwards through the generic upstream', async () => {
+  it('keeps provider-prefixed OpenAI chat byte-exact through the generic upstream', async () => {
     const upstreamRequests: Request[] = [];
     const restore = mockUpstream(async (req) => {
       upstreamRequests.push(req.clone());
@@ -284,12 +297,10 @@ describe('proxy usage extraction', () => {
     expect(upstreamRequests).toHaveLength(1);
     expect(upstreamRequests[0]!.url).toBe('http://ocproxy.test/openai/v1/chat/completions');
     expect(upstreamRequests[0]!.headers.get('authorization')).toBe('Bearer local-token');
-    const sent = JSON.parse(await upstreamRequests[0]!.text()) as any;
-    const firstUser = sent.messages.find((m: any) => m.role === 'user');
-    expect(firstUser.content[0].type).toBe('image_url');
+    expect(await upstreamRequests[0]!.text()).toBe(reqBody);
   });
 
-  it('transforms OpenCode /openai/responses requests and records the model', async () => {
+  it('keeps OpenCode /openai/responses requests byte-exact and records the model', async () => {
     const upstreamRequests: Request[] = [];
     const restore = mockUpstream(async (req) => {
       upstreamRequests.push(req.clone());
@@ -334,15 +345,17 @@ describe('proxy usage extraction', () => {
     expect(upstreamRequests).toHaveLength(1);
     expect(upstreamRequests[0]!.url).toBe('http://ocproxy.test/openai/responses');
     expect(upstreamRequests[0]!.headers.get('authorization')).toBe('Bearer local-token');
-    const sent = JSON.parse(await upstreamRequests[0]!.text()) as any;
-    const firstUser = sent.input.find((m: any) => m.role === 'user');
-    expect(firstUser.content[0].type).toBe('input_image');
+    expect(await upstreamRequests[0]!.text()).toBe(reqBody);
     expect(captured?.model).toBe('gpt-5.6-sol');
-    expect(captured?.info?.compressed).toBe(true);
-    expect(captured?.info?.firstUserSha8).toMatch(/^[0-9a-f]{8}$/);
+    expect(captured?.info?.compressed).toBe(false);
+    expect(captured?.info?.imageCount).toBe(0);
+    expect(captured?.info?.imageTokens).toBeUndefined();
+    expect(captured?.info?.baselineImagedTokens).toBeUndefined();
+    expect(captured?.info?.admissionSignedSavingsTokens).toBeUndefined();
+    expect(captured?.reqBodySha8).toBe(await sha8(reqBody));
   });
 
-  it('transforms plain /responses for subscription-authenticated Sol and routes it to OpenAI', async () => {
+  it('keeps subscription-authenticated Sol /responses byte-exact and routes it to OpenAI', async () => {
     const upstreamRequests: Request[] = [];
     const restore = mockUpstream(async (req) => {
       upstreamRequests.push(req.clone());
@@ -394,12 +407,79 @@ describe('proxy usage extraction', () => {
     );
     expect(upstreamRequests[0]!.headers.get('authorization')).toBe('Bearer fake-subscription-token');
     expect(upstreamRequests[0]!.headers.get('chatgpt-account-id')).toBe('acct_fake');
-    const sent = JSON.parse(await upstreamRequests[0]!.text()) as any;
-    const firstUser = sent.input.find((m: any) => m.role === 'user');
-    expect(firstUser.content[0].type).toBe('input_image');
+    expect(await upstreamRequests[0]!.text()).toBe(reqBody);
     expect(captured?.model).toBe('gpt-5.6-sol');
-    expect(captured?.info?.compressed).toBe(true);
-    expect(captured?.info?.imageCount ?? 0).toBeGreaterThan(0);
+    expect(captured?.info?.compressed).toBe(false);
+    expect(captured?.info?.imageCount).toBe(0);
+    expect(captured?.info?.imageTokens).toBeUndefined();
+    expect(captured?.info?.baselineImagedTokens).toBeUndefined();
+    expect(captured?.info?.admissionSignedSavingsTokens).toBeUndefined();
+    expect(captured?.reqBodySha8).toBe(await sha8(reqBody));
+  });
+
+  it('isolates sequential Sol and Grok Responses bodies, models, and hashes', async () => {
+    const upstreamBodies: string[] = [];
+    const restore = mockUpstream(async (req) => {
+      upstreamBodies.push(await req.clone().text());
+      return new Response(
+        JSON.stringify({
+          id: 'resp_isolation',
+          object: 'response',
+          output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] }],
+          usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+
+    const events: ProxyEvent[] = [];
+    const proxy = createProxy({
+      openAIUpstream: 'http://subscription.test',
+      transform: {
+        compress: true,
+        compressTools: true,
+        collapseHistory: true,
+        charsPerToken: 1,
+        minCompressChars: 1,
+      },
+      onRequest: (event) => {
+        events.push(event);
+      },
+    });
+    const solBody = JSON.stringify({
+      model: 'gpt-5.6-sol',
+      instructions: 'SOL_ONLY_SYSTEM_' + 's'.repeat(20_000),
+      input: [{ role: 'user', content: 'SOL_ONLY_REQUEST' }],
+    });
+    const grokBody = JSON.stringify({
+      model: 'grok-4.5',
+      instructions: 'GROK_ONLY_SYSTEM_' + 'g'.repeat(20_000),
+      input: [{ role: 'user', content: 'GROK_ONLY_REQUEST' }],
+    });
+
+    for (const body of [solBody, grokBody]) {
+      const res = await proxy(new Request('http://localhost/v1/responses', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer fake-subscription-token',
+        },
+        body,
+      }));
+      await res.text();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    restore();
+
+    expect(upstreamBodies).toEqual([solBody, grokBody]);
+    expect(upstreamBodies[1]).not.toContain('SOL_ONLY');
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.model)).toEqual(['gpt-5.6-sol', 'grok-4.5']);
+    expect(events.map((event) => event.info?.compressed)).toEqual([false, false]);
+    expect(events.map((event) => event.reqBodySha8)).toEqual([
+      await sha8(solBody),
+      await sha8(grokBody),
+    ]);
   });
 
   it('extracts usage tokens from an SSE stream (message_start event)', async () => {

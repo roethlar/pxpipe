@@ -8,6 +8,7 @@ import {
   shouldTransformAnthropicMessages,
   transformAnthropicMessages,
   transformOpenAIChatCompletions,
+  transformOpenAIResponses,
 } from '../src/core/index.js';
 
 const enc = new TextEncoder();
@@ -337,9 +338,10 @@ describe('public library API', () => {
     expect(transformed.cache.markerCount).toBe(0);
   });
 
-  it('transforms GPT 5.5 chat completions using OpenAI image_url blocks', async () => {
-    const body = enc.encode(JSON.stringify({
-      model: 'gpt-5.5',
+  it('keeps both exported OpenAI transforms byte-exact despite every legacy rewrite option', async () => {
+    process.env.PXPIPE_MODELS = 'gpt-5.6-sol,grok-4.5';
+    const chatBody = enc.encode(JSON.stringify({
+      model: 'gpt-5.6-sol',
       messages: [
         { role: 'system', content: 'System instruction. '.repeat(700) },
         { role: 'developer', content: 'Developer instruction. '.repeat(400) },
@@ -361,22 +363,47 @@ describe('public library API', () => {
         },
       }],
     }));
-
-    const transformed = await transformOpenAIChatCompletions(body, {
+    const responsesBody = enc.encode(JSON.stringify({
+      model: 'grok-4.5',
+      instructions: 'Responses instruction. '.repeat(1000),
+      input: [
+        { role: 'developer', content: 'Developer item. '.repeat(500) },
+        { role: 'user', content: 'hello from Grok' },
+        { role: 'assistant', content: 'prior answer '.repeat(1000) },
+      ],
+      tools: [{
+        type: 'function',
+        name: 'read_file',
+        description: 'Read a file from disk. '.repeat(100),
+        parameters: {
+          type: 'object',
+          description: 'Long root description.',
+          properties: { path: { type: 'string', description: 'Path to read.' } },
+          required: ['path'],
+        },
+      }],
+    }));
+    const legacyOptions = {
+      compress: true,
+      compressTools: true,
+      collapseHistory: true,
       charsPerToken: 1,
       minCompressChars: 1,
-    });
-    expect(transformed.info.compressed).toBe(true);
-    expect(transformed.info.imageCount).toBeGreaterThan(0);
-    const out = JSON.parse(dec.decode(transformed.body)) as any;
-    const firstUser = out.messages.find((m: any) => m.role === 'user');
-    expect(Array.isArray(firstUser.content)).toBe(true);
-    expect(firstUser.content[0].type).toBe('image_url');
-    expect(firstUser.content[0].image_url.url).toMatch(/^data:image\/png;base64,/);
-    expect(out.messages[0].content).toContain('rendered into image');
-    expect(out.tools[0].function.description).toBe('Read a file from disk. '.repeat(100));
-    expect(out.tools[0].function.parameters.description).toBeUndefined();
-    expect(out.tools[0].function.parameters.properties.path.description).toBeUndefined();
-    expect(JSON.stringify(out)).not.toContain('cache_control');
+      reflow: true,
+    } as const;
+
+    const chat = await transformOpenAIChatCompletions(chatBody, legacyOptions);
+    const responses = await transformOpenAIResponses(responsesBody, legacyOptions);
+
+    for (const [result, original] of [[chat, chatBody], [responses, responsesBody]] as const) {
+      expect(result.body).toEqual(original);
+      expect(dec.decode(result.body)).toBe(dec.decode(original));
+      expect(result.info.compressed).toBe(false);
+      expect(result.info.imageCount).toBe(0);
+      expect(result.info.imageTokens).toBeUndefined();
+      expect(result.info.baselineImagedTokens).toBeUndefined();
+      expect(result.info.gateEval).toBeUndefined();
+      expect(result.info.admissionSignedSavingsTokens).toBeUndefined();
+    }
   });
 });

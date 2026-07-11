@@ -85,8 +85,8 @@ export interface TransformOptions {
   compress?: boolean;
   /** Compress recognized Claude Code project guidance in its captured user-context role. */
   compressProjectGuidance?: boolean;
-  /** Compress tool descriptions. Anthropic uses a separately vouched reference
-   *  plus digest-bound stubs; provider defaults differ. */
+  /** Legacy source-compatible control. Shipped safe transforms keep tool
+   *  definitions native; this option cannot reactivate cross-role imaging. */
   compressTools?: boolean;
   /** Legacy compatibility option; current Anthropic orchestration does not
    *  image generic reminders. */
@@ -122,11 +122,10 @@ export interface TransformOptions {
    *  same burn formula to the TEXT side, preventing the gate from flipping out of
    *  image mode when the image prefix is already warm. Default 0. ≤0 clamped to 0. */
   priorWarmImageTokens?: number;
-  /** GPT only: collapse the OLD closed-tool-call conversation prefix into history
-   *  image(s), keeping the recent tail as text. Independent of the static slab.
-   *  Default on. See src/core/openai-history.ts. */
+  /** Legacy source-compatible GPT control. Shipped OpenAI transforms ignore it
+   *  and keep all history byte-exact native. */
   collapseHistory?: boolean;
-  /** GPT only: history-collapse tuning overrides (keepTail / collapseChunk / …). */
+  /** Legacy GPT history tuning; ignored by shipped OpenAI transforms. */
   gptHistory?: Partial<GptHistoryOptions>;
   /** Re-pack image-bound text into a ↵-delimited stream to fill `cols` (~29%→75-80%
    *  glyph-fill). ON by default (98.95% char accuracy at L1 OCR eval, +1pp vs baseline).

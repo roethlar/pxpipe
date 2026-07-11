@@ -5,8 +5,8 @@
  * (savings-honesty / savings-math), this asserts the three things pxpipe is
  * actually FOR behave per design, end to end:
  *
- *   1. SYSTEM CONTEXT — native system content stays in its API role
- *                       (no longer billed as text), live content preserved.
+ *   1. SYSTEM CONTEXT — native system content stays in its API role and live
+ *                       content remains exact.
  *   2. HISTORY SAFETY — old and recent turns stay in their caller-owned roles;
  *                       synthetic history is rejected by the shipped proxy.
  *   3. TOOLS IN RECENT TURNS — a tool_use/tool_result in the recent tail stays
@@ -187,23 +187,22 @@ describe('design: TOOLS IN RECENT TURNS (Anthropic)', () => {
 });
 
 // ===========================================================================
-describe('design: RECENT REQUEST stays legible (GPT)', () => {
-  it('images old history but keeps native system context and the latest user request readable', async () => {
+describe('design: OpenAI context remains native', () => {
+  it('keeps system, history, and the latest user request byte-exact', async () => {
     const turns = Array.from({ length: 12 }, (_, i) => ({
       role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
       content: `gturn ${i} ${big(2000)}`,
     }));
     turns.push({ role: 'user', content: 'FINAL_REQUEST_MARKER please answer' });
-    const out = await drive(
-      '/v1/chat/completions',
-      JSON.stringify({
-        model: 'gpt-5.6-sol',
-        messages: [{ role: 'system', content: 'SYS ' + big(60_000) }, ...turns],
-      }),
-    );
+    const body = JSON.stringify({
+      model: 'gpt-5.6-sol',
+      messages: [{ role: 'system', content: 'SYS ' + big(60_000) }, ...turns],
+    });
+    const out = await drive('/v1/chat/completions', body);
     const hay = JSON.stringify(out);
-    expect(imageCount(out)).toBeGreaterThan(0); // system imaged
-    // The agent's live request must remain legible text, never OCR-only.
+    expect(hay).toBe(body);
+    expect(imageCount(out)).toBe(0);
+    expect(hay).not.toContain('pxpipe');
     expect(hay).toContain('FINAL_REQUEST_MARKER please answer');
   });
 });

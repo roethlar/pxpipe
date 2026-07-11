@@ -1,7 +1,7 @@
 /**
  * Candidate determinism and real-proxy admission checks. Anthropic may replace
- * only exact source spans in their original containers; OpenAI coverage remains
- * here until its separate safe-default slice lands.
+ * only exact source spans in their original containers; OpenAI requests remain
+ * byte-exact until a same-container image representation exists.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { compareNoHijack } from '../src/core/no-hijack.js';
@@ -222,30 +222,6 @@ function anthropicImages(bodyText: string): { data: string; marked: boolean }[] 
   return images;
 }
 
-function gptChatImages(bodyText: string): string[] {
-  const body = JSON.parse(bodyText);
-  const images: string[] = [];
-  for (const message of body.messages ?? []) {
-    if (!Array.isArray(message.content)) continue;
-    for (const content of message.content) {
-      if (content?.type === 'image_url') images.push(content.image_url.url);
-    }
-  }
-  return images;
-}
-
-function gptResponsesImages(bodyText: string): string[] {
-  const body = JSON.parse(bodyText);
-  const images: string[] = [];
-  for (const item of body.input ?? []) {
-    if (!Array.isArray(item.content)) continue;
-    for (const content of item.content) {
-      if (content?.type === 'input_image') images.push(content.image_url);
-    }
-  }
-  return images;
-}
-
 async function buildCandidate(body: string): Promise<AnthropicCandidateResult> {
   return buildAnthropicCandidate(enc.encode(body), FORCE);
 }
@@ -383,7 +359,7 @@ describe('Anthropic exact-span cache and admission contract', () => {
   });
 });
 
-describe('e2e cache alignment — GPT (OpenAI) through the real proxy', () => {
+describe('e2e exact OpenAI pass-through through the real proxy', () => {
   function gptChatBody(opts: {
     model?: string;
     systemChars: number;
@@ -425,62 +401,67 @@ describe('e2e cache alignment — GPT (OpenAI) through the real proxy', () => {
     return cap;
   }
 
-  it('chat: emits NO cache_control (OpenAI prefix cache is markerless)', async () => {
+  it('chat keeps the complete caller body byte-exact with no cache markers or images', async () => {
+    const body = gptChatBody({ systemChars: 60_000, turns: turns(4, 20) });
     const cap = await driveGpt(
       '/v1/chat/completions',
-      gptChatBody({ systemChars: 60_000, turns: turns(4, 20) }),
+      body,
     );
     cap.restore();
     expect(cap.main).toHaveLength(1);
+    expect(cap.main[0]!.body).toBe(body);
     expect(countCacheControlMarkers(enc.encode(cap.main[0]!.body))).toBe(0);
-    expect(gptChatImages(cap.main[0]!.body).length).toBeGreaterThan(0);
+    expect(cap.main[0]!.body).not.toContain('image_url');
   });
 
-  it('chat APPEND-ONLY: the imaged prefix is byte-identical as the conversation grows', async () => {
+  it('chat keeps both the original and grown conversation byte-exact', async () => {
     const small = turns(30, 4000);
+    const smallBody = gptChatBody({ systemChars: 60_000, turns: small });
+    const grownBody = gptChatBody({
+      systemChars: 60_000,
+      turns: [...small, ...turns(20, 4000)],
+    });
     const cap1 = await driveGpt(
       '/v1/chat/completions',
-      gptChatBody({ systemChars: 60_000, turns: small }),
+      smallBody,
     );
     cap1.restore();
     const cap2 = await driveGpt(
       '/v1/chat/completions',
-      gptChatBody({ systemChars: 60_000, turns: [...small, ...turns(20, 4000)] }),
+      grownBody,
     );
     cap2.restore();
 
-    const a = gptChatImages(cap1.main[0]!.body);
-    const b = gptChatImages(cap2.main[0]!.body);
-    expect(a.length).toBeGreaterThan(1);
-    expect(b.length).toBeGreaterThan(a.length);
-    expect(b.slice(0, a.length)).toEqual(a);
+    expect(cap1.main[0]!.body).toBe(smallBody);
+    expect(cap2.main[0]!.body).toBe(grownBody);
   });
 
-  it('responses APPEND-ONLY: the imaged prefix is byte-identical as the conversation grows', async () => {
+  it('Responses keeps both the original and grown conversation byte-exact', async () => {
     const small = turns(30, 4000);
+    const smallBody = gptResponsesBody({ systemChars: 60_000, turns: small });
+    const grownBody = gptResponsesBody({
+      systemChars: 60_000,
+      turns: [...small, ...turns(20, 4000)],
+    });
     const cap1 = await driveGpt(
       '/v1/responses',
-      gptResponsesBody({ systemChars: 60_000, turns: small }),
+      smallBody,
     );
     cap1.restore();
     const cap2 = await driveGpt(
       '/v1/responses',
-      gptResponsesBody({ systemChars: 60_000, turns: [...small, ...turns(20, 4000)] }),
+      grownBody,
     );
     cap2.restore();
 
-    const a = gptResponsesImages(cap1.main[0]!.body);
-    const b = gptResponsesImages(cap2.main[0]!.body);
-    expect(a.length).toBeGreaterThan(1);
-    expect(b.length).toBeGreaterThan(a.length);
-    expect(b.slice(0, a.length)).toEqual(a);
+    expect(cap1.main[0]!.body).toBe(smallBody);
+    expect(cap2.main[0]!.body).toBe(grownBody);
   });
 
   it('GATE: an out-of-scope GPT model is forwarded byte-for-byte untouched', async () => {
     const body = gptChatBody({ model: 'gpt-4o', systemChars: 60_000, turns: turns(4, 20) });
     const cap = await driveGpt('/v1/chat/completions', body);
     cap.restore();
-    expect(gptChatImages(cap.main[0]!.body)).toHaveLength(0);
     expect(cap.main[0]!.body).toBe(body);
   });
 

@@ -67,9 +67,9 @@ const truthy = (v: string | undefined, fallback: boolean): boolean =>
   v == null ? fallback : v === '1' || v.toLowerCase() === 'true';
 
 /**
- * Build the shared proxy options without materializing provider-sensitive
- * defaults. An omitted `compressTools` lets Anthropic default tools off while
- * OpenAI independently keeps its tool compression default on.
+ * Build shared proxy options without materializing provider-sensitive defaults.
+ * Tool-definition compression is retained only as a source-compatible option;
+ * shipped safe transforms keep those definitions native.
  */
 export function transformOptionsFromEnv(env: Env): TransformOptions {
   const transform: TransformOptions = {
