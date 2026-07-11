@@ -2,7 +2,7 @@
 
 **Severity**: HIGH — this boundary must prevent normalized paths or hostile
 ambient settings from changing a subscription credential destination
-**Status**: In Review
+**Status**: Accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `5afc19af853f0cb26dae70d76c12df9059027a64` (base
 `9efbbf44beb735b56ed5bf80424afde04b027ec9`)
@@ -101,4 +101,30 @@ installation, or Slice 3 work is authorized by this review.
 
 ## Reviewer comments
 
-Pending Claude R1.
+- R1 (2026-07-11T07:05:28Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-one-port-slice2-r1`.
+  - Reviewed SHA: `07441c232ff6facbe94c233b272b8f72490a2cf0`.
+  - Base SHA: `9efbbf44beb735b56ed5bf80424afde04b027ec9`.
+  - `guard_confirmed: true` — the reviewer independently replayed the raw
+    validator, fixed-origin Host, and additional boundary perturbations, restored
+    the source, passed all 113 focused tests, typecheck, all 948 tests, and the
+    production build.
+  - Verdict: **accepted**.
+  - Must-fix findings: none.
+  - Should-fix: note that malformed `PXPIPE_GATEWAY_HEADERS` fails generic
+    traffic even without `PXPIPE_PROVIDER` rather than being ignored.
+
+Coder adjudication: declined as a code change. `gatewayHeaders` is applied to
+generic requests independently of `provider` in `createProxy`, so the setting is
+not unused when no provider is selected. Treating an invalid value as the stored
+generic configuration error is the plan's intentional fail-closed behavior;
+reserved traffic remains independent, and the boundary test pins both outcomes.
+
+The JSON envelope exited zero after 92 turns, matched the required schema, and
+returned both pinned SHAs exactly. Ten ancillary/compound shell forms were denied
+by the review allowlist, including one attempted `/tmp` diagnostic directory;
+the denial created no artifact and no required guard or final gate was lost. The
+disposable worktree was tracked-clean after restoration; its only untracked entry
+was the temporary `node_modules` symlink. Acceptance does not authorize live
+product calls, installation, push, or merge.
