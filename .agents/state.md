@@ -26,7 +26,8 @@ in the files linked below rather than being copied here.
   when launchd briefly retained a PID before reporting `running`; bounded retry
   fix `c1521f8` is accepted at reviewed head `e5c4ed6`. No real client or model
   request ran. The real offline check then stopped before client execution on
-  Codex's npm alias layout; exact identity fix `129ef35` awaits Claude review.
+  Codex's npm alias layout; exact identity fix `129ef35` is accepted at reviewed
+  head `6912f53`.
   Canonical status and guard evidence live in
   `docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md` and `.agents/review/index.md`.
 - The glyph-escape workstream remains separate and is not the purpose of this
@@ -34,16 +35,15 @@ in the files linked below rather than being copied here.
 
 ## Next
 
-- Complete Claude review of Codex alias fix `129ef35`, package and install its
-  exact reviewed head, then run both sandboxed offline parser checks and verify
-  one listener plus installed source.
+- Package and install exact reviewed head `6912f53`, then run both sandboxed
+  offline parser checks and verify one listener plus installed source.
 - Any live subscription smoke, corrected live A/B matrix, push, merge, or
   upstream contribution remains separately owner-gated.
 
 ## Blockers
 
-- Offline client validation waits for independent acceptance of the reproduced
-  Codex alias fix. The current reviewed service remains healthy.
+- No blocker remains for the corrected offline client validation. The current
+  reviewed service remains healthy.
 - No blocker remains for the installed no-hijack correction.
 
 ## Verification

@@ -3,7 +3,7 @@
 **Severity**: MEDIUM — installation succeeds safely, but the required offline
 Codex parser check stops before execution when it misidentifies the signed npm
 alias package
-**Status**: Pending independent review
+**Status**: Accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `129ef35fd7ea5918f09104cc42346eb8033cd78d` (base
 `100121e5320d60103fce25b86f851366fed969eb`)
@@ -93,4 +93,30 @@ subscription/model request, push, or merge is authorized by this review.
 
 ## Reviewer comments
 
-Pending.
+- R1 (2026-07-11T12:19:11Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-codex-alias-r1`.
+  - Reviewed SHA: `6912f533bf364f19b90d4a9100b4e9dc3841d202`.
+  - Base SHA: `100121e5320d60103fce25b86f851366fed969eb`.
+  - `guard_confirmed: true`.
+  - Verdict: **accepted**; no material finding.
+  - Chain proof: the root optional dependency binds the alias; the aliased
+    package binds the internal name, suffixed version, OS, and CPU before the
+    existing Mach-O, staging, version, and source-target proofs.
+  - Alias proof: replacing exact equality with a prefix let a wrong suffix
+    resolve. Restoration rejected it and returned all focused tests green.
+  - CPU proof: removing the exact CPU comparison let the wrong platform reach
+    the synthetic runner. Restoration rejected it before any runner call.
+  - Direct embedded layout and symlink-retarget rejection remained green.
+  - Final reviewer gate: 43 focused tests, typecheck, all 1,157 tests across 58
+    files, production build and version smoke, both shell syntax checks,
+    packager syntax, and diff check passed.
+  - Final tracked status was clean; only the pre-existing review-scaffolding
+    `node_modules` symlink was untracked.
+
+The JSON envelope exited zero after 48 turns, matched the required schema,
+returned both pinned SHAs exactly, and reported no permission denial, web
+search, or fetch. Claude ran no package, installer, service, client, credential,
+or product request beyond the review itself. It also noted that the canonical
+checkout's untracked governance controls are not present in this branch's
+tracked history; that pre-existing worktree fact is unrelated to this diff.

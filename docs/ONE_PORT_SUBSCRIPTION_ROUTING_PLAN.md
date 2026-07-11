@@ -14,8 +14,9 @@ after independently reproducing the failure and confirming the final PID and
 listener guards. That exact source is now installed and healthy. The first
 offline client check stopped before executing either client because Codex uses
 an npm architecture alias whose internal package name and version differ from
-the directory alias. Exact alias fix `129ef35` awaits Claude review. No live
-model request ran.
+the directory alias. Exact alias fix `129ef35` is accepted at Claude-reviewed
+head `6912f53` after independent alias and CPU guard proofs. No live model
+request ran.
 
 Plan base: `cc79310` on `fix/provenance-safe-compression`. The corrected local
 package source `59e2b9a` is installed and passed its no-network capture.
