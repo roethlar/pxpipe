@@ -5,7 +5,8 @@ Workflow: slice-adapted `reviewloop` (see AgentGovernanceBootstrap
 slice ↔ one commit ↔ one verdict**; the independent reviewer named in each
 slice record performs its guard proof in a disposable worktree at the slice
 head SHA.
-Per-slice detail: `.agents/review/findings/slice-<n>.md`.
+Per-slice detail: `.agents/review/findings/slice-<n>.md` and the named
+context-correction records below.
 
 Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 2026-07-10). Branch: `fix/provenance-safe-compression`, base `b1f5a01`.
@@ -31,3 +32,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | subscription-model-persistence | `7b7ac1c..6cc440c` | Save all three installed model selections | `[x]` accepted r1 at `7416c94`; installed from `3e07e08` |
 | one-port-subscription-plan | `41fd638` | Persistent one-service Codex and Grok plan | `[~]` paused behind context correction |
 | context-hijack-correction-plan | `5daab97` | Remove context rewriting, invalid requests, and negative returns | `[x]` accepted r3 at `bcecfd0`; implementation owner-gated |
+| context-correction-slice-1 | `a0386b6` | Shared no-hijack, structure, admission, accounting, and Node breaker | `[~]` pending Claude r1 |
