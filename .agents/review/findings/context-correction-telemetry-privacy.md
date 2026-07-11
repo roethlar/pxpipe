@@ -3,7 +3,7 @@
 **Severity**: HIGH — a provider 4xx or malformed request could persist private
 prompts, project text, host identity, dates, or upstream error text in JSONL,
 console output, or sidecar files.
-**Status**: In progress — pending independent Claude review
+**Status**: Verified — independently accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `a1e3bc40af2c45aea733bb94f849341487f84fa5` (base: parent
 `c8e75344503b95b3432d6b3deb2bf39972dc516d`)
@@ -118,4 +118,28 @@ Empty.
 
 ## Reviewer comments
 
-Pending.
+- R1 (2026-07-11T04:12:50Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-telemetry-privacy-r1`.
+  - Reviewed SHA: `0db62b16880070eac05b022265848aa6fbb90d52`.
+  - Base SHA: `c8e75344503b95b3432d6b3deb2bf39972dc516d`.
+  - `guard_confirmed: true` — the reviewer restored the base proxy, tracker,
+    and transform and observed all seven targeted privacy guards fail with
+    private request, response, environment, parse, or exception markers present;
+    restoring the reviewed head made all seven pass.
+  - The reviewer confirmed that Node no longer logs or writes 4xx bodies, that
+    session code only reads legacy sidecars for cleanup, and that error responses
+    still reach the client unchanged.
+  - The reviewed head passed typecheck, all 859 tests across 51 files, and the
+    production build.
+  - Verdict: **accepted**.
+  - Material comments: none. One non-blocking diff-noise note identified an
+    unused catch binding in an unrelated response-measurement guard; it has no
+    behavioral, typecheck, test, or build effect and is not part of this finding.
+
+The JSON envelope exited zero and matched the required schema and both pinned
+SHAs. Six ancillary `rtk`/no-op Bash attempts were denied; none was a required
+revert, focused guard, restore, inspection, or final gate command. The tracked
+review worktree was clean after restoration; its only untracked entry was the
+temporary `node_modules` symlink. Acceptance does not authorize installation,
+live product calls, push, merge, or paused one-port routing work.
