@@ -1,8 +1,7 @@
 # Local subscription-harness routing and smoke tests
 
-Status: **OWNER CORRECTION INDEPENDENTLY ACCEPTED 2026-07-10 — corrected
-bundle rebuild/install is in progress; live calls and push remain separately
-owner-gated**.
+Status: **OWNER CORRECTION INDEPENDENTLY ACCEPTED AND LOCALLY INSTALLED
+2026-07-10 — live calls and push remain separately owner-gated**.
 
 Plan base: `102b983` on `fix/provenance-safe-compression`. Canonical upstream
 `main` was still `8d7ba3e` when this plan was drafted. Recheck upstream before
@@ -307,3 +306,10 @@ Implementation commits are `7b7ac1c`, `d4f0b1d`, and `6cc440c`. Claude Code
 `7416c94316e3b8eff839ddb4fdfbace860268db5` with both guards confirmed. The
 canonical verdict is
 `.agents/review/findings/subscription-model-persistence.md`.
+
+The corrected durable bundle and installed receipt record source
+`3e07e08b7126b9ec4274dec7aafe8584a91e8970`. The installed LaunchAgent and
+running service carry the exact three-model value; the local dashboard shows
+all three selected, reports that the selection is saved for restart, and
+contains no environment-variable persistence warning. No live model call or
+push occurred.

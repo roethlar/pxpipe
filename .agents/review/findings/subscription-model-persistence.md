@@ -2,7 +2,7 @@
 
 **Severity**: HIGH — the installed service visibly contradicted the owner's
 explicit model selection and lost dashboard changes at restart
-**Status**: Verified — rebuild and reinstall in progress
+**Status**: Verified — corrected bundle installed from `3e07e08`
 **Branch**: `fix/provenance-safe-compression`
 **Commits**: `7b7ac1c`, `d4f0b1d`, and `6cc440c`
 
@@ -59,11 +59,19 @@ setting even after the installer saves it.
   `0.8.0-provenance-safe.1`.
 - No model call, installation, or push occurred during this correction.
 
-## Known gaps
+## Installation verification
 
-The currently installed bundle still records source `8dd128a` and therefore
-does not yet contain this correction. Rebuild and reinstall only after
-independent acceptance.
+- Packaging from clean source `3e07e08b7126b9ec4274dec7aafe8584a91e8970`
+  reran typecheck, all 819 tests, and build before writing the durable bundle
+  directly to `~/Dev/pxpipe-deploy`.
+- The deploy manifest and installed receipt match that source and archive
+  digest.
+- The LaunchAgent file and the running launch service both carry exact
+  `PXPIPE_MODELS=claude-fable-5,gpt-5.6-sol,grok-4.5`.
+- Local GETs returned success for the dashboard and model fragment. Fable, Sol,
+  and Grok were selected, `selection saved for restart` was present, and
+  `set PXPIPE_MODELS` was absent.
+- The service listens only on `127.0.0.1:47821`. No model call or push occurred.
 
 ## Reviewer comments
 
