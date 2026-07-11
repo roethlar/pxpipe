@@ -207,6 +207,8 @@ describe('offline macOS client parser validation', () => {
     const codexProfile = target.calls[0]!.profile;
     const grokCall = target.calls[3]!;
     const socket = grokCall.args[3]!;
+    const checkRoot = path.join(target.home, '.pxpipe-s', NONCE);
+    const exactMetadataRule = `(allow file-read-metadata file-test-existence (path-ancestors "${checkRoot}") (literal "/etc") (path-ancestors "/private/etc/codex"))`;
 
     for (const profile of [codexProfile, grokCall.profile]) {
       expect(profile).toContain('(deny default)');
@@ -216,7 +218,14 @@ describe('offline macOS client parser validation', () => {
       expect(profile).toContain('(deny file-read*)');
       expect(profile).toContain('(deny file-write*)');
       expect(profile).toContain('(allow file-read-data (literal "/"))');
+      expect(profile).toContain(exactMetadataRule);
       expect(profile).not.toContain('(allow file-read* (literal "/"))');
+      expect(profile).not.toContain(`(allow file-read* (subpath "${target.home}"))`);
+      expect(profile).not.toContain(`(allow file-read-data (subpath "${target.home}"))`);
+      expect(profile).not.toContain(`(allow file-read-metadata (subpath "${target.home}"))`);
+      expect(profile).not.toContain('(allow file-read* (subpath "/etc"))');
+      expect(profile).not.toContain('(allow file-read-data (subpath "/etc"))');
+      expect(profile).not.toContain('(allow file-read* (subpath "/private/etc"))');
       expect(profile).not.toContain(target.codexNative);
       expect(profile).not.toContain(target.grokNative);
       expect(profile).not.toContain(path.join(target.home, '.grok', 'leader.sock'));
@@ -674,6 +683,8 @@ describe('sandbox profile input validation', () => {
     expect(() => buildClientParserSandboxProfile('/tmp/bin', '/tmp/home', '/tmp/home'))
       .toThrow('outside the owner home');
     expect(() => buildClientParserSandboxProfile('/tmp/bin', '/tmp/home', '/tmp'))
+      .toThrow('outside the owner home');
+    expect(() => buildClientParserSandboxProfile('/tmp/bin\n(allow default)', '/tmp/home', '/tmp'))
       .toThrow('outside the owner home');
   });
 });

@@ -509,6 +509,15 @@ export function buildClientParserSandboxProfile(
     leaderSocket !== undefined
     && (!path.isAbsolute(leaderSocket) || path.dirname(leaderSocket) !== checkRoot)
   ) throw new ClientParserValidationError('Grok leader socket must be directly inside the private check directory');
+  const relativeRoot = path.relative(ownerHome, checkRoot);
+  if (
+    relativeRoot === ''
+    || relativeRoot === '..'
+    || relativeRoot.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relativeRoot)
+  ) {
+    throw new ClientParserValidationError('private check directory is outside the owner home');
+  }
   const profile = [
     '(version 1)',
     '(deny default)',
@@ -521,6 +530,9 @@ export function buildClientParserSandboxProfile(
     `(allow file-read* (subpath ${seatbeltLiteral(checkRoot)}))`,
     `(allow file-read* (literal ${seatbeltLiteral(executable)}))`,
     '(allow file-read-data (literal "/"))',
+    // Resolve only the private path's ancestors and the absent system-policy
+    // root. This grants no file contents or descendant scope outside checkRoot.
+    `(allow file-read-metadata file-test-existence (path-ancestors ${seatbeltLiteral(checkRoot)}) (literal "/etc") (path-ancestors "/private/etc/codex"))`,
     '(allow file-read* (subpath "/System/Library"))',
     '(allow file-read* (subpath "/usr/lib"))',
     '(allow file-read* (subpath "/private/var/db/dyld"))',
@@ -543,17 +555,6 @@ export function buildClientParserSandboxProfile(
   profile.push(
     '',
   );
-  // ownerHome is intentionally used only to prove the private root is nested
-  // beneath it; it is never emitted as an allowed read or write scope.
-  const relativeRoot = path.relative(ownerHome, checkRoot);
-  if (
-    relativeRoot === ''
-    || relativeRoot === '..'
-    || relativeRoot.startsWith(`..${path.sep}`)
-    || path.isAbsolute(relativeRoot)
-  ) {
-    throw new ClientParserValidationError('private check directory is outside the owner home');
-  }
   return profile.join('\n');
 }
 
