@@ -3,7 +3,7 @@
 **Severity**: HIGH — the installed Anthropic path could move host metadata,
 insert proxy-authored instructions, invalidate message role order, and admit
 requests that cost more after cache pricing.
-**Status**: In progress — pending independent Claude review
+**Status**: Verified — independently accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `5b98406c450eab5a841741480109806fda239c64` (base: parent
 `911a7811371db57b2d1cf0b5f4e5a42c6fb9df17`)
@@ -125,4 +125,20 @@ Empty.
 
 ## Reviewer comments
 
-Pending independent Claude review.
+- R1 (2026-07-11T03:08:16Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-context-correction-s2-r1`.
+  - Reviewed SHA: `1ec9f280efbb711a6341b0a5442ab74b96cbc18c`.
+  - Base SHA: `911a7811371db57b2d1cf0b5f4e5a42c6fb9df17`.
+  - `guard_confirmed: true` — the reviewer independently observed the named
+    transform and proxy reversions fail their focused guards, restored the
+    reviewed head, and completed the post-restore typecheck, full test suite,
+    and production build.
+  - Verdict: **accepted**.
+  - Comments: none.
+
+The JSON envelope exited zero, matched the required schema, and returned the
+pinned SHAs. The disposable worktree was tracked-clean after restoration; its
+only untracked entry was the temporary `node_modules` symlink used for the gate.
+Acceptance does not authorize installation, live product calls, push, merge, or
+the paused routing work.
