@@ -3,7 +3,7 @@
 **Severity**: HIGH — the installed path could move trusted context, emit an
 invalid Anthropic role sequence, and spend more effective input tokens than the
 unchanged request.
-**Status**: In progress — pending independent Claude review
+**Status**: Verified — independently accepted
 **Branch**: `fix/provenance-safe-compression`
 **Commit**: `a0386b6d8be76913e34d298cc27902e4c931cc1c` (base: parent
 `b2a5389555d531cc880db76a296e5924d4d67afb`)
@@ -110,4 +110,20 @@ Empty.
 
 ## Reviewer comments
 
-Pending Claude review.
+- R1 (2026-07-11T02:18:03Z): Claude Code 2.1.207 / Sonnet 5, structured
+  output, pxpipe bypassed, disposable worktree
+  `/Users/michael/Dev/pxpipe-review-context-correction-s1-r1`.
+  - Reviewed SHA: `717464e451deeb1bab97307275bd23fd19eb509b`.
+  - Base SHA: `b2a5389555d531cc880db76a296e5924d4d67afb`.
+  - `guard_confirmed: true` — the reviewer independently observed both named
+    source reversions fail their focused guards, restored the reviewed head,
+    and completed the post-restore gate.
+  - Verdict: **accepted**.
+  - Comments: none.
+
+The JSON envelope exited zero, matched the required schema, and returned the
+pinned SHAs. Six ancillary compound diagnostic Bash attempts (`ls`/`stat`/`echo`
+combined with other commands) were denied by the narrow allowlist; none was a
+required revert, focused test, restore, or final gate command, and the structured
+guard result completed successfully. Acceptance does not authorize installation,
+live product calls, push, merge, or the paused routing work.
