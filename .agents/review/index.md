@@ -38,3 +38,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | context-correction-slice-4 | `eb6c70d` | Terminal-control atomicity, role order, and request isolation | `[x]` accepted r1 at `9309e15`; Claude guard confirmed |
 | context-correction-telemetry-privacy | `a1e3bc4` | Stop persisting private requests, errors, and host identity | `[x]` accepted r1 at `0db62b1`; Claude guard confirmed |
 | context-correction-slice-5 | `86eb64e` | Public contract, migration, and local release documentation | `[x]` accepted r1 at `f58b34f`; Claude guard confirmed |
+| context-correction-public-contract | `91c72e7` | Installed help, dashboard, renderer docs, and demo safety copy | `[~]` pending Claude review |
