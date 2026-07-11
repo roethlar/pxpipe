@@ -29,3 +29,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | subscription-plan | `5499612` | No-key local Fable, Sol, and Grok routing plan       | `[x]` accepted r3; implementation owner-gated |
 | subscription-routing | `80172ae..dfeb07f` | Local no-key Codex and Grok routes          | `[x]` accepted r1 at `9ef32c5`; Claude guards confirmed |
 | subscription-model-persistence | `7b7ac1c..6cc440c` | Save all three installed model selections | `[x]` accepted r1 at `7416c94`; installed from `3e07e08` |
+| one-port-subscription-plan | `41fd638` | Persistent one-service Codex and Grok plan | `[~]` pending Claude review |
