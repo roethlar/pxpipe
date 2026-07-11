@@ -33,3 +33,4 @@ Plan under review: `docs/PROVENANCE_SAFE_COMPRESSION_PLAN.md` (approved
 | one-port-subscription-plan | `41fd638` | Persistent one-service Codex and Grok plan | `[~]` paused behind context correction |
 | context-hijack-correction-plan | `5daab97` | Remove context rewriting, invalid requests, and negative returns | `[x]` accepted r3 at `bcecfd0`; implementation owner-gated |
 | context-correction-slice-1 | `a0386b6` | Shared no-hijack, structure, admission, accounting, and Node breaker | `[x]` accepted r1 at `717464e`; Claude guard confirmed |
+| context-correction-slice-2 | `5b98406` | Anthropic exact in-place project and tool-result compression | `[~]` pending Claude r1 |
