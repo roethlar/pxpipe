@@ -1,10 +1,9 @@
 # one-port-subscription-plan: One-service persistent subscription routing plan
 
 **Severity**: N/A — owner-requested plan review, not a defect finding
-**Status**: Reopened after R1 — coder audit found required client routes and
-installer/query gaps the reviewer missed
+**Status**: In Review — R2 amendment closes the independently evidenced gaps
 **Branch**: `fix/provenance-safe-compression`
-**Commit**: `1bf3f5ebd2522336903959152ffb20751ce72b53` (base
+**Commit**: `1940744a0ae9b608bf2297578c0a99e88e8f888c` (base
 `cc79310e5476f62e09aa1dbe4ee51b6204380002`)
 
 ## Plan authority
@@ -101,7 +100,20 @@ Concurrent read-only audits produced new concrete failures:
   contradicting the hostile-generic-setting bypass requirement.
 
 These are observable compatibility/security gaps, not style preferences. The
-plan is reopened for an R2 amendment and fresh Claude review.
+R2 addresses them by:
+
+- adding exact Codex compact and installed-Grok auxiliary routes;
+- pinning serialized query-suffix preservation, full hop-by-hop filtering, raw
+  malformed/absolute target rejection, and independent reserved/generic config
+  resolution;
+- specifying a source-preserving fixed-target config helper, existing/new mode
+  rules, ambiguous/API-key-flow refusal, network-denied pre/post parsing, and a
+  fixed transaction/rollback order; and
+- making reinstall/uninstall surgical around managed keys so unrelated later
+  owner edits survive.
+
+The amended plan is ready for a fresh Claude review. No implementation is
+authorized by the R1 verdict.
 
 ## Reviewer comments
 
