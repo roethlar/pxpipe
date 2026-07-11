@@ -160,6 +160,9 @@ explicit sentinel `absent`. It also records prior/applied existence, owner, mode
 hash, and snapshot path for the release pointer, service definition/state, both
 client files, and any directories the transaction created. Journal creation and
 every phase transition use atomic rename plus file and parent-directory fsync.
+This contract covers process death, handled signals, and ordinary OS restart.
+Plain Node/shell fsync does not provide macOS `F_FULLFSYNC`, so the plan makes no
+claim that an abrupt loss of power preserves drive-cache ordering.
 
 Every invocation recovers a pending journal while holding the exclusive lock. If
 the intended receipt identity is already durably present — including `absent`
@@ -181,6 +184,13 @@ hash-check both; stop/remove the service definition and current link; commit the
 `absent` receipt identity; mark committed; then remove releases, snapshots,
 journal, lock, and empty install-state directories last. This ordering never
 points a client at a service already removed.
+
+No receipt is rewritten during a partial operation. Until every install step
+succeeds, the prior receipt remains authoritative; until every uninstall step
+succeeds, the installed receipt remains authoritative. A handled failure rolls
+all resources back to that receipt. A detected concurrent conflict keeps the
+prior receipt plus the `conflicted` journal, which is the sole record that the
+resources may temporarily be mixed; it never drops only one managed target.
 
 Rollback and crash recovery compare before writing. A resource matching its
 prior identity is a no-op; one matching its applied identity may be restored;
@@ -378,15 +388,19 @@ committed and reviewed before the next begins.
 - Package the exact reviewed head directly into
   `/Users/michael/Dev/pxpipe-deploy`, verify its digest, and install it.
 - Run `codex features list` and
-  `grok inspect --json --leader-socket <fresh-private-transaction-socket>` under
+  `grok inspect --json --leader-socket <fresh-short-private-socket>` under
   macOS `sandbox-exec` against byte-identical config copies in a 0700 isolated
   home and empty working directory. Deny network, reads from the real home,
-  writes outside the private transaction directory, and child execution. The
-  Grok socket path is unique to that check, lives inside that directory, and is
-  removed afterward; the check never uses, connects to, creates, or changes the
-  default `~/.grok/leader.sock`. Capture/discard command output. After each real
-  install write, compare its hash and mode with the already parsed candidate
-  instead of invoking either CLI against the owner's home or credential stores.
+  writes outside the private check directory, process fork, and child execution.
+  The Grok socket uses a short random name directly under a temporary 0700
+  `${OWNER_HOME}/.pxpipe-s/` child while the subprocess `HOME` remains isolated,
+  is at most 90 UTF-8 bytes including its filename, and fails before mutation if
+  that budget cannot be met. The directory and socket
+  are removed afterward; the check never uses, connects to, creates, or changes
+  the default `~/.grok/leader.sock`, and fork denial prevents an orphan leader.
+  Capture/discard command output. After each real install write, compare its hash
+  and mode with the already parsed candidate instead of invoking either CLI
+  against the owner's home or credential stores.
 - Confirm one healthy loopback listener and the exact installed source commit.
 
 ## Automated acceptance checks
@@ -430,12 +444,13 @@ committed and reviewed before the next begins.
     owner edit visible at the pinned identity checks is preserved or fails
     closed. The final non-cooperating editor race is explicitly not claimed safe.
 15. Sandboxed network-denied `codex features list` and
-    `grok inspect --json --leader-socket <fresh-private-transaction-socket>`
+    `grok inspect --json --leader-socket <fresh-short-private-socket>`
     accept byte-identical TOML copies under an isolated HOME and empty cwd with
-    real-home reads, outside writes, and child execution denied. The default Grok
-    leader socket and credential stores are not contacted, read, created, or
-    changed. No parser check launches an agent, lists remote models, or prints
-    its output; installed files are verified by hash/mode comparison only.
+    real-home reads, outside writes, fork, and child execution denied. The Grok
+    socket path is private and no longer than 90 UTF-8 bytes. The default leader
+    socket and credential stores are not contacted, read, created, or changed;
+    no background leader, agent, model listing, or output survives. Installed
+    files are verified by hash/mode comparison only.
 16. Fresh-file install/uninstall restores the original bytes exactly. Inserted
     keys and table headers are removed only through their recorded parsed identity
     and exact span proofs; owner keys, comments, and trivia survive relocation and
@@ -457,11 +472,14 @@ committed and reviewed before the next begins.
     transition, service switch, each client write, validation, receipt
     rename/removal, and journal commit. The next lock holder removes preparation
     debris, restores the prior state, or recognizes the intended committed
-    receipt identity; it never accepts a mixed state.
+    receipt identity; it never accepts a mixed state. Power-loss durability is
+    explicitly outside this plain-fsync contract.
 22. Every uninstall reversal is preflighted before mutation. A changed or
     ambiguous managed span leaves the service, configs, receipt, hashes, and
     mtimes unchanged. Successful uninstall commits explicit receipt absence and
-    removes the transaction/state directory only after journal cleanup.
+    removes the transaction/state directory only after journal cleanup. Failure
+    after either client reversal restores both and leaves the installed receipt
+    unchanged; a detected race retains that receipt plus the conflicted journal.
 23. A detected concurrent owner edit enters durable `conflicted`, retains
     snapshots, reports no contents, and blocks later mutations until a recorded
     safe identity returns. Tests separately document the unavoidable final
@@ -469,8 +487,9 @@ committed and reviewed before the next begins.
     behavior.
 24. Candidate parser checks use isolated copies and the fresh Grok leader socket
     under the complete sandbox above. Tests prove the real home, default socket,
-    credential stores, network, and child execution are untouched; output is
-    discarded and installed files match the parsed candidate hashes.
+    credential stores, network, fork, and child execution are untouched; socket
+    length is bounded, output is discarded, no orphan process remains, and
+    installed files match the parsed candidate hashes.
 
 Every new behavior test receives a guard proof: temporarily remove the matching
 classifier, raw-target check, or installer/config behavior; observe the focused
