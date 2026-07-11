@@ -20,8 +20,10 @@ in the files linked below rather than being copied here.
 - Upstream `main` was `8b525a1` at the final correction recheck. Its Grok
   imaging conflicts with the later exact-pass-through rule and was not imported.
 - One-port subscription routing Slices 1–4 are independently accepted. Slice 4
-  is implemented at `c39745d` and accepted at reviewed head `8c9180b`; no new
-  package, installation, real client command, or model request has run yet.
+  is implemented at `c39745d` and accepted at reviewed head `8c9180b`. Its exact
+  package is in the durable deploy directory. Two installs safely rolled back
+  when launchd briefly retained a PID before reporting `running`; bounded retry
+  fix `c1521f8` awaits Claude review. No real client or model request ran.
   Canonical status and guard evidence live in
   `docs/ONE_PORT_SUBSCRIPTION_ROUTING_PLAN.md` and `.agents/review/index.md`.
 - The glyph-escape workstream remains separate and is not the purpose of this
@@ -29,15 +31,16 @@ in the files linked below rather than being copied here.
 
 ## Next
 
-- Package exact reviewed head `8c9180b` to the durable deploy directory, install
-  it, run the two sandboxed offline parser checks, and verify one listener plus
-  installed source.
+- Complete Claude review of launchd transition fix `c1521f8`. If accepted,
+  package that exact reviewed head, install it, run the two sandboxed offline
+  parser checks, and verify one listener plus installed source.
 - Any live subscription smoke, corrected live A/B matrix, push, merge, or
   upstream contribution remains separately owner-gated.
 
 ## Blockers
 
-- No blocker remains for the reviewed local deployment and validation.
+- Installation waits for independent acceptance of the reproduced launchd
+  transition fix; both failed attempts restored the prior installation exactly.
 - No blocker remains for the installed no-hijack correction.
 
 ## Verification
