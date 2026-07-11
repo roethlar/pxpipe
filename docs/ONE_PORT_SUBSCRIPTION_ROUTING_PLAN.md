@@ -81,18 +81,43 @@ Grok keeps its stored browser/subscription login. The installer must not set
 `models_base_url`, which selects Grok's API-key flow.
 
 The config editor is a tested helper shipped inside the package, not a chain of
-unbounded shell substitutions. It changes only these named keys/table, preserves
-unrelated bytes and owner settings, writes a same-directory temporary file, and
-renames atomically. Existing file modes are preserved; newly created files are
-0600. Parent directories remain owner-only.
+unbounded shell substitutions. It accepts only the fixed Codex/Grok targets and
+an integer port. It preserves BOM, LF/CRLF choice, final-newline state, comments,
+spacing, unrelated keys, and every unrelated byte; exact scalar right-hand sides
+are replaced and missing keys/tables are inserted deterministically. It rejects
+ambiguous duplicate/quoted/dotted/array target shapes, multiline target values,
+invalid UTF-8/TOML, symlinks, non-regular files, ownership changes, pre-write hash
+races, and a pre-existing Grok `models_base_url` rather than deleting owner data
+or silently selecting the API-key flow.
+
+Writes use same-directory temporary files, fsync, and atomic rename. Existing
+file modes are preserved exactly; newly created files are 0600. Existing parent
+directories must be owned by the current user and not group/world-writable but
+keep their existing mode (0755 is valid). Missing parent directories are created
+0700. The installer never silently chmods an owner file or directory.
 
 Before the first change, the installer stores byte-exact 0600 backups and hashes
-under the pxpipe install root. Reinstalling an already-correct version is
-idempotent and does not stack backups. A service, health-check, parser, or config
-failure restores the prior service and both client files. Uninstall restores a
-backed-up file only when its current managed keys still match pxpipe's receipt;
-owner edits made after installation are never overwritten and instead produce a
-clear warning.
+under a 0700 directory inside the pxpipe install root. Those backups contain only
+the client config bytes the owner already had; subscription token stores are
+never read or copied, and backup contents are never logged. Reinstalling an
+already-correct version is idempotent and does not stack backups or change
+mtimes.
+
+The receipt records each managed key's original presence/value and last applied
+value. Later unrelated owner edits survive reinstall. Uninstall reverses a
+managed key only when it still equals pxpipe's last applied value; an owner-changed
+managed key is left untouched with a warning. Inserted tables are removed only
+when no unrelated keys remain. A service, health-check, parser, config, signal,
+or injected write failure restores the prior service and both per-run config
+snapshots, guarded by whole-file hashes so rollback cannot overwrite a concurrent
+owner edit.
+
+Transaction order is fixed: preflight both source files and build both candidates;
+validate the candidates with network denied in isolated homes; stage per-run
+snapshots; switch/start/health-check the service; atomically apply both client
+files; validate the installed files with network denied; then commit the receipt.
+One ERR/INT/TERM trap owns rollback. Applying client URLs only after service
+health prevents a half-install from pointing either client at a dead listener.
 
 ## Exact reserved route contract
 
@@ -103,16 +128,36 @@ or guesses from the token.
 | Incoming method and local route | Forwarded subscription route |
 |---|---|
 | `POST /_pxpipe/codex/responses` | ChatGPT Codex `/responses` |
+| `POST /_pxpipe/codex/responses/compact` | ChatGPT Codex `/responses/compact` |
 | `GET /_pxpipe/codex/models` | ChatGPT Codex `/models` |
 | `GET /_pxpipe/codex/models/<path>` | ChatGPT Codex `/models/<path>` |
 | `POST /_pxpipe/grok/v1/responses` | Grok `/v1/responses` |
 | `GET /_pxpipe/grok/v1/models` | Grok `/v1/models` |
 | `GET /_pxpipe/grok/v1/models/<path>` | Grok `/v1/models/<path>` |
+| `GET /_pxpipe/grok/v1/models-v2` | Grok `/v1/models-v2` |
 | `GET /_pxpipe/grok/v1/settings` | Grok `/v1/settings` |
+| `GET /_pxpipe/grok/v1/login-config` | Grok `/v1/login-config` |
+| `GET /_pxpipe/grok/v1/subagents/bundle` | Grok `/v1/subagents/bundle` |
 
-Query bytes and ordering are preserved. Accepted client-supplied authorization,
-account, `X-XAI-*`, `x-grok-*`, and other end-to-end headers are forwarded
-unchanged; normal hop-by-hop headers are still removed by the HTTP host.
+The installed Codex binary contains a dedicated compact endpoint and literal
+`/responses/compact`. The installed Grok binary names model refresh,
+login-policy, settings, and subagent-bundle fetches against its cli-chat-proxy
+base. These exact auxiliaries are allowlisted so plain client startup/refresh
+does not silently lose a feature; arbitrary descendants remain closed.
+
+The exact serialized query suffix is preserved, including a trailing empty `?`,
+duplicate keys, empty values, `+`, ordering, and percent-escape casing. Neither
+`URL.searchParams` nor query reconstruction is allowed. Accepted client-supplied
+authorization, account, `X-XAI-*`, `x-grok-*`, and other end-to-end headers are
+forwarded unchanged.
+
+The forwarding filter removes `host`, computed length/encoding fields, the
+standard hop-by-hop set (including `te`, `trailer`, proxy auth, connection,
+keep-alive, transfer-encoding, and upgrade), and every header named by
+`Connection`. If `Connection` nominates authorization or another required
+end-to-end field, the request fails locally instead of forwarding a partial
+credential set. Existing generic-route header behavior receives regression
+coverage; reserved safety does not depend on blindly copying `Headers`.
 
 Reserved failures are local and perform zero fetches:
 
@@ -127,9 +172,13 @@ Reserved failures are local and perform zero fetches:
 The Node host validates the raw `IncomingMessage.url` before constructing a
 WHATWG `Request`. This prevents URL normalization from turning a path such as
 `/_pxpipe/codex/../grok/v1/responses` into a different credential destination.
-The pure core classifier then rechecks the normalized path. Any target beginning
-with the reserved-looking `/_pxpipe` prefix that is not an exact accepted shape
-fails closed rather than falling into generic routing.
+It splits only at the first `?`, validates the path without decoding the query,
+and rejects invalid percent escapes, encoded slash/backslash/percent, literal
+backslash or fragment, literal/encoded dot segments, empty/duplicate reserved
+segments, repeated prefixes, and absolute-form reserved targets. The pure core
+classifier then rechecks the normalized path. Any target beginning with the
+reserved-looking `/_pxpipe` prefix that is not an exact accepted shape fails
+closed rather than falling into generic routing.
 
 Existing bare Anthropic, OpenAI, and provider-prefixed routes retain their
 current behavior. Existing generic Cloudflare code remains untouched, but the
@@ -137,7 +186,8 @@ local package installs no Cloudflare provider, key, gateway, or header setting.
 
 ## Exact pass-through and telemetry
 
-Reserved Codex and Grok Responses requests use the corrected OpenAI contract:
+Reserved Codex Responses, Codex remote-compaction, and Grok Responses requests
+use the corrected OpenAI contract:
 
 - the forwarded body is byte-for-byte identical to the caller body;
 - no JSON reserialization, history collapse, image, factsheet, label, summary,
@@ -148,8 +198,9 @@ Reserved Codex and Grok Responses requests use the corrected OpenAI contract:
 - routing and redacted count/hash/status/usage telemetry still work.
 
 The route may read the model identifier for existing non-sensitive telemetry,
-but it cannot use that value to select a destination. Sequential Codex/Grok
-tests must prove body, model, hash, headers, query, and destination isolation.
+but it cannot use that value to select a destination. Auxiliary GET routes do
+not invent a body or compression event. Sequential Codex/Grok tests must prove
+body, model, hash, headers, query, and destination isolation.
 
 ## Runtime configuration and credential isolation
 
@@ -182,6 +233,13 @@ Reserved traffic bypasses every generic override and injection path, including:
 - `PXPIPE_PROVIDER`, gateway base, and gateway headers;
 - dashboard selection and any request model name.
 
+Reserved classification and vendor-base validation occur independently before
+generic upstream resolution. An invalid generic provider/gateway configuration
+is retained as an error for generic traffic but cannot make proxy construction
+or a valid reserved request fail before the reserved route is seen. Conversely,
+an invalid reserved base cannot affect generic traffic until that vendor's
+namespace is requested.
+
 An empty or whitespace-only `OPENAI_API_KEY` normalizes to unset and can never
 produce `Authorization: Bearer `. The generated LaunchAgent contains only the
 explicit local fields; hostile inherited key, upstream, provider, and gateway
@@ -196,11 +254,15 @@ committed and reviewed before the next begins.
 ### Slice 1 — core reserved router
 
 - Add the two optional upstream settings and a pure exact route classifier.
-- Preserve accepted paths, query bytes, headers, and raw bodies while stripping
-  only the reserved local prefix.
+- Cover Codex Responses/compact/models and the exact Grok Responses/model/
+  settings/login-config/subagent auxiliaries proven by installed-client evidence.
+- Preserve accepted paths, the serialized query suffix, end-to-end headers, and
+  raw bodies while stripping only the reserved local prefix and complete
+  hop-by-hop set.
 - Fail every reserved auth/config/method/path error locally with the pinned
   status and zero fetches.
 - Bypass generic upstream, API-key, and gateway injection.
+- Keep reserved base validation independent from eager generic-route errors.
 - Prove exact OpenAI pass-through and sequential Codex/Grok isolation.
 
 ### Slice 2 — Node raw-target and environment boundary
@@ -208,17 +270,21 @@ committed and reviewed before the next begins.
 - Validate raw request targets before WHATWG normalization.
 - Read and validate the two fixed subscription upstream settings.
 - Normalize empty API-key configuration to unset.
-- Prove dot-segment, encoded-separator, duplicate-prefix, wrong-method, missing
-  auth/config, and hostile ambient cases through the real Node HTTP boundary.
+- Prove absolute-form, dot-segment, malformed/encoded separator/percent,
+  backslash/fragment, duplicate-prefix, wrong-method, missing auth/config, and
+  hostile ambient cases through the real Node HTTP boundary.
 
 ### Slice 3 — transactional installer and client configuration
 
-- Add the minimal tested TOML editor and installer receipt/backups.
+- Add the source-preserving fixed-target TOML editor and surgical receipt/
+  backup/rollback behavior, including ambiguous-shape and API-key-flow refusal.
 - Persist the subscription upstreams, selected install port, and existing model
   list in the LaunchAgent without inheriting ambient secrets or gateways.
 - Update both client files as one rollback-safe transaction with the service.
-- Prove fresh install, update, idempotence, failure rollback, permissions,
-  deliberate alternate install port, and safe uninstall with later owner edits.
+- Prove fresh/missing/existing configs, line-ending/BOM/comment preservation,
+  update, idempotence/mtime, ownership/modes, every injected failure rollback,
+  deliberate alternate install port, and surgical uninstall/reinstall with
+  later owner edits.
 
 ### Slice 4 — owner-facing release and local validation
 
@@ -226,41 +292,54 @@ committed and reviewed before the next begins.
   `codex`, and `grok`; keep the old harness plan explicitly historical.
 - Package the exact reviewed head directly into
   `/Users/michael/Dev/pxpipe-deploy`, verify its digest, and install it.
-- Run network-denied parser checks: `codex features list` and
-  `grok inspect --json`. Verify the saved URLs and provider/model values from the
-  installed files and receipt without printing auth material.
+- Run `codex features list` and `grok inspect --json` under macOS
+  `sandbox-exec` with network denied, isolated candidate homes before writes and
+  the real home after installation. Capture/discard their output and verify the
+  saved URLs and provider/model values without printing auth material.
 - Confirm one healthy loopback listener and the exact installed source commit.
 
 ## Automated acceptance checks
 
-1. Every tabled method/path reaches exactly its fixed vendor URL with query and
-   end-to-end headers unchanged.
-2. Codex and Grok request bytes and SHA-256 hashes match before/after; both report
-   `compressed=false`, zero images, and no savings fields or token probes.
-3. Route selection is unchanged when model names, dashboard selection, generic
+1. Every tabled method/path, including Codex `/responses/compact` and the exact
+   Grok auxiliaries, reaches exactly its fixed vendor URL.
+2. Trailing `?`, duplicate/empty query keys, `+`, order, and percent-escape case
+   remain exact. End-to-end headers remain exact; the full hop-by-hop set and
+   `Connection`-nominated headers do not forward.
+3. Codex Responses/compact and Grok Responses bytes and SHA-256 hashes match
+   before/after; all report `compressed=false`, zero images, and no savings
+   fields or token probes.
+4. Route selection is unchanged when model names, dashboard selection, generic
    upstreams, keys, and gateway settings are adversarially varied.
-4. Missing/blank authorization returns 401; bad/missing upstream returns 503;
+5. Missing/blank authorization returns 401; bad/missing upstream returns 503;
    wrong method returns 405 plus `Allow`; malformed, lookalike, dot-segment,
-   encoded-separator, backslash, duplicate-prefix, and unknown reserved paths
-   return 404. Every case performs zero fetches.
-5. Raw Node targets are rejected before URL normalization can change vendors.
-6. Subscription requests preserve opaque authorization/account/vendor headers
+   invalid-percent, encoded-separator/percent, backslash/fragment,
+   absolute-form, duplicate-prefix, and unknown reserved paths return 404. Every
+   case performs zero fetches.
+6. Raw Node targets are rejected before URL normalization can change vendors.
+7. Subscription requests preserve opaque authorization/account/vendor headers
    upstream but no event, log, error, dashboard, or installer receipt contains
    their values.
-7. Empty `OPENAI_API_KEY` is unset; nonempty generic API keys and Cloudflare
+8. Empty `OPENAI_API_KEY` is unset; nonempty generic API keys and Cloudflare
    headers never reach a reserved request.
-8. Alternating Codex/Grok fixtures retain only their own body, model, hash,
+9. Alternating Codex/Grok fixtures retain only their own body, model, hash,
    headers, query, and destination.
-9. Existing Anthropic, bare OpenAI, provider-prefixed, dashboard, privacy,
+10. Existing Anthropic, bare OpenAI, provider-prefixed, dashboard, privacy,
    accounting, and model-selection behavior remains green.
-10. Installer output contains one service, one port, the two fixed upstreams,
+11. Invalid generic gateway/provider configuration cannot preempt a valid
+    reserved request; the stored generic error still governs generic traffic.
+12. Installer output contains one service, one port, the two fixed upstreams,
     and no inherited key/provider/gateway fields. A deliberate install-time port
     override updates the service and both client URLs together.
-11. Both client files preserve unrelated settings, use safe modes, update
-    atomically, reinstall idempotently, roll back together on every injected
-    failure, and uninstall without overwriting later owner edits.
-12. Network-denied `codex features list` and `grok inspect --json` accept the
-    installed TOML. No parser check launches an agent or lists remote models.
+13. Both client files preserve unrelated bytes, existing modes, BOM/line
+    endings/comments/final-newline state, and safe ownership; new files/dirs use
+    0600/0700. Ambiguous targets, races, symlinks, and `models_base_url` fail
+    before writes.
+14. Both files update atomically, reinstall without churn, roll back with the
+    service on every injected failure, and surgically uninstall/reinstall
+    without overwriting later owner edits.
+15. Sandboxed network-denied `codex features list` and `grok inspect --json`
+    accept candidate and installed TOML. No parser check launches an agent,
+    lists remote models, or prints its output.
 
 Every new behavior test receives a guard proof: temporarily remove the matching
 classifier, raw-target check, or installer/config behavior; observe the focused
@@ -288,8 +367,8 @@ After all slices are accepted:
 3. Run the installer once; it updates the service and both client files.
 4. Confirm launchd owns the only selected-port listener on `127.0.0.1`, the
    dashboard is healthy, and the LaunchAgent contains no secret/gateway fields.
-5. Run the two network-denied parser checks and inspect only non-secret saved
-   configuration values.
+5. Run the two parser checks under `sandbox-exec` with `deny network*`, discard
+   their output, and inspect only non-secret saved configuration values.
 6. Run plain `codex --help` and `grok --help` only if another local CLI sanity
    check is needed; do not supply a prompt.
 
