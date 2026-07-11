@@ -1,6 +1,6 @@
 # One-port subscription routing
 
-Status: **AMENDED R3 2026-07-11 — SIMPLE-USE OUTCOME REMAINS OWNER-APPROVED;
+Status: **AMENDED R4 2026-07-11 — SIMPLE-USE OUTCOME REMAINS OWNER-APPROVED;
 UPDATED SAFETY CONTRACT AWAITS CLAUDE REVIEW BEFORE IMPLEMENTATION**.
 
 Plan base: `cc79310` on `fix/provenance-safe-compression`. The corrected local
@@ -97,74 +97,108 @@ directories must be owned by the current user and not group/world-writable but
 keep their existing mode (0755 is valid). Missing parent directories are created
 0700. The installer never silently chmods an owner file or directory.
 
-Before the first change, the installer stores byte-exact 0600 snapshots and
-hashes under the 0700 install-state directory. Those snapshots contain only the
-client config bytes the owner already had; subscription token stores are never
-read or copied, and snapshot contents are never logged. The committed receipt is
-a source-edit ledger, not merely a value ledger. For every pre-existing target it
-records the exact original and applied scalar right-hand-side span bytes plus its
-syntactic table/key identity and unchanged byte anchors; inline comments and all
-bytes outside that scalar span remain owner data. For every insertion it records
-each exact inserted byte span, including separator bytes, its syntactic table/key
-identity, and unchanged byte anchors on both sides. A newly inserted table header
-is a separate span.
+The committed receipt is a source-edit ledger, not merely a value ledger. For
+every pre-existing target it records the exact original and applied scalar
+right-hand-side span bytes plus its unique parsed table/key identity; inline
+comments and every byte outside that scalar span remain owner data. For every
+insertion it records the exact inserted byte span, including separator bytes,
+and its unique parsed table/key identity. A newly inserted table header is a
+separate span. Neighboring hashes may help diagnose a race, but surrounding
+owner bytes are not part of the ownership proof and may change freely.
 
-Uninstall reverses only the scalar right-hand-side span of a pre-existing target,
-and only when its current span bytes exactly equal the recorded applied bytes.
-It removes an insertion only when exactly one span matches the recorded bytes,
-table/key identity, and anchors.
-Equal decoded values do not prove ownership. A created table header is removed
-only after its managed child spans are removed and the table contains no owner
-key, comment, or other trivia. A missing, changed, moved, duplicated, or ambiguous
-span is left byte-for-byte untouched and reported as a conflict.
+The receipt also records whether each config file and parent directory existed
+before pxpipe. Uninstall reverses only the scalar span of a pre-existing target,
+and only when its current bytes exactly equal the recorded applied bytes. It
+removes an insertion only when its parsed identity is unique and its exact bytes
+match the receipt. Equal decoded values in an unrecorded or duplicate location
+do not prove ownership. A created table header is removed only after its managed
+children are removed and the table contains no owner key, comment, or trivia. A
+file created by pxpipe is deleted only when its complete bytes, owner, and mode
+still match the applied receipt; otherwise only proven managed spans are removed
+and the file is retained. A directory created by pxpipe is removed only when it
+is empty after file handling. Any changed, duplicated, or ambiguous managed span
+is a conflict and stays byte-for-byte untouched.
 
-A reinstall loads and validates the committed receipt before creating a
-transaction journal or changing the service or either config. Every managed
-pre-existing target's scalar span must still match its exact last-applied bytes, and
-every managed insertion must still satisfy its recorded span proof. Any managed
-drift, missing/corrupt receipt, or ambiguous target aborts the whole reinstall
-with zero mutations. Unrelated edits outside managed spans are allowed and
-candidates are built from the latest bytes. An already-correct reinstall remains
-a no-op that does not add snapshots or change mtimes.
+Receipt absence is allowed only for the first managed one-port install. That path
+requires no pending/conflicted transaction and no receipt-owned client footprint
+such as `pxpipe_local`, a reserved `/_pxpipe/` client URL, or an equivalent
+managed provider/table insertion. An existing pre-ledger pxpipe service is
+adopted only after its release manifest, source digest, current link, plist,
+loopback binding, and ownership pass the existing installer checks; the service
+alone is not treated as prior client-config ownership. A corrupt receipt or a
+missing receipt beside any managed client footprint fails before mutation rather
+than guessing ownership.
 
-Every mutating install or uninstall writes a durable 0600 pending journal under
-the 0700 install-state directory before its first service or config mutation.
-The journal records a transaction ID, operation, and phase; the prior committed
-receipt hash and intended new receipt hash; and the prior/applied identity,
-existence, mode, owner, and snapshot path for the release pointer, service
-definition/state, and both client files. Snapshot bytes remain in separate 0600
-files and never enter output. Journal creation and every phase transition use
-atomic rename plus file and parent-directory fsync.
+A reinstall loads and validates the receipt before opening a transaction. Every
+managed pre-existing scalar must still match its exact last-applied bytes and
+every managed insertion must still satisfy its recorded identity/span proof.
+Managed drift or ambiguity aborts with zero service, config, snapshot, journal,
+or receipt mutation. Unrelated edits outside managed spans are allowed and new
+candidates are built from the latest bytes. An already-correct reinstall is a
+no-op that does not add snapshots or change mtimes.
 
-Every invocation checks the journal before starting new work. If the intended
-receipt is already durably committed, the run treats the transaction as complete
-and only finalizes journal cleanup. Otherwise it runs the same rollback engine
-used by ERR/INT/TERM, restores the prior state, fsyncs it, removes the journal,
-and only then may start the requested operation. The journal records the intended
-receipt hash before the receipt rename, so a crash between receipt commit and the
-final journal phase cannot roll back a completed install.
+An atomic 0700 lock directory under the install-state root serializes install,
+uninstall, and recovery before any journal inspection. Its 0600 record contains
+the uid, pid, process-start signature, and operation but no config bytes. A live
+matching process makes a second invocation fail with zero mutations. A stale
+record is claimed by atomic rename before recovery; pid reuse alone cannot prove
+liveness. Creating the empty state/lock parent on a first invocation is the only
+allowed pre-lock filesystem preparation.
 
-Rollback and crash recovery are compare-before-write operations. A resource
-already matching its recorded prior identity is a no-op; one matching its
-recorded applied identity may be restored; any third identity is a concurrent-edit
-conflict and is never overwritten. Recovery preflights all resources and rechecks
-each immediately before replacement. A late race may leave earlier safe restores
-in place, so each completed restore is journaled and fsynced. On any conflict the
-journal is atomically marked `conflicted`, names only the resource and hashes,
-retains all snapshots, exits nonzero, and never claims either state is active.
-Later install/uninstall runs perform zero mutations while that state remains;
-recovery may resume only after every conflicted resource matches one of its two
-recorded safe identities.
+Every mutation uses a 0700 transaction directory. The installer first commits
+and fsyncs a minimal 0600 journal in phase `preparing`, then writes byte-exact
+0600 snapshots one at a time and atomically updates/fsyncs the journal with each
+snapshot identity. A crash while preparing owns no active service/config change;
+the next lock holder verifies that phase and removes the recorded partial
+transaction before proceeding. Only a fully snapshotted `ready` journal permits
+an active mutation. Subscription token stores are never read or copied, and
+snapshot contents never enter output.
 
-Transaction order is fixed: conflict/recovery preflight; parse both current
-sources and build both candidates; validate candidates with network denied in
-isolated homes; stage snapshots; durably create the pending journal;
-switch/start/health-check the service; apply Codex; apply Grok; validate installed
-files with network denied; journal the intended receipt hash; atomically commit
-and fsync the receipt; mark the journal committed; then remove and fsync the
-journal. One ERR/INT/TERM trap invokes the same journaled rollback engine.
-Applying client URLs only after service health prevents either client from being
-pointed at a dead listener during the normal transaction.
+The journal records a transaction ID, operation, phase, and prior/intended
+receipt identity, where each receipt identity is either a SHA-256 hash or the
+explicit sentinel `absent`. It also records prior/applied existence, owner, mode,
+hash, and snapshot path for the release pointer, service definition/state, both
+client files, and any directories the transaction created. Journal creation and
+every phase transition use atomic rename plus file and parent-directory fsync.
+
+Every invocation recovers a pending journal while holding the exclusive lock. If
+the intended receipt identity is already durably present — including `absent`
+after a completed uninstall — it treats the transaction as committed and only
+finalizes cleanup. Otherwise it runs the same rollback engine used by
+ERR/INT/TERM, restores and fsyncs prior state, removes and fsyncs the journal,
+then may start the requested operation. The intended identity is journaled before
+the receipt rename/removal, so a crash at that boundary cannot turn a completed
+transaction into a rollback.
+
+All uninstall ownership checks complete before the journal, service, or either
+config is changed. Any conflict aborts the entire uninstall with zero mutations
+and leaves the working service available. Install order is: preflight and
+validate isolated candidates; prepare journal/snapshots; switch, start, and
+health-check the service; apply Codex; apply Grok; hash-check installed bytes;
+commit the receipt; mark committed; clean the journal. Uninstall order is:
+preflight every reversal; prepare journal/snapshots; restore Codex; restore Grok;
+hash-check both; stop/remove the service definition and current link; commit the
+`absent` receipt identity; mark committed; then remove releases, snapshots,
+journal, lock, and empty install-state directories last. This ordering never
+points a client at a service already removed.
+
+Rollback and crash recovery compare before writing. A resource matching its
+prior identity is a no-op; one matching its applied identity may be restored;
+any detected third identity enters conflict and is not overwritten. Each safe
+restore is journaled and fsynced. Conflict atomically marks the journal
+`conflicted`, reports only path and hashes, retains snapshots, exits nonzero, and
+blocks later install/uninstall mutations until every conflicted resource matches
+a recorded safe identity. Recovery then resumes deterministically.
+
+The lock coordinates pxpipe processes, not arbitrary editors. Portable shell and
+Node file APIs cannot perform a cross-process compare-and-swap rename, so the
+installer does not claim to preserve an uncooperative owner write made in the
+final interval between its last identity check and atomic rename. It warns not to
+edit either config during installation, rejects every race visible at its
+pre-write and post-write checks, retains the last checked snapshot, and never
+silently calls that narrow residual race safe. Each file replacement is atomic;
+the journal supplies multi-resource recovery rather than impossible simultaneous
+cross-file atomicity. One ERR/INT/TERM trap invokes the journaled rollback engine.
 
 ## Exact reserved route contract
 
@@ -325,13 +359,17 @@ committed and reviewed before the next begins.
 
 - Add the source-preserving fixed-target TOML editor and surgical receipt/
   backup/rollback behavior, including ambiguous-shape and API-key-flow refusal.
+- Add the exclusive installer lock, first-managed-install/legacy-service
+  preflight, preparing journal, explicit absent receipt identity, and
+  crash/conflict recovery state.
 - Persist the subscription upstreams, selected install port, and existing model
   list in the LaunchAgent without inheriting ambient secrets or gateways.
 - Update both client files as one rollback-safe transaction with the service.
 - Prove fresh/missing/existing configs, line-ending/BOM/comment preservation,
   update, idempotence/mtime, ownership/modes, every injected failure rollback,
   deliberate alternate install port, abrupt-death recovery, durable conflict
-  handling, and exact-span uninstall/reinstall with later owner edits.
+  handling, simultaneous-invocation refusal, created-file ownership, and
+  exact-span uninstall/reinstall with later owner edits.
 
 ### Slice 4 — owner-facing release and local validation
 
@@ -341,12 +379,14 @@ committed and reviewed before the next begins.
   `/Users/michael/Dev/pxpipe-deploy`, verify its digest, and install it.
 - Run `codex features list` and
   `grok inspect --json --leader-socket <fresh-private-transaction-socket>` under
-  macOS `sandbox-exec` with network denied, isolated candidate homes before
-  writes and the real home after installation. The Grok socket path is unique to
-  that check, lives under a 0700 transaction directory, and is removed afterward;
-  the check never uses, connects to, creates, or changes the default
-  `~/.grok/leader.sock`. Capture/discard command output and verify the saved URLs
-  and provider/model values without printing auth material.
+  macOS `sandbox-exec` against byte-identical config copies in a 0700 isolated
+  home and empty working directory. Deny network, reads from the real home,
+  writes outside the private transaction directory, and child execution. The
+  Grok socket path is unique to that check, lives inside that directory, and is
+  removed afterward; the check never uses, connects to, creates, or changes the
+  default `~/.grok/leader.sock`. Capture/discard command output. After each real
+  install write, compare its hash and mode with the already parsed candidate
+  instead of invoking either CLI against the owner's home or credential stores.
 - Confirm one healthy loopback listener and the exact installed source commit.
 
 ## Automated acceptance checks
@@ -386,36 +426,51 @@ committed and reviewed before the next begins.
     0600/0700. Ambiguous targets, races, symlinks, and `models_base_url` fail
     before writes.
 14. Each file replacement is atomic; the journaled pair rolls back with the
-    service on every injected handled failure. Reinstall has no churn, and
-    uninstall/reinstall never overwrites later owner edits.
+    service on every injected handled failure. Reinstall has no churn, and every
+    owner edit visible at the pinned identity checks is preserved or fails
+    closed. The final non-cooperating editor race is explicitly not claimed safe.
 15. Sandboxed network-denied `codex features list` and
     `grok inspect --json --leader-socket <fresh-private-transaction-socket>`
-    accept candidate and installed TOML. The default Grok leader socket is not
-    contacted, created, or changed. No parser check launches an agent, lists
-    remote models, or prints its output.
+    accept byte-identical TOML copies under an isolated HOME and empty cwd with
+    real-home reads, outside writes, and child execution denied. The default Grok
+    leader socket and credential stores are not contacted, read, created, or
+    changed. No parser check launches an agent, lists remote models, or prints
+    its output; installed files are verified by hash/mode comparison only.
 16. Fresh-file install/uninstall restores the original bytes exactly. Inserted
-    keys and table headers are removed only through their recorded exact span
-    proofs; owner keys, comments, and trivia survive. A changed, moved, copied,
-    duplicated, or anchor-mismatched span, and an equal-valued unrecorded line,
-    are never deleted.
-17. Reinstall with unrelated edits succeeds and preserves them. Reinstall with
-    any managed-span drift or missing/corrupt receipt fails before journal,
-    service, config, snapshot, or receipt mutation; all hashes and mtimes remain
-    unchanged.
-18. Abrupt process death is injected after every journaled mutation, including
-    service switch, each client write, validation, receipt rename, and journal
-    commit. The next run either restores the byte-exact prior service/config
-    state before proceeding or recognizes the matching committed receipt and
-    only cleans up; it never accepts a mixed state.
-19. A concurrent owner edit injected after apply but before forced rollback is
-    preserved. Recovery enters durable `conflicted`, retains snapshots, reports
-    no contents, and every later install/uninstall makes zero mutations until the
-    resource matches a recorded safe identity; recovery then resumes
-    deterministically.
-20. Candidate and installed Grok checks use `--leader-socket` with a fresh
-    private path under network denial. Tests prove the default leader socket is
-    neither contacted nor created/changed, output is discarded, and no agent or
-    model request starts.
+    keys and table headers are removed only through their recorded parsed identity
+    and exact span proofs; owner keys, comments, and trivia survive relocation and
+    unrelated surrounding edits. Equal-valued unrecorded or duplicate lines are
+    never deleted.
+17. Original file/directory absence is recorded. A pxpipe-created file is deleted
+    only while wholly unchanged; owner additions cause proven managed spans to be
+    removed while the file remains. Created directories remain unless empty.
+18. Receipt-free first install accepts the verified pre-ledger service on this
+    Mac only when both clients lack a managed pxpipe footprint. Any footprint with
+    a missing/corrupt receipt fails before mutation.
+19. Reinstall with unrelated edits succeeds and preserves them. Reinstall with
+    managed drift fails before journal, service, config, snapshot, or receipt
+    mutation; all hashes and mtimes remain unchanged.
+20. Concurrent install/uninstall attempts prove the live pid/start lock holder
+    wins and every other invocation performs zero mutations. Stale-lock recovery
+    cannot mistake pid reuse for the original process.
+21. Process death is injected after the preparing journal, each snapshot, ready
+    transition, service switch, each client write, validation, receipt
+    rename/removal, and journal commit. The next lock holder removes preparation
+    debris, restores the prior state, or recognizes the intended committed
+    receipt identity; it never accepts a mixed state.
+22. Every uninstall reversal is preflighted before mutation. A changed or
+    ambiguous managed span leaves the service, configs, receipt, hashes, and
+    mtimes unchanged. Successful uninstall commits explicit receipt absence and
+    removes the transaction/state directory only after journal cleanup.
+23. A detected concurrent owner edit enters durable `conflicted`, retains
+    snapshots, reports no contents, and blocks later mutations until a recorded
+    safe identity returns. Tests separately document the unavoidable final
+    non-cooperating editor race; no assertion promises impossible compare-and-swap
+    behavior.
+24. Candidate parser checks use isolated copies and the fresh Grok leader socket
+    under the complete sandbox above. Tests prove the real home, default socket,
+    credential stores, network, and child execution are untouched; output is
+    discarded and installed files match the parsed candidate hashes.
 
 Every new behavior test receives a guard proof: temporarily remove the matching
 classifier, raw-target check, or installer/config behavior; observe the focused
